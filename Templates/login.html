@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mr. Golisoda Training Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+<div class="center">
+  <div class="card">
+    <div class="dot"></div>
+    <h1>Mr. Golisoda Training Portal</h1>
+    <p class="sub">Field force learning &amp; certification</p>
+
+    <div class="seg">
+      <button id="tab-login" class="on" onclick="showTab('login')">Sign In</button>
+      <button id="tab-signup" onclick="showTab('signup')">New Joiner</button>
+    </div>
+
+    <!-- SIGN IN -->
+    <div id="form-login">
+      <label>Employee ID</label>
+      <input id="li-id" placeholder="e.g. SAFC-1024" autocomplete="off">
+      <label>Password</label>
+      <input id="li-pw" type="password" placeholder="Your password">
+      <button class="cta" id="li-btn" onclick="doLogin()">Sign In</button>
+      <div class="msg" id="li-msg"></div>
+    </div>
+
+    <!-- SIGN UP -->
+    <div id="form-signup" class="hide">
+      <label>Full Name</label>
+      <input id="su-name" placeholder="e.g. Suresh Kumar" autocomplete="off">
+      <label>Employee ID</label>
+      <input id="su-id" placeholder="e.g. SAFC-3055" autocomplete="off">
+      <label>Phone Number</label>
+      <input id="su-phone" placeholder="e.g. 9876543210" inputmode="numeric">
+      <label>Designation</label>
+      <select id="su-desg">
+        <option value="">Select…</option>
+        <optgroup label="Field Sales">
+          <option>Business Development Executive (BDE)</option>
+          <option>Business Development Manager (BDM)</option>
+          <option>State Head</option><option>Regional Sales Manager (RSM)</option>
+          <option>National Sales Manager (NSM)</option><option>Sales Officer</option>
+        </optgroup>
+        <optgroup label="Learning &amp; Development">
+          <option>L&amp;D Executive</option><option>L&amp;D Senior Executive</option><option>L&amp;D Manager</option>
+        </optgroup>
+        <optgroup label="Corporate / Office">
+          <option>HR Executive</option><option>HR Manager</option><option>Accounts Executive</option>
+          <option>Accounts Manager</option><option>Admin Executive</option><option>Operations Executive</option>
+          <option>Marketing Executive</option><option>Purchase Executive</option><option>IT Support</option>
+        </optgroup>
+        <optgroup label="Production / Plant">
+          <option>Production Executive</option><option>Production Supervisor</option><option>Machine Operator</option>
+          <option>Quality Control Executive</option><option>Loadman</option><option>Driver</option><option>Helper</option>
+        </optgroup>
+        <optgroup label="Partner / Other">
+          <option>Franchise Partner</option><option>Management / Leadership</option>
+        </optgroup>
+      </select>
+      <label>Create Password</label>
+      <input id="su-pw" type="password" placeholder="At least 6 characters">
+      <button class="cta" id="su-btn" onclick="doSignup()">Request Account</button>
+      <div class="msg" id="su-msg"></div>
+    </div>
+
+    <div class="foot">Need help? Contact your L&amp;D team.</div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/auth.js') }}"></script>
+</body>
+</html>

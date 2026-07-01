@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: Golisoda-LMS
+    env: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true

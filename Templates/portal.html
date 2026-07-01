@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mr. Golisoda Training Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+<style>
+  :root{
+    --mg-blue:#00AEEF; --mg-yellow:#FFD600; --mg-ink:#0b2733;
+    --mg-bg:#f4f7f9; --mg-card:#fff; --mg-line:#e6ebf0; --muted:#62707a;
+    --mg-green:#1d9e75; --mg-red:#e24b4a;
+  }
+  .pt-tabs{background:#fff;border-bottom:1px solid var(--mg-line);position:sticky;top:0;z-index:20;overflow-x:auto;white-space:nowrap}
+  .pt-tabs .inner{max-width:1000px;margin:0 auto;display:flex;gap:2px;padding:0 12px}
+  .pt-tab{border:none;background:none;padding:14px 16px;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;font-family:inherit}
+  .pt-tab.active{color:var(--mg-blue);border-bottom-color:var(--mg-blue)}
+  .tabpane{display:none}
+  .tabpane.show{display:block}
+  /* home stats */
+  .home-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}
+  @media(max-width:640px){.home-cards{grid-template-columns:1fr}}
+  .hcard{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px;text-align:center}
+  .hcard .n{font-size:30px;font-weight:700;margin:4px 0}
+  .hcard .l{font-size:13px;color:var(--muted)}
+  /* assessment cards */
+  .as-card{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:16px;margin-bottom:12px}
+  .as-card h4{margin:0 0 4px;font-size:15px}
+  .badge{display:inline-block;padding:2px 9px;border-radius:7px;font-size:11px;font-weight:700;margin-left:6px}
+  .b-pass{background:#e1f5ee;color:#085041}
+  .b-todo{background:#faeeda;color:#854f0b}
+  .meta{font-size:12.5px;color:var(--muted)}
+  .empty{padding:30px;text-align:center;color:var(--muted)}
+  .placeholder{background:#fff;border:1px dashed var(--mg-line);border-radius:12px;padding:40px 20px;text-align:center;color:var(--muted)}
+  .placeholder .ic{font-size:40px;margin-bottom:10px}
+  /* quiz (assessment engine) */
+  .qcard{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px;margin-bottom:12px}
+  .qtext{font-size:15px;font-weight:600;margin:4px 0 12px}
+  .opt2{display:block;border:1.5px solid var(--mg-line);border-radius:10px;padding:11px 13px;margin-bottom:8px;cursor:pointer;font-size:14px}
+  .opt2:hover{border-color:var(--mg-blue);background:#f4fbfe}
+  .opt2.sel{border-color:var(--mg-blue);background:#e7f6fd;font-weight:600}
+  .timer{font-weight:700}.timer.warn{color:var(--mg-red)}
+  /* certificate */
+  /* certificate — branded */
+  .cert{max-width:720px;margin:14px auto;border-radius:16px;position:relative;overflow:hidden;
+    background:#fff;box-shadow:0 10px 40px rgba(0,0,0,.12)}
+  .cert-inner{position:relative;padding:34px 40px 30px;border:10px solid transparent;
+    background:
+      linear-gradient(#fff,#fff) padding-box,
+      var(--cert-bg, linear-gradient(135deg,#00AEEF,#0090c8)) border-box;
+    border-radius:16px;min-height:440px}
+  .cert-logo{display:block;height:74px;margin:0 auto 6px}
+  .cert-org{text-align:center;font-weight:700;letter-spacing:.12em;font-size:13px;color:#0b2733;margin-bottom:14px}
+  .cert .ribbon{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--mg-blue);font-weight:700;text-align:center;margin-bottom:14px}
+  .cert .ph{text-align:center;font-size:13px;color:var(--muted);margin:2px 0}
+  .cert .who{text-align:center;font-size:30px;font-weight:700;margin:8px 0 6px;color:#0b2733;font-family:'Space Grotesk',sans-serif}
+  .cert .score-line{text-align:center;font-size:15px;margin:10px 0 20px;color:#0b2733}
+  .cert .sigs{display:flex;justify-content:space-between;gap:40px;margin-top:30px;padding:0 10px}
+  .cert .sig{flex:1;text-align:center}
+  .cert .sig-img{height:46px;margin:0 auto 2px;display:block;max-width:170px;object-fit:contain}
+  .cert .sig .line{border-top:1.5px solid #0b2733;margin-bottom:5px;height:1px}
+  .cert .sig .role{font-size:11.5px;color:#62707a;font-weight:600}
+  .cert-mascot{position:absolute;right:14px;bottom:10px;height:120px;opacity:.96;pointer-events:none}
+  @media(max-width:560px){.cert-mascot{height:80px;opacity:.5}.cert .who{font-size:24px}}
+  @media print{.topbar,.pt-tabs,.noprint{display:none!important}body{background:#fff}}
+  /* subtle brand watermark */
+  body::before{content:"";position:fixed;inset:0;background-image:var(--wm,none);
+    background-repeat:no-repeat;background-position:center 62%;background-size:420px;
+    opacity:.04;pointer-events:none;z-index:0}
+  .topbar,.pt-tabs,.wrap{position:relative;z-index:1}
+  /* file module viewer */
+  .fm-ov{position:fixed;inset:0;background:rgba(8,30,40,.6);display:none;align-items:center;justify-content:center;padding:14px;z-index:80}
+  .fm-ov.show{display:flex}
+  .fm-box{background:#fff;border-radius:14px;width:100%;max-width:960px;height:90vh;display:flex;flex-direction:column;overflow:hidden}
+  .fm-head{padding:12px 16px;border-bottom:1px solid var(--mg-line);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+  .fm-frame{flex:1;width:100%;border:none;background:#f4f7f9}
+  .fm-foot{padding:12px 16px;border-top:1px solid var(--mg-line);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+  <div class="topbar"><div class="wrap">
+    <div class="brand"><img id="hdrLogo" alt="Mr. Golisoda" style="height:34px;vertical-align:middle" /> <span style="vertical-align:middle">Training</span></div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span class="who">{{ user['name'] }} · {{ user['designation'] }}</span>
+      <button class="signout" onclick="doSignOut()">Sign out</button>
+    </div>
+  </div></div>
+
+  <!-- TABS -->
+  <div class="pt-tabs noprint"><div class="inner">
+    <button class="pt-tab active" data-tab="home" onclick="showTab('home')">🏠 Home</button>
+    <button class="pt-tab" data-tab="induction" onclick="showTab('induction')">📘 Induction Modules</button>
+    <button class="pt-tab" data-tab="training" onclick="showTab('training')">🎓 Training Modules</button>
+    <button class="pt-tab" data-tab="assess" onclick="showTab('assess')">📝 Assessments</button>
+    <button class="pt-tab" data-tab="videos" onclick="showTab('videos')">🎥 Videos</button>
+    <button class="pt-tab" data-tab="certs" onclick="showTab('certs')">📜 Certificates</button>
+  </div></div>
+
+  <div class="wrap">
+
+    <!-- ============ HOME ============ -->
+    <div id="tab-home" class="tabpane show">
+      <div class="hero">
+        <h2>Welcome, {{ user['name'].split(' ')[0] }}</h2>
+        <p>Your training home. Complete Induction modules, take assessments, and collect your certificates — all in one place.</p>
+      </div>
+      <div class="home-cards">
+        <div class="hcard"><div class="l">Induction passed</div><div class="n" style="color:var(--mg-blue)" id="hInd">—</div></div>
+        <div class="hcard"><div class="l">Assessments passed</div><div class="n" style="color:var(--mg-green)" id="hAss">—</div></div>
+        <div class="hcard"><div class="l">Certificates earned</div><div class="n" style="color:#534ab7" id="hCert">—</div></div>
+      </div>
+      <div class="sectiontitle">Quick start</div>
+      <p class="meta">Use the tabs above to move between Induction Modules, Assessments, Videos, and your Certificates.</p>
+    </div>
+
+    <!-- ============ INDUCTION MODULES ============ -->
+    <div id="tab-induction" class="tabpane">
+      <!-- legacy slide system (hidden unless slide-modules exist) -->
+      <div id="p-home" class="page">
+        <div id="slideModsWrap" style="display:none">
+          <div class="sectiontitle">Induction — for everyone</div>
+          <p class="meta" style="margin-bottom:10px">Pass each module's assessment at 90% to unlock the next.</p>
+          <div class="grid" id="ind-grid"></div>
+        </div>
+      </div>
+      <!-- VIEWER -->
+      <div id="p-view" class="page hide">
+        <div class="crumb" onclick="goHome()">‹ Back to Modules</div>
+        <div id="slidearea"></div>
+      </div>
+      <!-- QUIZ -->
+      <div id="p-quiz" class="page hide" style="max-width:720px">
+        <div class="crumb" onclick="goHome()">‹ Back to Modules</div>
+        <div id="quizarea"></div>
+      </div>
+      <!-- DOCUMENT MODULES (uploaded PDF/HTML) -->
+      <div id="p-home-files">
+        <div class="sectiontitle">Induction Modules</div>
+        <p class="meta" style="margin-bottom:10px">Open each module, view it for the required time, then mark it complete.</p>
+        <div id="indFileBox"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+
+    <!-- ============ TRAINING MODULES ============ -->
+    <div id="tab-training" class="tabpane">
+      <div class="sectiontitle">Training Modules</div>
+      <p class="meta" style="margin-bottom:10px">Role-specific courses assigned to you.</p>
+      <div id="trnFileBox"><div class="empty">Loading…</div></div>
+    </div>
+
+    <!-- ============ ASSESSMENTS (engine, inside portal) ============ -->
+    <div id="tab-assess" class="tabpane">
+      <!-- list -->
+      <div id="as-list">
+        <div class="sectiontitle">Your assessments</div>
+        <div id="asListBox"><div class="empty">Loading…</div></div>
+      </div>
+      <!-- quiz -->
+      <div id="as-quiz" class="hide">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div><b id="asQuizTitle">—</b></div>
+          <div class="timer" id="asTimer">—</div>
+        </div>
+        <div id="asQuizBody"></div>
+        <button class="btn btn-pri" style="width:100%;margin-top:6px" onclick="submitAssessment()">Submit Assessment</button>
+      </div>
+      <!-- result -->
+      <div id="as-result" class="hide"></div>
+    </div>
+
+    <!-- ============ VIDEOS ============ -->
+    <div id="tab-videos" class="tabpane">
+      <div class="sectiontitle">Videos</div>
+      <div id="vidBox"><div class="empty">Loading…</div></div>
+    </div>
+
+    <!-- ============ CERTIFICATES ============ -->
+    <div id="tab-certs" class="tabpane">
+      <div class="sectiontitle">Your certificates</div>
+      <div id="certListBox"><div class="empty">Loading…</div></div>
+      <!-- single cert view -->
+      <div id="certView" class="hide">
+        <div class="cert" id="certCard">
+          <div class="cert-inner">
+            <img class="cert-logo" id="certLogo" alt="Mr. Golisoda" />
+            <div class="cert-org">SOUTH ASIAN FOOD CORPORATION</div>
+            <div class="ribbon">Certificate of Achievement</div>
+            <div class="ph">This is proudly awarded to</div>
+            <div class="who" id="certName">—</div>
+            <div class="ph">for successfully completing</div>
+            <div class="score-line"><b id="certAssessment">—</b><br><span id="certScoreWrap">with a score of <b id="certScore">—</b> &nbsp;·&nbsp; <span id="certDate">—</span></span></div>
+            <div class="sigs">
+              <div class="sig">
+                <img class="sig-img" id="sigChandru" alt="" />
+                <div class="line"></div>
+                <div class="role">Chandru M · CVO</div>
+              </div>
+              <div class="sig">
+                <img class="sig-img" id="sigDharani" alt="" />
+                <div class="line"></div>
+                <div class="role">Dharani Kumar S · L&amp;D Manager</div>
+              </div>
+            </div>
+            <img class="cert-mascot" id="certMascot" alt="" />
+          </div>
+        </div>
+        <div style="text-align:center;margin-top:14px" class="noprint">
+          <button class="btn btn-sec" onclick="closeCert()">← Back to certificates</button>
+          <button class="btn btn-pri" onclick="window.print()">🖨 Print / Save PDF</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FILE MODULE VIEWER MODAL -->
+  <div id="fmModal" class="fm-ov">
+    <div class="fm-box">
+      <div class="fm-head">
+        <b id="fmTitle">Module</b>
+        <div style="display:flex;gap:8px;align-items:center">
+          <a id="fmOpenLink" href="#" target="_blank" class="btn btn-sec" style="padding:6px 12px">Open in new tab ↗</a>
+          <button class="btn btn-sec" style="padding:6px 12px" onclick="closeFileModule()">✕ Close</button>
+        </div>
+      </div>
+      <iframe id="fmFrame" class="fm-frame" src="about:blank" allow="autoplay"></iframe>
+      <div class="fm-foot">
+        <span class="meta" id="fmCountdown"></span>
+        <button class="btn btn-pri" id="fmComplete" onclick="completeFileModule()" disabled>Mark complete</button>
+      </div>
+    </div>
+  </div>
+
+<script src="{{ url_for('static', filename='js/brand_assets.js') }}"></script>
+<script src="{{ url_for('static', filename='js/content.js') }}"></script>
+<script src="{{ url_for('static', filename='js/portal.js') }}"></script>
+<script>
+  // Inject brand images (from brand_assets.js)
+  (function(){
+    if(typeof BRAND === 'undefined') return;
+    var hdr = document.getElementById('hdrLogo'); if(hdr) hdr.src = BRAND.logo;
+    var cl = document.getElementById('certLogo'); if(cl) cl.src = BRAND.logo;
+    var cm = document.getElementById('certMascot'); if(cm) cm.src = BRAND.mascot;
+    var sc = document.getElementById('sigChandru'); if(sc) sc.src = BRAND.sign_chandru;
+    var sd = document.getElementById('sigDharani'); if(sd) sd.src = BRAND.sign_dharani;
+    // subtle background watermark
+    document.body.style.setProperty('--wm', 'url('+BRAND.mascot+')');
+    // certificate background as the border gradient via CSS var
+    var card = document.getElementById('certCard');
+    if(card){ card.querySelector('.cert-inner').style.setProperty('--cert-bg', 'url('+BRAND.cert_bg+')'); }
+  })();
+</script>
+</body>
+</html>

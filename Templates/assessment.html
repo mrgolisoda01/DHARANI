@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Assessments · Mr. Golisoda Training</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
+  <style>
+    :root{
+      --mg-blue:#00AEEF; --mg-yellow:#FFD600; --mg-ink:#0b2733;
+      --mg-bg:#f4f7f9; --mg-card:#fff; --mg-line:#e6ebf0; --mg-muted:#62707a;
+      --mg-green:#1d9e75; --mg-red:#e24b4a;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--mg-bg);font-family:'Inter',system-ui,Arial,sans-serif;color:var(--mg-ink)}
+    .top{background:var(--mg-blue);color:#fff;padding:16px 22px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+    .brand{display:flex;align-items:center;gap:12px}
+    .logo{width:42px;height:42px;border-radius:50%;background:var(--mg-yellow);display:flex;align-items:center;justify-content:center;font-size:22px}
+    .brand h1{font-size:17px;margin:0}
+    .brand p{margin:0;font-size:12px;color:#d7f3fd}
+    .link{color:#fff;background:rgba(255,255,255,.18);padding:8px 14px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;border:none;cursor:pointer}
+    .wrap{max-width:840px;margin:0 auto;padding:24px 22px 70px}
+    .card{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px;margin-bottom:14px}
+    .card h3{margin:0 0 4px;font-size:16px}
+    .meta{font-size:12.5px;color:var(--mg-muted)}
+    .btn{border:1px solid var(--mg-line);background:#fff;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer;color:var(--mg-ink);font-weight:600}
+    .btn.primary{background:var(--mg-blue);color:#fff;border-color:var(--mg-blue)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .badge{display:inline-block;padding:2px 9px;border-radius:7px;font-size:11px;font-weight:700}
+    .b-pass{background:#e1f5ee;color:#085041}
+    .b-todo{background:#faeeda;color:#854f0b}
+    .empty{padding:30px;text-align:center;color:var(--mg-muted)}
+    /* quiz */
+    .qbar{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--mg-line);padding:12px 22px;display:flex;justify-content:space-between;align-items:center;z-index:10}
+    .timer{font-weight:700;font-size:15px}
+    .timer.warn{color:var(--mg-red)}
+    .qcard{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:20px;margin-bottom:14px}
+    .qnum{font-size:12px;color:var(--mg-muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+    .qtext{font-size:16px;font-weight:600;margin:6px 0 14px}
+    .opt{display:block;border:1.5px solid var(--mg-line);border-radius:10px;padding:12px 14px;margin-bottom:9px;cursor:pointer;font-size:14px;transition:.12s}
+    .opt:hover{border-color:var(--mg-blue);background:#f4fbfe}
+    .opt.sel{border-color:var(--mg-blue);background:#e7f6fd;font-weight:600}
+    .opt input{margin-right:9px}
+    .progress{height:6px;background:#e6ebf0;border-radius:99px;overflow:hidden;margin-top:8px}
+    .progress > div{height:100%;background:var(--mg-blue);width:0;transition:.2s}
+    /* result */
+    .result{text-align:center;padding:30px 20px}
+    .result .big{font-size:54px;font-weight:800;margin:6px 0}
+    .pass-c{color:var(--mg-green)}
+    .fail-c{color:var(--mg-red)}
+    /* certificate */
+    .cert{max-width:720px;margin:20px auto;background:#fff;border:3px solid var(--mg-blue);border-radius:14px;padding:36px 40px;position:relative}
+    .cert .ribbon{font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--mg-blue);font-weight:700;text-align:center}
+    .cert h2{text-align:center;font-size:30px;margin:8px 0 2px;color:var(--mg-ink)}
+    .cert .sub{text-align:center;color:var(--mg-muted);font-size:13px;margin-bottom:22px}
+    .cert .awarded{text-align:center;font-size:13px;color:var(--mg-muted)}
+    .cert .who{text-align:center;font-size:26px;font-weight:700;margin:6px 0 4px;color:var(--mg-blue)}
+    .cert .for{text-align:center;font-size:14px;margin:14px 0}
+    .cert .score-line{text-align:center;font-size:15px;margin:10px 0 26px}
+    .cert .sigs{display:flex;justify-content:space-between;gap:30px;margin-top:40px}
+    .cert .sig{flex:1;text-align:center}
+    .cert .sig .line{border-top:1.5px solid var(--mg-ink);margin:0 0 6px;height:1px}
+    .cert .sig .role{font-size:12px;color:var(--mg-muted);font-weight:600}
+    .cert .seal{position:absolute;top:24px;right:28px;width:54px;height:54px;border-radius:50%;background:var(--mg-yellow);display:flex;align-items:center;justify-content:center;font-size:26px}
+    .hidden{display:none}
+    @media print{ .noprint{display:none!important} body{background:#fff} .cert{border-color:#00AEEF} }
+  </style>
+</head>
+<body>
+
+  <div class="top noprint">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">🥤</div>
+      <div><h1>Mr. Golisoda Training</h1><p>Assessments</p></div>
+    </div>
+    <button class="link" onclick="goPortal()">← Back to portal</button>
+  </div>
+
+  <!-- LIST VIEW -->
+  <div class="wrap" id="listView">
+    <h2 style="font-size:19px;margin:4px 0 14px">Your assessments</h2>
+    <div id="assessList"><div class="empty">Loading…</div></div>
+  </div>
+
+  <!-- QUIZ VIEW -->
+  <div id="quizView" class="hidden">
+    <div class="qbar noprint">
+      <div>
+        <div style="font-weight:700" id="quizTitle">—</div>
+        <div class="progress" style="width:160px"><div id="progBar"></div></div>
+      </div>
+      <div class="timer" id="timer">—</div>
+    </div>
+    <div class="wrap">
+      <div id="quizBody"></div>
+      <div style="text-align:right;margin-top:10px">
+        <button class="btn primary" id="submitBtn" onclick="submitQuiz()">Submit assessment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESULT VIEW -->
+  <div id="resultView" class="hidden">
+    <div class="wrap">
+      <div class="card">
+        <div class="result">
+          <div class="meta" id="resTitle">—</div>
+          <div class="big" id="resPct">—</div>
+          <div id="resMsg" style="font-size:16px;font-weight:600"></div>
+          <div class="meta" id="resDetail" style="margin-top:8px"></div>
+          <div style="margin-top:20px" class="noprint">
+            <button class="btn" onclick="backToList()">Back to assessments</button>
+            <button class="btn primary hidden" id="viewCertBtn" onclick="showCert()">View certificate</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CERTIFICATE VIEW -->
+  <div id="certView" class="hidden">
+    <div class="wrap">
+      <div class="cert" id="certCard">
+        <div class="seal" aria-hidden="true">🏅</div>
+        <div class="ribbon">Certificate of Completion</div>
+        <h2>Mr. Golisoda Training</h2>
+        <div class="sub">South Asian Food &amp; Beverages LLP</div>
+        <div class="awarded">This is proudly awarded to</div>
+        <div class="who" id="certName">—</div>
+        <div class="for">for successfully completing</div>
+        <div class="score-line"><b id="certAssessment">—</b><br>with a score of <b id="certScore">—</b> &nbsp;·&nbsp; <span id="certDate">—</span></div>
+        <div class="sigs">
+          <div class="sig">
+            <div class="line"></div>
+            <div class="role">CVO</div>
+          </div>
+          <div class="sig">
+            <div class="line"></div>
+            <div class="role">L&amp;D Manager</div>
+          </div>
+        </div>
+      </div>
+      <div style="text-align:center;margin-top:16px" class="noprint">
+        <button class="btn" onclick="backToList()">Back to assessments</button>
+        <button class="btn primary" onclick="window.print()">🖨 Print / Save PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/assessment.js') }}"></script>
+</body>
+</html>

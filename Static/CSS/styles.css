@@ -1,0 +1,107 @@
+/* ============================================================
+   Mr. Golisoda Training Portal — Shared Stylesheet
+   Used by login.html, portal.html and admin.html
+   ============================================================ */
+
+:root{
+  --navy:#0D1B2A; --blue:#0099E6; --blue2:#00AEEF; --yellow:#FFD600;
+  --orange:#FF6B00; --green:#1B8A3C; --ink:#0D1B2A; --muted:#5b6b7d;
+  --line:#e6ebf1; --bg:#f4f7fb; --card:#fff; --lock:#9aa7b5;
+  --bad:#d93025; --shadow:0 10px 30px rgba(13,27,42,.08);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Inter',sans-serif;color:var(--ink);background:var(--bg)}
+h1,h2,h3{font-family:'Space Grotesk',sans-serif;letter-spacing:-.01em}
+button{font-family:inherit;cursor:pointer;border:none}
+a{color:var(--blue)}
+.wrap{max-width:1000px;margin:0 auto;padding:0 18px}
+.hide{display:none!important}
+
+/* ---------- Login / Signup card ---------- */
+.center{min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(1200px 500px at 50% -10%,#11314d,var(--navy) 60%);padding:20px}
+.card{background:#fff;border-radius:18px;box-shadow:var(--shadow);width:100%;max-width:430px;padding:30px 28px}
+.dot{width:13px;height:13px;border-radius:50%;background:var(--yellow);
+  box-shadow:0 0 0 4px rgba(255,214,0,.25);margin-bottom:12px}
+.card h1{font-size:22px;margin:6px 0 2px}
+.sub{color:var(--muted);margin:0 0 18px;font-size:14px}
+.seg{display:flex;background:#eef2f7;border-radius:10px;padding:4px;margin-bottom:18px}
+.seg button{flex:1;padding:9px;background:transparent;border-radius:7px;font-weight:600;
+  font-size:14px;color:var(--muted)}
+.seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.1)}
+label{display:block;font-size:13px;font-weight:600;margin:13px 0 6px}
+input,select{width:100%;padding:12px 13px;border:1.5px solid var(--line);border-radius:10px;
+  font-size:15px;font-family:inherit;background:#fff}
+input:focus,select:focus{outline:none;border-color:var(--blue)}
+.cta{width:100%;margin-top:20px;background:var(--orange);color:#fff;font-weight:700;
+  font-size:16px;padding:13px;border-radius:11px}
+.cta:hover{filter:brightness(1.05)}
+.cta:disabled{opacity:.6;cursor:wait}
+.msg{font-size:13.5px;margin-top:12px;min-height:18px;line-height:1.5}
+.msg.err{color:var(--bad)} .msg.ok{color:var(--green)}
+.foot{text-align:center;font-size:12px;color:var(--muted);margin-top:16px}
+
+/* ---------- Top bar ---------- */
+.topbar{background:var(--navy);color:#fff;padding:13px 0;position:sticky;top:0;z-index:10}
+.topbar .wrap{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:9px;font-family:'Space Grotesk';font-weight:700;font-size:16px}
+.brand .dot{margin:0}
+.who{font-size:13px;opacity:.85}
+.signout{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.25);
+  padding:6px 11px;border-radius:8px;font-size:13px}
+
+/* ---------- Portal home ---------- */
+.page{padding:24px 0 60px}
+.hero{background:linear-gradient(120deg,var(--navy),#13344f);color:#fff;border-radius:16px;
+  padding:22px 24px;margin-bottom:22px}
+.hero h2{font-size:22px;margin:0 0 5px}
+.hero p{opacity:.85;margin:0;font-size:14px;line-height:1.5}
+.sectiontitle{font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.05em;margin:24px 0 2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-top:14px}
+.mod{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:18px;
+  position:relative;transition:.15s}
+.mod.open{cursor:pointer} .mod.open:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+.mod .num{font-family:'Space Grotesk';font-weight:700;font-size:12px;color:var(--blue);letter-spacing:.04em}
+.mod h3{font-size:17px;margin:8px 0 6px;line-height:1.25}
+.mod p{color:var(--muted);font-size:13px;margin:0 0 14px;line-height:1.5}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;
+  padding:5px 10px;border-radius:99px}
+.b-open{background:rgba(0,153,230,.1);color:var(--blue)}
+.b-done{background:rgba(27,138,60,.12);color:var(--green)}
+.b-lock{background:#eef1f5;color:var(--lock)}
+.mod.locked{opacity:.72} .mod.locked h3,.mod.locked .num{color:var(--lock)}
+.lockicon{position:absolute;top:16px;right:16px;font-size:16px;color:var(--lock)}
+
+/* ---------- Slides / quiz ---------- */
+.crumb{font-size:13px;color:var(--muted);margin-bottom:14px;cursor:pointer}
+.slide{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:26px;
+  box-shadow:var(--shadow);min-height:240px}
+.slide .eye{font-family:'Space Grotesk';font-weight:600;font-size:12px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--orange)}
+.slide h2{font-size:24px;margin:8px 0 14px}
+.slide p{font-size:15px;line-height:1.7;color:#26384a}
+.slide li{padding:10px 14px;background:#f6f9fc;border-left:3px solid var(--blue);border-radius:8px;
+  margin-bottom:9px;font-size:14.5px;list-style:none}
+.slide ul{padding-left:0;margin:14px 0}
+.qrow{display:flex;justify-content:space-between;margin-top:20px;gap:10px}
+.btn{padding:11px 18px;border-radius:10px;font-weight:700;font-size:14px}
+.btn-pri{background:var(--orange);color:#fff}
+.btn-sec{background:#eef2f7;color:var(--ink)}
+.q{background:var(--card);border:1.5px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
+.q h4{margin:0 0 12px;font-size:16px}
+.opt{display:block;padding:11px 13px;border:1.5px solid var(--line);border-radius:10px;
+  margin-bottom:8px;cursor:pointer;font-size:14.5px}
+.opt:hover{border-color:var(--blue)}
+.opt.sel{border-color:var(--blue);background:rgba(0,153,230,.06)}
+.result{text-align:center;padding:30px}
+.result .big{font-size:40px;font-family:'Space Grotesk';font-weight:700}
+.pass{color:var(--green)} .fail{color:var(--bad)}
+
+/* ---------- Admin ---------- */
+.tbl{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;
+  box-shadow:var(--shadow);margin-top:14px}
+.tbl th,.tbl td{text-align:left;padding:11px 14px;font-size:14px;border-bottom:1px solid var(--line)}
+.tbl th{background:#f6f9fc;font-weight:700;color:var(--muted);font-size:12.5px;text-transform:uppercase}
+.mini{padding:6px 12px;border-radius:8px;font-size:13px;font-weight:600}
+.mini-ok{background:var(--green);color:#fff} .mini-no{background:#eef2f7;color:var(--bad)}
