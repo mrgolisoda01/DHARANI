@@ -211,8 +211,8 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
       <button class="btn primary" onclick="openModuleForm('induction')">＋ Add induction module</button>
     </div>
     <div class="note" style="margin-bottom:14px">
-      Upload your module file to <b>Google Drive</b>, set sharing to "Anyone with the link", copy the link, and paste it below.
-      Supported: PDF and HTML view best on screen; PPT will download. Set a minimum viewing time for each module.
+      Upload the module file directly (PDF, PPT, Word, image), <b>or</b> paste a Google Drive link.
+      Set a minimum viewing time for each module.
     </div>
     <div id="indList"><div class="empty">Loading…</div></div>
   </div>
@@ -246,10 +246,20 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
       <input type="hidden" id="mKind" value="induction" />
       <div class="fld"><label>Module title</label><input id="mTitle" placeholder="e.g. Company Introduction" /></div>
       <div class="fld"><label>Short description (optional)</label><input id="mDesc" /></div>
+
+      <!-- Direct file upload -->
+      <div style="background:#f4fbff;border:1px solid #cde9f7;border-radius:10px;padding:12px;margin-bottom:12px">
+        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:6px;color:var(--mg-ink)">📤 Upload a file (PDF, PPT, Word, image)</label>
+        <input type="file" id="mFile" accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.txt" style="font-size:13px;border:none;padding:0" />
+        <button class="btn primary" type="button" onclick="uploadModuleFile()" style="margin-top:8px;padding:6px 14px">Upload</button>
+        <div id="mUploadStatus" style="font-size:12px;margin-top:8px;color:var(--mg-muted)"></div>
+      </div>
+      <div style="text-align:center;color:var(--mg-muted);font-size:12px;margin:2px 0 10px">— OR paste a link —</div>
+
       <div class="fld"><label>Google Drive link (PDF / HTML / PPT)</label><input id="mLink" placeholder="https://drive.google.com/file/d/.../view" /></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div class="fld"><label>File type</label>
-          <select id="mType"><option value="pdf">PDF</option><option value="html">HTML</option><option value="ppt">PPT</option></select>
+          <select id="mType"><option value="pdf">PDF</option><option value="html">HTML</option><option value="ppt">PPT</option><option value="docx">Word</option><option value="image">Image</option></select>
         </div>
         <div class="fld"><label>Minimum viewing time (minutes)</label><input id="mMins" type="number" value="5" min="0" /></div>
       </div>
@@ -487,6 +497,43 @@ Priya S,MG087,9876500000,State Head,"></textarea>
   <script src="{{ url_for('static', filename='js/assess-admin.js') }}"></script>
   <script src="{{ url_for('static', filename='js/content-admin.js') }}"></script>
   <script>
+    // ---- Direct file upload to Supabase Storage (documents) ----
+    // Uploads the chosen file, then fills the link field with the public URL
+    // so the normal "Save module" flow stores it like a pasted link.
+    async function uploadModuleFile(){
+      var inp = document.getElementById("mFile");
+      var status = document.getElementById("mUploadStatus");
+      if(!inp || !inp.files || !inp.files.length){
+        status.textContent = "Please choose a file first.";
+        status.style.color = "var(--mg-red)";
+        return;
+      }
+      var file = inp.files[0];
+      status.textContent = "Uploading " + file.name + " … please wait.";
+      status.style.color = "var(--mg-muted)";
+      var fd = new FormData();
+      fd.append("file", file);
+      try{
+        var r = await fetch("/api/admin/upload-file", { method:"POST", body: fd });
+        var d = await r.json();
+        if(d.ok){
+          document.getElementById("mLink").value = d.url;   // put public URL into link field
+          if(d.file_type){
+            var sel = document.getElementById("mType");
+            for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value === d.file_type){ sel.value = d.file_type; break; } }
+          }
+          status.innerHTML = "✅ Uploaded: <b>" + file.name + "</b> — link filled in below. Now click <b>Save module</b>.";
+          status.style.color = "var(--mg-green)";
+        } else {
+          status.textContent = "❌ " + (d.msg || "Upload failed.");
+          status.style.color = "var(--mg-red)";
+        }
+      }catch(e){
+        status.textContent = "❌ Upload error. Check your connection and try again.";
+        status.style.color = "var(--mg-red)";
+      }
+    }
+
     const TABS = {
       emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', set: 'tabSet'
     };
