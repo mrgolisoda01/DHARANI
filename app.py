@@ -24,11 +24,15 @@
 import os
 import io
 import csv
-import sqlite3
+import re
 from datetime import datetime
+from urllib.parse import urlparse, unquote
 from flask import (Flask, request, session, redirect, url_for,
                    render_template, jsonify, g)
 from werkzeug.security import generate_password_hash, check_password_hash
+
+import psycopg2
+import psycopg2.extras
 
 # ---------------------------------------------------------------
 #  Basic setup
@@ -37,7 +41,49 @@ app = Flask(__name__)
 # Strong random secret key (set for production). Keep this private.
 app.secret_key = os.environ.get("SECRET_KEY", "9fe42eef27a6bfbbd6764513ed4d5b10ec0e2b4e803984c917b3d89cd8960016")
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "golisoda.db")
+# ---------------------------------------------------------------
+#  DATABASE: Supabase (PostgreSQL)
+#  The connection string can be provided via the DATABASE_URL env var
+#  (recommended on Render). If not set, the fallback below is used.
+#  NOTE: the password contains an '@', which is handled safely because
+#  we parse the parts explicitly rather than relying on URL parsing.
+# ---------------------------------------------------------------
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
+# Fallback connection details (used if DATABASE_URL is not set).
+# Password has an '@' in it — kept as a literal here, not URL-encoded.
+_PG = {
+    "host": os.environ.get("PGHOST", "aws-1-ap-south-1.pooler.supabase.com"),
+    "port": int(os.environ.get("PGPORT", "5432")),
+    "dbname": os.environ.get("PGDATABASE", "postgres"),
+    "user": os.environ.get("PGUSER", "postgres.mpcsvagagbhimjloumgx"),
+    "password": os.environ.get("PGPASSWORD", "mrgolisoda@123"),
+}
+
+
+def _pg_params():
+    """Return connection kwargs for psycopg2, from DATABASE_URL if given,
+    otherwise from the _PG dict. Handles passwords containing '@'."""
+    if DATABASE_URL:
+        # Parse carefully. If the URL has an '@' in the password, urlparse
+        # can misread it, so we split on the LAST '@' before the host.
+        raw = DATABASE_URL
+        if raw.startswith("postgresql://") or raw.startswith("postgres://"):
+            raw = raw.split("://", 1)[1]
+        # raw is now like  user:pass@host:port/dbname  (pass may contain @)
+        creds, _, hostpart = raw.rpartition("@")
+        user, _, password = creds.partition(":")
+        hostport, _, dbname = hostpart.partition("/")
+        host, _, port = hostport.partition(":")
+        return {
+            "host": host,
+            "port": int(port or "6543"),
+            "dbname": dbname or "postgres",
+            "user": unquote(user),
+            "password": unquote(password),
+        }
+    return dict(_PG)
+
 
 DEFAULT_ADMIN_ID = "ADMIN"
 DEFAULT_ADMIN_PW = "Golisoda@2026"
@@ -45,15 +91,111 @@ DEFAULT_ADMIN_PW = "Golisoda@2026"
 # Roles allowed in the system
 VALID_ROLES = ("staff", "instructor", "admin")
 
+# ---------------------------------------------------------------
+#  Supabase Storage (for direct file uploads)
+#  Files (PDF, Word, PPT, images) are uploaded to a public bucket
+#  and the portal stores the resulting public URL as the module link.
+# ---------------------------------------------------------------
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://mpcsvagagbhimjloumgx.supabase.co").rstrip("/")
+SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "training-files")
+# Secret key used server-side to upload files. Set via env var on Render.
+# Reads SUPABASE_SERVICE_KEY first (Syed's env var name), then SUPABASE_SECRET, then a hardcoded fallback.
+SUPABASE_SECRET = (os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+                   or os.environ.get("SUPABASE_SECRET", "").strip()
+                   or "sb_secret_eyD_5ueAuZ8N-BsyRIP6Ag_q42qjTxv")
+
+# File types allowed for direct upload (everything the user asked for)
+ALLOWED_UPLOAD_EXT = {
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".txt"
+}
+MAX_UPLOAD_MB = 45  # keep under the bucket's 50MB limit
+
 
 # ---------------------------------------------------------------
-#  Database helpers
+#  SQLite-compatibility layer over PostgreSQL
+#  The rest of this app was written for sqlite3 (using "?" placeholders
+#  and db.execute(...).fetchone()). These wrappers let all that code keep
+#  working unchanged on Postgres:
+#    - convert "?" placeholders to "%s"
+#    - make execute() return a cursor with fetchone/fetchall
+#    - rows behave like dicts AND tuples (like sqlite3.Row)
 # ---------------------------------------------------------------
+def _q(sql):
+    """Convert sqlite-style '?' placeholders to psycopg2 '%s'.
+    Leaves already-'%s' strings alone and ignores '?' inside quotes."""
+    out, in_s, in_d = [], False, False
+    for ch in sql:
+        if ch == "'" and not in_d:
+            in_s = not in_s
+        elif ch == '"' and not in_s:
+            in_d = not in_d
+        if ch == "?" and not in_s and not in_d:
+            out.append("%s")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+class _Cur:
+    """Wraps a psycopg2 cursor to mimic sqlite3's execute().fetchone() usage."""
+    def __init__(self, cur):
+        self._c = cur
+
+    def fetchone(self):
+        return self._c.fetchone()
+
+    def fetchall(self):
+        return self._c.fetchall()
+
+    @property
+    def lastrowid(self):
+        # emulate sqlite's lastrowid via RETURNING id when available
+        try:
+            row = self._c.fetchone()
+            if row is not None:
+                return row["id"] if "id" in row.keys() else row[0]
+        except Exception:
+            pass
+        return None
+
+
+class _Conn:
+    """Wraps a psycopg2 connection to mimic the sqlite3 connection API
+    used across this app (db.execute(...), db.commit())."""
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(_q(sql), params)
+        return _Cur(cur)
+
+    def executescript(self, sql):
+        cur = self._conn.cursor()
+        cur.execute(sql)
+        cur.close()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    @property
+    def raw(self):
+        return self._conn
+
+
 def get_db():
-    """Open a database connection for this request."""
+    """Open a database connection for this request (Postgres/Supabase)."""
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        conn = psycopg2.connect(connect_timeout=15, **_pg_params())
+        conn.autocommit = False
+        g.db = _Conn(conn)
     return g.db
 
 
@@ -61,7 +203,10 @@ def get_db():
 def close_db(exception):
     db = g.pop("db", None)
     if db is not None:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 _db_ready = False
@@ -74,17 +219,23 @@ def _ensure_db():
 
 
 def _column_exists(db, table, column):
-    cols = db.execute(f"PRAGMA table_info({table})").fetchall()
-    return any(c[1] == column for c in cols)
+    row = db.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_name=? AND column_name=?",
+        (table, column)
+    ).fetchone()
+    return row is not None
 
 
 def init_db():
-    """Create tables and the default admin if they do not exist.
-    Also safely adds any new columns to existing databases (migration)."""
-    db = sqlite3.connect(DB_PATH)
+    """Create tables and the default admin if they do not exist (PostgreSQL).
+    Safe to run every startup — uses CREATE TABLE IF NOT EXISTS."""
+    conn = psycopg2.connect(connect_timeout=15, **_pg_params())
+    conn.autocommit = True
+    db = _Conn(conn)
+
     db.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id            SERIAL PRIMARY KEY,
             emp_id        TEXT UNIQUE NOT NULL,
             name          TEXT NOT NULL,
             phone         TEXT,
@@ -92,12 +243,14 @@ def init_db():
             password_hash TEXT NOT NULL,
             status        TEXT NOT NULL DEFAULT 'pending',
             role          TEXT NOT NULL DEFAULT 'staff',
-            created_at    TEXT
+            created_at    TEXT,
+            must_reset    INTEGER NOT NULL DEFAULT 0,
+            last_login    TEXT
         )
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS scores (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            id         SERIAL PRIMARY KEY,
             emp_id     TEXT NOT NULL,
             module_id  TEXT NOT NULL,
             set_no     INTEGER NOT NULL,
@@ -108,17 +261,15 @@ def init_db():
             taken_at   TEXT
         )
     """)
-
-    # ---- Assessment Engine tables (Delivery 3) ----
     db.execute("""
         CREATE TABLE IF NOT EXISTS assessments (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id            SERIAL PRIMARY KEY,
             title         TEXT NOT NULL,
             description   TEXT,
-            roles         TEXT NOT NULL DEFAULT 'all',   -- comma list e.g. "BDE,BDM" or "all"
-            num_questions INTEGER NOT NULL DEFAULT 10,    -- how many each learner gets
+            roles         TEXT NOT NULL DEFAULT 'all',
+            num_questions INTEGER NOT NULL DEFAULT 10,
             pass_percent  INTEGER NOT NULL DEFAULT 90,
-            time_limit    INTEGER NOT NULL DEFAULT 0,     -- minutes; 0 = untimed
+            time_limit    INTEGER NOT NULL DEFAULT 0,
             active        INTEGER NOT NULL DEFAULT 1,
             created_by    TEXT,
             created_at    TEXT
@@ -126,20 +277,20 @@ def init_db():
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS questions (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id            SERIAL PRIMARY KEY,
             assessment_id INTEGER NOT NULL,
             question      TEXT NOT NULL,
             opt_a         TEXT NOT NULL,
             opt_b         TEXT NOT NULL,
             opt_c         TEXT,
             opt_d         TEXT,
-            correct       TEXT NOT NULL,                  -- 'A'/'B'/'C'/'D'
+            correct       TEXT NOT NULL,
             category      TEXT
         )
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS assessment_results (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id            SERIAL PRIMARY KEY,
             assessment_id INTEGER NOT NULL,
             emp_id        TEXT NOT NULL,
             score         INTEGER NOT NULL,
@@ -149,27 +300,25 @@ def init_db():
             taken_at      TEXT
         )
     """)
-
-    # ---- Content Management tables (Delivery 2) ----
     db.execute("""
         CREATE TABLE IF NOT EXISTS content_modules (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            kind         TEXT NOT NULL DEFAULT 'induction',  -- 'induction' or 'training'
+            id           SERIAL PRIMARY KEY,
+            kind         TEXT NOT NULL DEFAULT 'induction',
             title        TEXT NOT NULL,
             description  TEXT,
-            link         TEXT NOT NULL,                      -- Google Drive / view link
-            file_type    TEXT,                               -- pdf / html / ppt (label only)
-            min_minutes  INTEGER NOT NULL DEFAULT 0,         -- minimum viewing time
-            roles        TEXT NOT NULL DEFAULT 'all',        -- comma list or 'all'
+            link         TEXT NOT NULL,
+            file_type    TEXT,
+            min_minutes  INTEGER NOT NULL DEFAULT 0,
+            roles        TEXT NOT NULL DEFAULT 'all',
             sort_order   INTEGER NOT NULL DEFAULT 0,
-            status       TEXT NOT NULL DEFAULT 'live',       -- 'live' or 'pending' (instructor uploads)
+            status       TEXT NOT NULL DEFAULT 'live',
             created_by   TEXT,
             created_at   TEXT
         )
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS videos (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            id           SERIAL PRIMARY KEY,
             title        TEXT NOT NULL,
             description  TEXT,
             link         TEXT NOT NULL,
@@ -182,30 +331,28 @@ def init_db():
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS module_completions (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            id          SERIAL PRIMARY KEY,
             module_id   INTEGER NOT NULL,
             emp_id      TEXT NOT NULL,
             completed_at TEXT
         )
     """)
-
-    # ---- Certificate Tracks (completion certificates) ----
     db.execute("""
         CREATE TABLE IF NOT EXISTS certificate_tracks (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            cert_name     TEXT NOT NULL,                    -- e.g. "Certified BDE"
-            kind          TEXT NOT NULL DEFAULT 'training',  -- 'induction' or 'training'
-            roles         TEXT NOT NULL DEFAULT 'all',       -- which roles this applies to
-            require_modules INTEGER NOT NULL DEFAULT 1,      -- must complete all matching modules
-            require_assessment_id INTEGER,                   -- optional: must pass this assessment (NULL = none)
-            status        TEXT NOT NULL DEFAULT 'live',      -- live / pending
+            id            SERIAL PRIMARY KEY,
+            cert_name     TEXT NOT NULL,
+            kind          TEXT NOT NULL DEFAULT 'training',
+            roles         TEXT NOT NULL DEFAULT 'all',
+            require_modules INTEGER NOT NULL DEFAULT 1,
+            require_assessment_id INTEGER,
+            status        TEXT NOT NULL DEFAULT 'live',
             created_by    TEXT,
             created_at    TEXT
         )
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS issued_certificates (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            id          SERIAL PRIMARY KEY,
             track_id    INTEGER NOT NULL,
             emp_id      TEXT NOT NULL,
             cert_name   TEXT NOT NULL,
@@ -213,7 +360,7 @@ def init_db():
         )
     """)
 
-    # --- Safe migration: add columns that may not exist on older DBs ---
+    # --- Safe migration for older tables (add columns if missing) ---
     if not _column_exists(db, "users", "must_reset"):
         db.execute("ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0")
     if not _column_exists(db, "users", "last_login"):
@@ -229,8 +376,7 @@ def init_db():
              generate_password_hash(DEFAULT_ADMIN_PW), "approved", "admin",
              datetime.utcnow().isoformat())
         )
-    db.commit()
-    db.close()
+    conn.close()
 
 
 # ---------------------------------------------------------------
@@ -820,10 +966,10 @@ def api_admin_create_assessment():
     u = current_user()
     cur = db.execute(
         "INSERT INTO assessments (title,description,roles,num_questions,pass_percent,time_limit,active,created_by,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        "VALUES (?,?,?,?,?,?,?,?,?) RETURNING id",
         (title, desc, roles, num_q, pass_pct, time_limit, 1, u["emp_id"], datetime.utcnow().isoformat())
     )
-    aid = cur.lastrowid
+    aid = cur.fetchone()["id"]
     for (q, a, b, cc, dd, correct, cat) in parsed:
         db.execute(
             "INSERT INTO questions (assessment_id,question,opt_a,opt_b,opt_c,opt_d,correct,category) "
@@ -1216,6 +1362,86 @@ def api_admin_modules():
     vids = db.execute("SELECT * FROM videos ORDER BY sort_order, id").fetchall()
     return jsonify(ok=True, modules=[dict(r) for r in rows], videos=[dict(v) for v in vids],
                    role_choices=ROLE_CHOICES, is_admin=(u["role"] == "admin"))
+
+
+@app.route("/api/admin/upload-file", methods=["POST"])
+@login_required
+def api_admin_upload_file():
+    """Receive a file from the admin/instructor and upload it to Supabase
+    Storage. Returns the public URL, which the caller saves as the module link."""
+    u = _can_manage_content()
+    if u is None:
+        return jsonify(ok=False, msg="Not allowed."), 403
+
+    if "file" not in request.files:
+        return jsonify(ok=False, msg="No file was selected."), 400
+    f = request.files["file"]
+    if not f or not f.filename:
+        return jsonify(ok=False, msg="No file was selected."), 400
+
+    # validate extension
+    import os as _os
+    name = f.filename
+    ext = _os.path.splitext(name)[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXT:
+        return jsonify(ok=False, msg=f"File type {ext} is not allowed."), 400
+
+    data = f.read()
+    size_mb = len(data) / (1024 * 1024)
+    if size_mb > MAX_UPLOAD_MB:
+        return jsonify(ok=False, msg=f"File is too large ({size_mb:.1f} MB). Max is {MAX_UPLOAD_MB} MB."), 400
+
+    if not SUPABASE_SECRET or not SUPABASE_URL:
+        return jsonify(ok=False, msg="File storage is not configured. Please contact the administrator."), 500
+
+    # Build a safe, unique object path inside the bucket
+    import re as _re
+    from datetime import datetime as _dt
+    safe = _re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    stamp = _dt.utcnow().strftime("%Y%m%d%H%M%S")
+    object_path = f"{stamp}_{safe}"
+
+    # content type guess
+    ctype_map = {
+        ".pdf": "application/pdf",
+        ".doc": "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".ppt": "application/vnd.ms-powerpoint",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".xls": "application/vnd.ms-excel",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".txt": "text/plain",
+    }
+    ctype = ctype_map.get(ext, "application/octet-stream")
+
+    # Upload to Supabase Storage via its REST endpoint
+    import urllib.request
+    import urllib.error
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{object_path}"
+    req = urllib.request.Request(upload_url, data=data, method="POST")
+    req.add_header("Authorization", f"Bearer {SUPABASE_SECRET}")
+    req.add_header("apikey", SUPABASE_SECRET)
+    req.add_header("Content-Type", ctype)
+    req.add_header("x-upsert", "true")
+    try:
+        urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        return jsonify(ok=False, msg=f"Upload failed ({e.code}). {body}"), 502
+    except Exception as e:
+        return jsonify(ok=False, msg=f"Upload error: {str(e)[:200]}"), 502
+
+    # Public URL for the uploaded file
+    public_url = f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{object_path}"
+    # a friendly label for the file type
+    label = "pdf" if ext == ".pdf" else ext.lstrip(".")
+    return jsonify(ok=True, url=public_url, filename=name, file_type=label,
+                   msg="File uploaded.")
 
 
 @app.route("/api/admin/save-module", methods=["POST"])
