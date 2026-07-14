@@ -297,6 +297,22 @@ def init_db():
             total         INTEGER NOT NULL,
             percent       INTEGER NOT NULL,
             passed        INTEGER NOT NULL,
+            taken_at      TEXT,
+            time_taken    INTEGER DEFAULT 0
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS answer_details (
+            id            SERIAL PRIMARY KEY,
+            result_id     INTEGER NOT NULL,
+            assessment_id INTEGER NOT NULL,
+            emp_id        TEXT NOT NULL,
+            question_id   INTEGER,
+            question_text TEXT,
+            chosen        TEXT,
+            correct       TEXT,
+            is_correct    INTEGER NOT NULL DEFAULT 0,
+            category      TEXT,
             taken_at      TEXT
         )
     """)
@@ -365,6 +381,9 @@ def init_db():
         db.execute("ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0")
     if not _column_exists(db, "users", "last_login"):
         db.execute("ALTER TABLE users ADD COLUMN last_login TEXT")
+    # add time_taken to assessment_results if an older DB doesn't have it
+    if not _column_exists(db, "assessment_results", "time_taken"):
+        db.execute("ALTER TABLE assessment_results ADD COLUMN time_taken INTEGER DEFAULT 0")
 
     # Create default admin if not present
     cur = db.execute("SELECT 1 FROM users WHERE emp_id = ?", (DEFAULT_ADMIN_ID,))
@@ -1161,6 +1180,239 @@ def api_admin_assessment_results():
     return jsonify(ok=True, results=[dict(r) for r in rows])
 
 
+def _fmt_dt(iso):
+    """Human-friendly date+time from an ISO string."""
+    try:
+        dt = datetime.fromisoformat((iso or "").replace("Z", ""))
+        return dt.strftime("%d %b %Y, %I:%M %p")
+    except Exception:
+        return iso or ""
+
+
+def _fmt_mins(seconds):
+    try:
+        s = int(seconds or 0)
+    except (ValueError, TypeError):
+        s = 0
+    if s <= 0:
+        return ""
+    m, sec = divmod(s, 60)
+    return f"{m}m {sec}s" if m else f"{sec}s"
+
+
+@app.route("/api/admin/attempt-details")
+@admin_required
+def api_admin_attempt_details():
+    """Full question-by-question breakdown for ONE attempt (on-screen view)."""
+    result_id = request.args.get("result_id")
+    db = get_db()
+    r = db.execute(
+        "SELECT r.*, u.name, u.designation, a.title FROM assessment_results r "
+        "LEFT JOIN users u ON u.emp_id = r.emp_id "
+        "LEFT JOIN assessments a ON a.id = r.assessment_id "
+        "WHERE r.id=?", (result_id,)
+    ).fetchone()
+    if not r:
+        return jsonify(ok=False, msg="Attempt not found."), 404
+    details = db.execute(
+        "SELECT * FROM answer_details WHERE result_id=? ORDER BY id", (result_id,)
+    ).fetchall()
+    return jsonify(ok=True,
+                   header={
+                       "name": r["name"], "emp_id": r["emp_id"], "designation": r["designation"],
+                       "assessment": r["title"], "score": r["score"], "total": r["total"],
+                       "percent": r["percent"], "passed": bool(r["passed"]),
+                       "taken_at": _fmt_dt(r["taken_at"]), "time_taken": _fmt_mins(r["time_taken"])
+                   },
+                   details=[dict(d) for d in details])
+
+
+def _gather_report_rows(aid):
+    """Return (assessment, attempts, all_details) for building a report."""
+    db = get_db()
+    a = db.execute("SELECT * FROM assessments WHERE id=?", (aid,)).fetchone()
+    attempts = db.execute(
+        "SELECT r.*, u.name, u.designation FROM assessment_results r "
+        "LEFT JOIN users u ON u.emp_id = r.emp_id "
+        "WHERE r.assessment_id=? ORDER BY r.taken_at DESC", (aid,)
+    ).fetchall()
+    details = db.execute(
+        "SELECT d.*, u.name, u.designation FROM answer_details d "
+        "LEFT JOIN users u ON u.emp_id = d.emp_id "
+        "WHERE d.assessment_id=? ORDER BY d.result_id, d.id", (aid,)
+    ).fetchall()
+    return a, attempts, details
+
+
+@app.route("/api/admin/results-report.csv")
+@admin_required
+def api_admin_results_report_csv():
+    """Download the full detailed report as CSV (per-question rows)."""
+    aid = request.args.get("id")
+    a, attempts, details = _gather_report_rows(aid)
+    title = a["title"] if a else "assessment"
+
+    # map result_id -> attempt summary
+    amap = {r["id"]: r for r in attempts}
+
+    out = io.StringIO()
+    w = csv.writer(out)
+    # Header row with items 1-15
+    w.writerow([
+        "Name", "Emp ID", "Designation", "Assessment", "Date & Time", "Time Taken",
+        "Score", "Total", "Percent", "Result",
+        "Q#", "Question", "Their Answer", "Correct Answer", "Right/Wrong", "Category"
+    ])
+    # group details by attempt, number questions within each attempt
+    from itertools import groupby
+    for rid, group in groupby(details, key=lambda x: x["result_id"]):
+        att = amap.get(rid)
+        qn = 0
+        for drow in group:
+            qn += 1
+            if att:
+                nm, eid, desg = att["name"], att["emp_id"], att["designation"]
+                dt = _fmt_dt(att["taken_at"]); tt = _fmt_mins(att["time_taken"])
+                sc, tot, pct = att["score"], att["total"], att["percent"]
+                res = "PASS" if att["passed"] else "FAIL"
+            else:
+                nm = eid = desg = dt = tt = ""; sc = tot = pct = ""; res = ""
+            w.writerow([
+                nm, eid, desg, title, dt, tt, sc, tot, pct, res,
+                qn, drow["question_text"], drow["chosen"], drow["correct"],
+                "Right" if drow["is_correct"] else "Wrong", drow["category"]
+            ])
+
+    from flask import Response
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_")
+    return Response(
+        out.getvalue(), mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="report_{safe}.csv"'}
+    )
+
+
+@app.route("/api/admin/results-report.xlsx")
+@admin_required
+def api_admin_results_report_xlsx():
+    """Download the full detailed report as an Excel file with summary sheets."""
+    aid = request.args.get("id")
+    a, attempts, details = _gather_report_rows(aid)
+    title = a["title"] if a else "assessment"
+    amap = {r["id"]: r for r in attempts}
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except Exception:
+        return jsonify(ok=False, msg="Excel export not available on server."), 500
+
+    wb = Workbook()
+
+    # ---- Sheet 1: Detailed (per-question) ----
+    ws = wb.active
+    ws.title = "Detailed Results"
+    headers = ["Name", "Emp ID", "Designation", "Assessment", "Date & Time", "Time Taken",
+               "Score", "Total", "Percent", "Result",
+               "Q#", "Question", "Their Answer", "Correct Answer", "Right/Wrong", "Category"]
+    ws.append(headers)
+    hdr_fill = PatternFill("solid", fgColor="00AEEF")
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF"); c.fill = hdr_fill
+        c.alignment = Alignment(vertical="center")
+
+    from itertools import groupby
+    for rid, group in groupby(details, key=lambda x: x["result_id"]):
+        att = amap.get(rid)
+        qn = 0
+        for drow in group:
+            qn += 1
+            if att:
+                row = [att["name"], att["emp_id"], att["designation"], title,
+                       _fmt_dt(att["taken_at"]), _fmt_mins(att["time_taken"]),
+                       att["score"], att["total"], att["percent"],
+                       "PASS" if att["passed"] else "FAIL"]
+            else:
+                row = ["", "", "", title, "", "", "", "", "", ""]
+            row += [qn, drow["question_text"], drow["chosen"], drow["correct"],
+                    "Right" if drow["is_correct"] else "Wrong", drow["category"]]
+            ws.append(row)
+            # colour the Right/Wrong cell
+            rw_cell = ws.cell(row=ws.max_row, column=15)
+            if drow["is_correct"]:
+                rw_cell.fill = PatternFill("solid", fgColor="D6F3E4")
+            else:
+                rw_cell.fill = PatternFill("solid", fgColor="FBD9D9")
+
+    widths = [18, 10, 14, 22, 20, 11, 7, 7, 8, 8, 5, 55, 26, 26, 11, 14]
+    for i, wdt in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + i) if i <= 26 else "A"].width = wdt
+
+    # ---- Sheet 2: Attempts summary (one row per attempt) ----
+    ws2 = wb.create_sheet("Attempts Summary")
+    ws2.append(["Name", "Emp ID", "Designation", "Date & Time", "Time Taken",
+                "Score", "Total", "Percent", "Result"])
+    for c in ws2[1]:
+        c.font = Font(bold=True, color="FFFFFF"); c.fill = hdr_fill
+    for att in attempts:
+        ws2.append([att["name"], att["emp_id"], att["designation"],
+                    _fmt_dt(att["taken_at"]), _fmt_mins(att["time_taken"]),
+                    att["score"], att["total"], att["percent"],
+                    "PASS" if att["passed"] else "FAIL"])
+    for i, wdt in enumerate([18, 10, 14, 20, 11, 7, 7, 8, 8], start=1):
+        ws2.column_dimensions[chr(64 + i)].width = wdt
+
+    # ---- Sheet 3: Hard Questions (#16 — which questions most got wrong) ----
+    ws3 = wb.create_sheet("Hard Questions")
+    ws3.append(["Question", "Times Answered", "Times Wrong", "Wrong %"])
+    for c in ws3[1]:
+        c.font = Font(bold=True, color="FFFFFF"); c.fill = hdr_fill
+    qstats = {}
+    for d in details:
+        key = d["question_text"] or f"Q{d['question_id']}"
+        st = qstats.setdefault(key, {"n": 0, "wrong": 0})
+        st["n"] += 1
+        if not d["is_correct"]:
+            st["wrong"] += 1
+    hard = sorted(qstats.items(), key=lambda kv: (kv[1]["wrong"] / kv[1]["n"]) if kv[1]["n"] else 0, reverse=True)
+    for q, st in hard:
+        pct = round((st["wrong"] / st["n"]) * 100) if st["n"] else 0
+        ws3.append([q, st["n"], st["wrong"], f"{pct}%"])
+    for i, wdt in enumerate([60, 15, 12, 10], start=1):
+        ws3.column_dimensions[chr(64 + i)].width = wdt
+
+    # ---- Sheet 4: Weak Areas by person (#17 — weak categories per person) ----
+    ws4 = wb.create_sheet("Weak Areas")
+    ws4.append(["Name", "Emp ID", "Category", "Answered", "Wrong", "Wrong %"])
+    for c in ws4[1]:
+        c.font = Font(bold=True, color="FFFFFF"); c.fill = hdr_fill
+    cat_stats = {}
+    for d in details:
+        cat = d["category"] or "(uncategorised)"
+        key = (d["name"] or d["emp_id"], d["emp_id"], cat)
+        st = cat_stats.setdefault(key, {"n": 0, "wrong": 0})
+        st["n"] += 1
+        if not d["is_correct"]:
+            st["wrong"] += 1
+    for (nm, eid, cat), st in sorted(cat_stats.items()):
+        if st["wrong"] == 0:
+            continue  # only show categories where they missed something
+        pct = round((st["wrong"] / st["n"]) * 100) if st["n"] else 0
+        ws4.append([nm, eid, cat, st["n"], st["wrong"], f"{pct}%"])
+    for i, wdt in enumerate([18, 10, 20, 10, 8, 10], start=1):
+        ws4.column_dimensions[chr(64 + i)].width = wdt
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    from flask import Response
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_")
+    return Response(
+        bio.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="report_{safe}.xlsx"'}
+    )
+
+
 # ---- Learner side ----
 @app.route("/api/my-certificates")
 @login_required
@@ -1280,11 +1532,15 @@ def api_start_assessment():
 @app.route("/api/submit-assessment", methods=["POST"])
 @login_required
 def api_submit_assessment():
-    """Receive answers, score server-side, save result, return pass/fail + cert data."""
+    """Receive answers, score server-side, save result + per-question details, return pass/fail + cert data."""
     u = current_user()
     d = request.get_json(force=True)
     aid = d.get("assessment_id")
     answers = d.get("answers") or {}   # { qid: chosen_orig_letter }
+    try:
+        time_taken = int(d.get("time_taken") or 0)   # seconds spent, sent by browser
+    except (ValueError, TypeError):
+        time_taken = 0
 
     db = get_db()
     a = db.execute("SELECT * FROM assessments WHERE id=?", (aid,)).fetchone()
@@ -1294,23 +1550,52 @@ def api_submit_assessment():
     qids = [int(k) for k in answers.keys()] if answers else []
     score = 0
     total = len(answers)
+    qinfo = {}   # qid -> full question row (for saving details)
     if qids:
         placeholders = ",".join("?" * len(qids))
-        qrows = db.execute(f"SELECT id, correct FROM questions WHERE id IN ({placeholders})", qids).fetchall()
-        correct_map = {r["id"]: r["correct"] for r in qrows}
+        qrows = db.execute(
+            f"SELECT id, question, opt_a, opt_b, opt_c, opt_d, correct, category "
+            f"FROM questions WHERE id IN ({placeholders})", qids
+        ).fetchall()
+        qinfo = {r["id"]: r for r in qrows}
         for qid_str, chosen in answers.items():
             qid = int(qid_str)
-            if correct_map.get(qid) and str(chosen).upper() == correct_map[qid]:
+            r = qinfo.get(qid)
+            if r and str(chosen).upper() == r["correct"]:
                 score += 1
 
     percent = round((score / total) * 100) if total else 0
     passed = 1 if percent >= a["pass_percent"] else 0
+    now_iso = datetime.utcnow().isoformat()
 
-    db.execute(
-        "INSERT INTO assessment_results (assessment_id,emp_id,score,total,percent,passed,taken_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (aid, u["emp_id"], score, total, percent, passed, datetime.utcnow().isoformat())
+    # Save the summary result and get its id back (for linking the details)
+    cur = db.execute(
+        "INSERT INTO assessment_results (assessment_id,emp_id,score,total,percent,passed,taken_at,time_taken) "
+        "VALUES (?,?,?,?,?,?,?,?) RETURNING id",
+        (aid, u["emp_id"], score, total, percent, passed, now_iso, time_taken)
     )
+    result_id = cur.fetchone()["id"]
+
+    # Save each question's detail (what they chose, correct answer, right/wrong)
+    def _letter_text(row, letter):
+        m = {"A": row["opt_a"], "B": row["opt_b"], "C": row["opt_c"], "D": row["opt_d"]}
+        return m.get((letter or "").upper(), "")
+
+    for qid_str, chosen in answers.items():
+        qid = int(qid_str)
+        r = qinfo.get(qid)
+        if not r:
+            continue
+        chosen_u = str(chosen).upper()
+        is_correct = 1 if chosen_u == r["correct"] else 0
+        chosen_full = f"{chosen_u}. {_letter_text(r, chosen_u)}" if chosen_u else "(no answer)"
+        correct_full = f"{r['correct']}. {_letter_text(r, r['correct'])}"
+        db.execute(
+            "INSERT INTO answer_details (result_id,assessment_id,emp_id,question_id,question_text,chosen,correct,is_correct,category,taken_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (result_id, aid, u["emp_id"], qid, r["question"], chosen_full, correct_full,
+             is_correct, r["category"] or "", now_iso)
+        )
     db.commit()
 
     # passing an assessment may complete a certificate track
