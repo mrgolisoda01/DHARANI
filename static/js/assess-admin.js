@@ -124,7 +124,7 @@ async function viewResults(id, title){
   const d = await apiA("/api/admin/assessment-results?id=" + id);
   if(!d.ok) return;
   const rows = d.results || [];
-  window._lastResults = { title, rows };
+  window._lastResults = { id, title, rows };
   const box = $a("resultsBox");
   if(rows.length === 0){
     box.innerHTML = `<h3 style="margin-top:0">${escA(title)} — Results</h3><div class="empty">No attempts yet.</div>`;
@@ -132,20 +132,63 @@ async function viewResults(id, title){
     box.innerHTML =
       `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
          <h3 style="margin:0">${escA(title)} — Results (${rows.length})</h3>
-         <button class="btn primary" onclick="exportResults()">⬇ Export CSV</button>
+         <div style="display:flex;gap:6px;flex-wrap:wrap">
+           <button class="btn primary" onclick="downloadReport(${id},'xlsx')">⬇ Excel report</button>
+           <button class="btn" onclick="downloadReport(${id},'csv')">⬇ Detailed CSV</button>
+         </div>
        </div>
+       <div style="font-size:12px;color:var(--mg-muted);margin-top:4px">Click "View" on any row to see that person's question-by-question answers.</div>
        <div class="tbl-wrap" style="margin-top:10px">
-        <table><thead><tr><th>Name</th><th>Emp ID</th><th>Designation</th><th>Score</th><th>Result</th><th>Date</th></tr></thead>
+        <table><thead><tr><th>Name</th><th>Emp ID</th><th>Designation</th><th>Score</th><th>Time</th><th>Result</th><th>Date</th><th></th></tr></thead>
         <tbody>` +
         rows.map(x=>`<tr>
           <td>${escA(x.name||"")}</td><td>${escA(x.emp_id)}</td><td>${escA(x.designation||"")}</td>
           <td>${x.percent}% (${x.score}/${x.total})</td>
+          <td style="font-size:12px;color:var(--mg-muted)">${fmtMins(x.time_taken)}</td>
           <td>${x.passed?'<span class="pill p-approved">Pass</span>':'<span class="pill p-pending">Fail</span>'}</td>
           <td style="font-size:12px;color:var(--mg-muted)">${fmtA(x.taken_at)}</td>
+          <td><button class="btn" style="padding:3px 10px" onclick="viewAttempt(${x.id})">View</button></td>
         </tr>`).join("") +
         `</tbody></table></div>`;
   }
   $a("resultsOv").classList.add("show");
+}
+
+function fmtMins(sec){
+  sec = parseInt(sec||0,10); if(!sec) return "—";
+  const m = Math.floor(sec/60), s = sec%60;
+  return m ? (m+"m "+s+"s") : (s+"s");
+}
+
+// Show ONE person's full question-by-question breakdown
+async function viewAttempt(resultId){
+  const d = await apiA("/api/admin/attempt-details?result_id=" + resultId);
+  if(!d.ok){ toastA(d.msg||"Could not load."); return; }
+  const h = d.header, det = d.details||[];
+  const rowsHtml = det.map((x,i)=>`
+    <div style="border:1px solid var(--mg-line);border-left:4px solid ${x.is_correct?'var(--mg-green)':'var(--mg-red)'};border-radius:8px;padding:10px;margin-bottom:8px;background:${x.is_correct?'#f2fbf7':'#fdf4f4'}">
+      <div style="font-size:13px;font-weight:600">Q${i+1}. ${escA(x.question_text)}</div>
+      <div style="font-size:12px;margin-top:5px">Their answer: <b style="color:${x.is_correct?'var(--mg-green)':'var(--mg-red)'}">${escA(x.chosen)}</b> ${x.is_correct?'✓':'✗'}</div>
+      ${x.is_correct?'':`<div style="font-size:12px;margin-top:2px;color:var(--mg-green)">Correct answer: <b>${escA(x.correct)}</b></div>`}
+      ${x.category?`<div style="font-size:11px;color:var(--mg-muted);margin-top:3px">Category: ${escA(x.category)}</div>`:''}
+    </div>`).join("");
+  $a("attemptBody").innerHTML = `
+    <h3 style="margin:0 0 4px">${escA(h.name||h.emp_id)} — ${escA(h.assessment)}</h3>
+    <div style="font-size:13px;color:var(--mg-muted);margin-bottom:12px">
+      ${escA(h.emp_id)} · ${escA(h.designation||'')} · ${h.taken_at} · Time: ${h.time_taken||'—'}<br>
+      Score: <b>${h.score}/${h.total} (${h.percent}%)</b> ·
+      <span style="color:${h.passed?'var(--mg-green)':'var(--mg-red)'};font-weight:600">${h.passed?'PASS':'FAIL'}</span>
+    </div>
+    ${rowsHtml || '<div class="empty">No question details saved for this attempt.</div>'}
+    <div style="text-align:right;margin-top:12px"><button class="btn" onclick="closeAttempt()">Close</button></div>`;
+  $a("attemptOv").classList.add("show");
+}
+function closeAttempt(){ $a("attemptOv").classList.remove("show"); }
+
+// Download Excel or detailed CSV straight from the server
+function downloadReport(id, kind){
+  const url = "/api/admin/results-report." + (kind==="xlsx"?"xlsx":"csv") + "?id=" + id;
+  window.location.href = url;
 }
 
 function fmtA(iso){ if(!iso) return ""; try{ return new Date(iso+(iso.endsWith("Z")?"":"Z")).toLocaleString(); }catch(e){ return iso; } }
@@ -310,3 +353,12 @@ async function addQsCsv(){
 }
 
 function escAttr(s){ return String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+/* Ensure the attempt-details modal container exists (self-inject, no HTML edit needed) */
+(function ensureAttemptModal(){
+  if(document.getElementById("attemptOv")) return;
+  var ov = document.createElement("div");
+  ov.className = "ov"; ov.id = "attemptOv";
+  ov.innerHTML = '<div class="modal" style="max-width:640px;max-height:88vh;overflow-y:auto"><div id="attemptBody"></div></div>';
+  document.body.appendChild(ov);
+})();
