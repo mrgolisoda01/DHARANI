@@ -8,6 +8,7 @@ let ANSWERS = {};        // { qid: chosen_orig_letter }
 let TIMER_INT = null;
 let TIME_LEFT = 0;
 let LAST_CERT = null;
+let QUIZ_START = 0;      // timestamp when the quiz started (for time taken)
 
 const $q = (id) => document.getElementById(id);
 
@@ -56,6 +57,7 @@ async function startQuiz(id){
   CUR = d.assessment;
   QUESTIONS = d.questions;
   ANSWERS = {};
+  QUIZ_START = Date.now();   // record when they started (for time taken)
 
   $q("quizTitle").textContent = CUR.title;
   renderQuiz();
@@ -134,7 +136,8 @@ async function submitQuiz(){
     }
   }
   $q("submitBtn").disabled = true;
-  const d = await apiQ("/api/submit-assessment", { assessment_id: CUR.id, answers: ANSWERS });
+  const timeTaken = QUIZ_START ? Math.round((Date.now() - QUIZ_START) / 1000) : 0;  // seconds
+  const d = await apiQ("/api/submit-assessment", { assessment_id: CUR.id, answers: ANSWERS, time_taken: timeTaken });
   $q("submitBtn").disabled = false;
   if(!d.ok){ alert(d.msg || "Submit failed."); return; }
   showResult(d);
