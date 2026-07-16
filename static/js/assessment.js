@@ -135,12 +135,29 @@ async function submitQuiz(){
       return;
     }
   }
-  $q("submitBtn").disabled = true;
+  const btn = $q("submitBtn");
+  if(btn.dataset.busy === "1"){ return; }   // already submitting — ignore extra clicks
+  btn.dataset.busy = "1";
+  const oldText = btn.textContent;
+  btn.textContent = "Please wait…";
+  btn.disabled = true;
+  btn.style.opacity = "0.75";
+  btn.style.cursor = "wait";
+
   const timeTaken = QUIZ_START ? Math.round((Date.now() - QUIZ_START) / 1000) : 0;  // seconds
   const d = await apiQ("/api/submit-assessment", { assessment_id: CUR.id, answers: ANSWERS, time_taken: timeTaken });
-  $q("submitBtn").disabled = false;
-  if(!d.ok){ alert(d.msg || "Submit failed."); return; }
-  showResult(d);
+
+  if(!d.ok){
+    // re-enable only on failure so they can retry
+    btn.dataset.busy = "";
+    btn.textContent = oldText;
+    btn.disabled = false;
+    btn.style.opacity = "";
+    btn.style.cursor = "";
+    alert(d.msg || "Submit failed.");
+    return;
+  }
+  showResult(d);   // success — button stays disabled (moved to results screen)
 }
 
 function showResult(d){
