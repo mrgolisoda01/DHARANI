@@ -615,13 +615,13 @@ def api_admin_dashboard():
     pending = db.execute("SELECT COUNT(*) c FROM users WHERE status='pending'").fetchone()["c"]
     approved = db.execute("SELECT COUNT(*) c FROM users WHERE status='approved' AND role != 'admin'").fetchone()["c"]
 
-    # learners who have passed at least one module / total approved learners
+    # learners who have passed at least one assessment / total approved learners
     passed_any = db.execute(
-        "SELECT COUNT(DISTINCT emp_id) c FROM scores WHERE passed = 1"
+        "SELECT COUNT(DISTINCT emp_id) c FROM assessment_results WHERE passed = 1"
     ).fetchone()["c"]
     completion = round((passed_any / approved) * 100) if approved else 0
 
-    avg_row = db.execute("SELECT AVG(percent) a FROM scores").fetchone()
+    avg_row = db.execute("SELECT AVG(percent) a FROM assessment_results").fetchone()
     avg_score = round(avg_row["a"]) if avg_row["a"] is not None else 0
 
     # full employee list (include admins too, marked, so all accounts are visible)
