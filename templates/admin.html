@@ -665,5 +665,72 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       setTimeout(inject, 800);
     })();
   </script>
+  <script>
+    // ============================================================
+    //  Double-click protection for all action buttons
+    //  When an action button (Save/Submit/Create/Upload/Add/etc.) is
+    //  clicked, it disables + shows "Please wait…", blocks repeat
+    //  clicks (with a message), and restores after the action finishes.
+    // ============================================================
+    (function buttonGuard(){
+      // which buttons count as "action" buttons (by the function they call)
+      var ACTION_WORDS = /save|create|submit|upload|add|quickadd|change|export|reset|bulk|delete|remove|approve|issue|make/i;
+
+      function showBusyMsg(){
+        // reuse the portal's toast if available, else a tiny inline note
+        if(typeof toast === 'function'){ toast('⏳ Please wait — already processing…'); return; }
+        var t = document.getElementById('toast');
+        if(t){ t.textContent = '⏳ Please wait — already processing…'; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');}, 2000); }
+      }
+
+      document.addEventListener('click', function(e){
+        var btn = e.target.closest('button');
+        if(!btn) return;
+        var oc = btn.getAttribute('onclick') || '';
+        // only guard action buttons (skip Cancel, Close, tab buttons, X)
+        if(!ACTION_WORDS.test(oc)) return;
+        if(btn.classList.contains('modal-x')) return;
+
+        // if already busy -> block this extra click
+        if(btn.dataset.busy === '1'){
+          e.preventDefault(); e.stopImmediatePropagation();
+          showBusyMsg();
+          return;
+        }
+
+        // mark busy, show waiting text, disable
+        btn.dataset.busy = '1';
+        btn.dataset.oldtext = btn.innerHTML;
+        btn.dataset.oldwidth = btn.offsetWidth + 'px';
+        btn.style.minWidth = btn.dataset.oldwidth;   // keep size steady
+        btn.innerHTML = 'Please wait…';
+        btn.disabled = true;
+        btn.style.opacity = '0.75';
+        btn.style.cursor = 'wait';
+
+        // restore after the action has had time to run
+        // (the action's own fetch usually finishes in 1-4s; we restore at 6s
+        //  as a safety net, or sooner if the modal it lives in closes)
+        var restore = function(){
+          if(btn.dataset.busy !== '1') return;
+          btn.dataset.busy = '';
+          btn.innerHTML = btn.dataset.oldtext || btn.innerHTML;
+          btn.disabled = false;
+          btn.style.opacity = '';
+          btn.style.cursor = '';
+        };
+        // restore when the pop-up it's inside gets closed
+        var ov = btn.closest('.ov');
+        if(ov){
+          var obs = new MutationObserver(function(){
+            if(!ov.classList.contains('show')){ restore(); obs.disconnect(); }
+          });
+          obs.observe(ov, { attributes:true, attributeFilter:['class'] });
+        }
+        // safety net: always restore after 6 seconds
+        setTimeout(restore, 6000);
+      }, true);  // capture phase, so we can block before the onclick runs
+    })();
+  </script>
 </body>
 </html>
