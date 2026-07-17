@@ -48,7 +48,9 @@ function renderAssessments(){
     box.innerHTML = '<div class="empty">No assessments yet. Create one above.</div>';
     return;
   }
-  box.innerHTML = ASSESSMENTS.map(a=>{
+
+  // one assessment card (reused inside each role group)
+  function cardHtml(a){
     const timer = a.time_limit > 0 ? a.time_limit + " min" : "Untimed";
     const status = a.active
       ? '<span class="pill p-approved">Active</span>'
@@ -71,7 +73,48 @@ function renderAssessments(){
         </div>
       </div>
     </div>`;
-  }).join("");
+  }
+
+  // decide which group an assessment belongs to
+  function groupOf(a){
+    const r = (a.roles || "all").toLowerCase();
+    if(r === "all" || r.trim() === "" || r.split(",").length >= 5) return "Induction / All Roles";
+    // otherwise use the first role listed as its group
+    const first = r.split(",")[0].trim();
+    const nice = { "bde":"BDE","bdm":"BDM","state head":"State Head","rsm":"RSM","nsm":"NSM",
+                   "corporate":"Corporate","back office":"Back Office" };
+    return nice[first] || (first.charAt(0).toUpperCase()+first.slice(1));
+  }
+
+  // group them
+  const groups = {};
+  ASSESSMENTS.forEach(a=>{
+    const g = groupOf(a);
+    (groups[g] = groups[g] || []).push(a);
+  });
+
+  // fixed display order; any extra groups appended after
+  const order = ["Induction / All Roles","BDE","BDM","State Head","RSM","NSM","Corporate","Back Office"];
+  const seen = {};
+  let html = "";
+  function section(name){
+    if(!groups[name] || seen[name]) return;
+    seen[name] = true;
+    const icon = name.startsWith("Induction") ? "📋" : "📁";
+    html += `<div style="margin:6px 0 18px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 12px;background:#eaf7fe;border-radius:8px">
+        <span style="font-size:16px">${icon}</span>
+        <b style="font-size:14px;color:var(--mg-blue)">${name}</b>
+        <span style="font-size:12px;color:var(--mg-muted)">(${groups[name].length})</span>
+      </div>
+      ${groups[name].map(cardHtml).join("")}
+    </div>`;
+  }
+  order.forEach(section);
+  // any remaining groups not in the fixed order
+  Object.keys(groups).forEach(section);
+
+  box.innerHTML = html;
 }
 
 function escA(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
