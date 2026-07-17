@@ -903,6 +903,172 @@ def _assessment_allowed_for(assessment, u):
     return any(a and a in desg for a in allowed)
 
 
+def _roles_match_designation(roles_field, designation):
+    """True if a user's designation matches a roles field (comma list or 'all')."""
+    roles = (roles_field or "all").strip().lower()
+    if roles in ("", "all"):
+        return True
+    desg = (designation or "").strip().lower()
+    allowed = [r.strip().lower() for r in roles.split(",")]
+    return any(a and a in desg for a in allowed)
+
+
+@app.route("/api/admin/completion-report")
+@admin_required
+def api_admin_completion_report():
+    """For every assessment and training/induction module, show enrolled /
+    completed / pending counts + the list of people who haven't done it.
+    Enrolled = approved learners whose designation matches the item's roles.
+    Assessment completed = passed (score >= pass mark).
+    Module completed = has a module_completions record."""
+    db = get_db()
+
+    # all approved learners (staff role)
+    learners = db.execute(
+        "SELECT emp_id, name, designation FROM users "
+        "WHERE status='approved' AND role='staff'"
+    ).fetchall()
+
+    # ---- ASSESSMENTS ----
+    assessments = db.execute("SELECT * FROM assessments ORDER BY roles, title").fetchall()
+    # who passed which assessment
+    passed_rows = db.execute(
+        "SELECT DISTINCT assessment_id, emp_id FROM assessment_results WHERE passed=1"
+    ).fetchall()
+    passed_set = {(r["assessment_id"], r["emp_id"]) for r in passed_rows}
+
+    assess_report = []
+    for a in assessments:
+        enrolled = [u for u in learners if _roles_match_designation(a["roles"], u["designation"])]
+        done, pending = [], []
+        for u in enrolled:
+            if (a["id"], u["emp_id"]) in passed_set:
+                done.append(u)
+            else:
+                pending.append(u)
+        assess_report.append({
+            "id": a["id"], "title": a["title"], "roles": a["roles"],
+            "enrolled": len(enrolled), "completed": len(done), "pending": len(pending),
+            "pending_people": [{"name": p["name"], "emp_id": p["emp_id"],
+                                "designation": p["designation"]} for p in pending]
+        })
+
+    # ---- MODULES (induction + training) ----
+    modules = db.execute(
+        "SELECT * FROM content_modules WHERE status='live' ORDER BY kind, sort_order, id"
+    ).fetchall()
+    comp_rows = db.execute("SELECT DISTINCT module_id, emp_id FROM module_completions").fetchall()
+    comp_set = {(r["module_id"], r["emp_id"]) for r in comp_rows}
+
+    module_report = []
+    for m in modules:
+        enrolled = [u for u in learners if _roles_match_designation(m["roles"], u["designation"])]
+        done, pending = [], []
+        for u in enrolled:
+            if (m["id"], u["emp_id"]) in comp_set:
+                done.append(u)
+            else:
+                pending.append(u)
+        module_report.append({
+            "id": m["id"], "title": m["title"], "kind": m["kind"], "roles": m["roles"],
+            "enrolled": len(enrolled), "completed": len(done), "pending": len(pending),
+            "pending_people": [{"name": p["name"], "emp_id": p["emp_id"],
+                                "designation": p["designation"]} for p in pending]
+        })
+
+    return jsonify(ok=True, assessments=assess_report, modules=module_report,
+                   total_learners=len(learners))
+
+
+@app.route("/api/admin/completion-report.csv")
+@admin_required
+def api_admin_completion_report_csv():
+    """Download the completion report as CSV."""
+    # rebuild the same data
+    import json as _json
+    from flask import Response
+    with app.test_request_context():
+        pass
+    db = get_db()
+    learners = db.execute(
+        "SELECT emp_id, name, designation FROM users WHERE status='approved' AND role='staff'"
+    ).fetchall()
+    passed_set = {(r["assessment_id"], r["emp_id"]) for r in db.execute(
+        "SELECT DISTINCT assessment_id, emp_id FROM assessment_results WHERE passed=1").fetchall()}
+    comp_set = {(r["module_id"], r["emp_id"]) for r in db.execute(
+        "SELECT DISTINCT module_id, emp_id FROM module_completions").fetchall()}
+
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Type", "Title", "Roles", "Enrolled", "Completed", "Pending", "Pending People (name - id)"])
+
+    for a in db.execute("SELECT * FROM assessments ORDER BY roles, title").fetchall():
+        enrolled = [u for u in learners if _roles_match_designation(a["roles"], u["designation"])]
+        pending = [u for u in enrolled if (a["id"], u["emp_id"]) not in passed_set]
+        names = "; ".join(f"{p['name']} - {p['emp_id']}" for p in pending)
+        w.writerow(["Assessment", a["title"], a["roles"], len(enrolled),
+                    len(enrolled) - len(pending), len(pending), names])
+
+    for m in db.execute("SELECT * FROM content_modules WHERE status='live' ORDER BY kind, sort_order, id").fetchall():
+        enrolled = [u for u in learners if _roles_match_designation(m["roles"], u["designation"])]
+        pending = [u for u in enrolled if (m["id"], u["emp_id"]) not in comp_set]
+        names = "; ".join(f"{p['name']} - {p['emp_id']}" for p in pending)
+        w.writerow([f"Module ({m['kind']})", m["title"], m["roles"], len(enrolled),
+                    len(enrolled) - len(pending), len(pending), names])
+
+    return Response(out.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="completion_report.csv"'})
+
+
+@app.route("/api/admin/completion-report.xlsx")
+@admin_required
+def api_admin_completion_report_xlsx():
+    """Download the completion report as Excel."""
+    from flask import Response
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+    except Exception:
+        return jsonify(ok=False, msg="Excel export not available."), 500
+
+    db = get_db()
+    learners = db.execute(
+        "SELECT emp_id, name, designation FROM users WHERE status='approved' AND role='staff'"
+    ).fetchall()
+    passed_set = {(r["assessment_id"], r["emp_id"]) for r in db.execute(
+        "SELECT DISTINCT assessment_id, emp_id FROM assessment_results WHERE passed=1").fetchall()}
+    comp_set = {(r["module_id"], r["emp_id"]) for r in db.execute(
+        "SELECT DISTINCT module_id, emp_id FROM module_completions").fetchall()}
+
+    wb = Workbook()
+    hdr_fill = PatternFill("solid", fgColor="00AEEF")
+
+    def _fill_sheet(ws, rows_source, is_assessment):
+        ws.append(["Title", "Roles", "Enrolled", "Completed", "Pending", "Pending People"])
+        for c in ws[1]:
+            c.font = Font(bold=True, color="FFFFFF"); c.fill = hdr_fill
+        for it in rows_source:
+            enrolled = [u for u in learners if _roles_match_designation(it["roles"], u["designation"])]
+            key_set = passed_set if is_assessment else comp_set
+            pending = [u for u in enrolled if (it["id"], u["emp_id"]) not in key_set]
+            names = "; ".join(f"{p['name']} ({p['emp_id']})" for p in pending)
+            ws.append([it["title"], it["roles"], len(enrolled),
+                       len(enrolled) - len(pending), len(pending), names])
+        for i, wdt in enumerate([34, 20, 10, 11, 9, 60], start=1):
+            ws.column_dimensions[chr(64 + i)].width = wdt
+
+    ws1 = wb.active; ws1.title = "Assessments"
+    _fill_sheet(ws1, db.execute("SELECT * FROM assessments ORDER BY roles, title").fetchall(), True)
+
+    ws2 = wb.create_sheet("Modules")
+    _fill_sheet(ws2, db.execute("SELECT * FROM content_modules WHERE status='live' ORDER BY kind, sort_order, id").fetchall(), False)
+
+    bio = io.BytesIO(); wb.save(bio); bio.seek(0)
+    return Response(bio.getvalue(),
+                    mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="completion_report.xlsx"'})
+
+
 @app.route("/api/admin/assessments")
 @admin_required
 def api_admin_assessments():
