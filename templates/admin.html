@@ -116,6 +116,7 @@
     <button class="tabbtn" id="tabTrnBtn" onclick="switchTab('trn')">🎓 Training</button>
     <button class="tabbtn" id="tabVidBtn" onclick="switchTab('vid')">🎥 Videos</button>
     <button class="tabbtn" id="tabCrtBtn" onclick="switchTab('crt')">📜 Certificates</button>
+    <button class="tabbtn" id="tabProgBtn" onclick="switchTab('prog')">📊 Progress</button>
     <button class="tabbtn" id="tabSetBtn" onclick="switchTab('set')">⚙️ Settings</button>
   </div>
 
@@ -378,6 +379,27 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
     <div id="trackList"><div class="empty">Loading…</div></div>
   </div>
 
+  <!-- ============ PROGRESS / COMPLETION TAB ============ -->
+  <div class="wrap tabpane" id="tabProg" style="display:none">
+    <div class="sec-head">
+      <h2>Completion tracking</h2>
+      <div class="btns">
+        <button class="btn primary" onclick="downloadCompletion('xlsx')">⬇ Excel report</button>
+        <button class="btn" onclick="downloadCompletion('csv')">⬇ CSV</button>
+      </div>
+    </div>
+    <div class="note" style="margin-bottom:14px">
+      For each assessment and module: how many people are enrolled (their role matches),
+      how many completed, and how many are pending. Click "Who's pending" to see the exact people to follow up with.
+    </div>
+    <div id="progBody"><div class="empty">Loading…</div></div>
+  </div>
+
+  <!-- PENDING PEOPLE MODAL -->
+  <div class="ov" id="pendingOv">
+    <div class="modal" style="max-width:520px"><div id="pendingBody"></div></div>
+  </div>
+
   <!-- CERT TRACK MODAL -->
   <div class="ov" id="trackOv">
     <div class="modal">
@@ -540,10 +562,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     }
 
     const TABS = {
-      emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', set: 'tabSet'
+      emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', prog: 'tabProg', set: 'tabSet'
     };
     const TAB_BTNS = {
-      emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', set: 'tabSetBtn'
+      emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', set: 'tabSetBtn'
     };
     function switchTab(which){
       Object.keys(TABS).forEach(k=>{
@@ -556,6 +578,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         if(typeof buildVideoRoleChecks === 'function') buildVideoRoleChecks();
       }
       if(which === 'crt') loadTracks();
+      if(which === 'prog') loadCompletionReport();
       if(which === 'set') loadSettings();
     }
 
@@ -619,6 +642,67 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     function exportData(){
       window.location.href = '/api/admin/export-data';
+    }
+
+    // ===== Completion tracking (Progress tab) =====
+    function escP(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+    async function loadCompletionReport(){
+      const body = document.getElementById('progBody');
+      body.innerHTML = '<div class="empty">Loading…</div>';
+      let d;
+      try { d = await (await fetch('/api/admin/completion-report')).json(); }
+      catch(e){ body.innerHTML = '<div class="empty">Could not load report.</div>'; return; }
+      if(!d.ok){ body.innerHTML = '<div class="empty">Could not load report.</div>'; return; }
+
+      function itemCard(it, kind){
+        const pct = it.enrolled ? Math.round((it.completed/it.enrolled)*100) : 0;
+        const barColor = pct>=80?'var(--mg-green)':(pct>=40?'var(--mg-amber)':'var(--mg-red)');
+        const pendingBtn = it.pending>0
+          ? `<button class="btn" style="padding:4px 10px;font-size:12px" onclick='showPending(${JSON.stringify(it.title).replace(/'/g,"&#39;")}, ${JSON.stringify(it.pending_people).replace(/'/g,"&#39;")})'>Who's pending (${it.pending})</button>`
+          : '<span style="font-size:12px;color:var(--mg-green)">✓ All done</span>';
+        return `<div style="border:1px solid var(--mg-line);border-radius:10px;padding:12px 14px;margin-bottom:8px;background:#fff">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="font-weight:600;font-size:14px">${escP(it.title)}
+              <span style="font-size:11px;color:var(--mg-muted);font-weight:400">· ${escP(it.roles)}</span></div>
+            ${pendingBtn}
+          </div>
+          <div style="display:flex;gap:16px;margin-top:8px;font-size:13px">
+            <span>Enrolled: <b>${it.enrolled}</b></span>
+            <span style="color:var(--mg-green)">Completed: <b>${it.completed}</b></span>
+            <span style="color:var(--mg-red)">Pending: <b>${it.pending}</b></span>
+          </div>
+          <div style="height:8px;background:#eef2f5;border-radius:5px;margin-top:8px;overflow:hidden">
+            <div style="height:100%;width:${pct}%;background:${barColor}"></div>
+          </div>
+        </div>`;
+      }
+
+      let html = `<div style="background:#eaf7fe;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px">
+        Total learners: <b>${d.total_learners}</b></div>`;
+      html += `<h3 style="font-size:15px;margin:6px 0 10px">📝 Assessments</h3>`;
+      html += d.assessments.length ? d.assessments.map(x=>itemCard(x,'assessment')).join('') : '<div class="empty">No assessments.</div>';
+      html += `<h3 style="font-size:15px;margin:20px 0 10px">📘 Induction & Training modules</h3>`;
+      html += d.modules.length ? d.modules.map(x=>itemCard(x,'module')).join('') : '<div class="empty">No modules.</div>';
+      body.innerHTML = html;
+    }
+
+    function showPending(title, people){
+      const rows = (people||[]).map((p,i)=>`
+        <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--mg-line);font-size:13px">
+          <span>${i+1}. <b>${escP(p.name)}</b></span>
+          <span style="color:var(--mg-muted)">${escP(p.emp_id)} · ${escP(p.designation||'')}</span>
+        </div>`).join('');
+      const box = document.getElementById('pendingBody');
+      box.innerHTML = `<h3 style="margin:0 0 4px">Pending: ${escP(title)}</h3>
+        <p class="sub" style="margin:0 0 12px">${(people||[]).length} people haven't completed this yet</p>
+        ${rows || '<div class="empty">Nobody pending.</div>'}
+        <div style="text-align:right;margin-top:12px"><button class="btn" onclick="document.getElementById('pendingOv').classList.remove('show')">Close</button></div>`;
+      document.getElementById('pendingOv').classList.add('show');
+    }
+
+    function downloadCompletion(kind){
+      window.location.href = '/api/admin/completion-report.' + (kind==='xlsx'?'xlsx':'csv');
     }
 
     async function changePassword(){
