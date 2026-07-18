@@ -148,5 +148,45 @@
   </div>
 
   <script src="{{ url_for('static', filename='js/assessment.js') }}"></script>
+<script>
+  /* Click feedback + double-click protection.
+     Disables an action button, shows "Please wait…", blocks repeats. */
+  (function pageButtonGuard(){
+    var ACTION = /login|signin|signup|register|submit|start|open|complete|view|download|save|create/i;
+    function toastG(msg){
+      var t = document.getElementById('gToast');
+      if(!t){
+        t = document.createElement('div'); t.id='gToast';
+        t.style.cssText='position:fixed;bottom:22px;left:50%;transform:translateX(-50%);'
+          +'background:#0b2733;color:#fff;padding:11px 18px;border-radius:10px;font-size:13px;'
+          +'z-index:9999;display:none;max-width:90%;text-align:center;box-shadow:0 6px 20px rgba(0,0,0,.25)';
+        document.body.appendChild(t);
+      }
+      t.textContent=msg; t.style.display='block';
+      clearTimeout(t._h); t._h=setTimeout(function(){ t.style.display='none'; },2200);
+    }
+    document.addEventListener('click', function(e){
+      var btn = e.target.closest('button');
+      if(!btn) return;
+      var oc = btn.getAttribute('onclick')||'', label = btn.textContent||'';
+      if(/showTab|backToList|goPortal|close/i.test(oc)) return;
+      if(!ACTION.test(oc) && !ACTION.test(label)) return;
+      if(btn.dataset.busy==='1'){
+        e.preventDefault(); e.stopImmediatePropagation();
+        toastG('⏳ Please wait — already processing…'); return;
+      }
+      btn.dataset.busy='1'; btn.dataset.oldhtml=btn.innerHTML;
+      btn.style.minWidth=btn.offsetWidth+'px';
+      btn.innerHTML='Please wait…'; btn.disabled=true;
+      btn.style.opacity='.7'; btn.style.cursor='wait';
+      setTimeout(function(){
+        if(btn.dataset.busy!=='1') return;
+        btn.dataset.busy=''; btn.innerHTML=btn.dataset.oldhtml||btn.innerHTML;
+        btn.disabled=false; btn.style.opacity=''; btn.style.cursor=''; btn.style.minWidth='';
+      },5000);
+    }, true);
+  })();
+</script>
 </body>
+
 </html>
