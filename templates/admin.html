@@ -757,8 +757,9 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     //  clicks (with a message), and restores after the action finishes.
     // ============================================================
     (function buttonGuard(){
-      // which buttons count as "action" buttons (by the function they call)
-      var ACTION_WORDS = /save|create|submit|upload|add|quickadd|change|export|reset|bulk|delete|remove|approve|issue|make/i;
+      // Guard EVERY button, except pure navigation (tabs, cancel, close, X).
+      // A whitelist of words kept missing buttons like Edit / Results / Pause.
+      var SKIP = /switchTab|closeModal|closeAttempt|closeEditAssess|closeQModal|cancel|^close|openModuleForm|openVideoForm|openTrackForm|openBulk|toggleFolder|toggleTrnFolder|showPending|onTimedToggle|loadAssessments/i;
 
       function showBusyMsg(){
         // reuse the portal's toast if available, else a tiny inline note
@@ -771,8 +772,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         var btn = e.target.closest('button');
         if(!btn) return;
         var oc = btn.getAttribute('onclick') || '';
-        // only guard action buttons (skip Cancel, Close, tab buttons, X)
-        if(!ACTION_WORDS.test(oc)) return;
+        // skip navigation-only buttons and the ✕
+        if(!oc) return;
+        if(SKIP.test(oc)) return;
+        if(SKIP.test((btn.textContent || '').trim())) return;
         if(btn.classList.contains('modal-x')) return;
 
         // if already busy -> block this extra click
@@ -811,6 +814,14 @@ Priya S,MG087,9876500000,State Head,"></textarea>
           });
           obs.observe(ov, { attributes:true, attributeFilter:['class'] });
         }
+        // if this button OPENS a pop-up (Edit, Results…), restore as soon as
+        // that pop-up appears — the click is done, no need to keep waiting.
+        var openWatch = new MutationObserver(function(){
+          var anyOpen = document.querySelector('.ov.show');
+          if(anyOpen && anyOpen !== ov){ restore(); openWatch.disconnect(); }
+        });
+        openWatch.observe(document.body, { subtree:true, attributes:true, attributeFilter:['class'] });
+        setTimeout(function(){ openWatch.disconnect(); }, 6000);
         // safety net: always restore after 6 seconds
         setTimeout(restore, 6000);
       }, true);  // capture phase, so we can block before the onclick runs
