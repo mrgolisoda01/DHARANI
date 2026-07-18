@@ -97,24 +97,48 @@ function renderAssessments(){
   const order = ["Induction / All Roles","BDE","BDM","State Head","RSM","NSM","Corporate","Back Office"];
   const seen = {};
   let html = "";
+  let folderIndex = 0;
   function section(name){
     if(!groups[name] || seen[name]) return;
     seen[name] = true;
-    const icon = name.startsWith("Induction") ? "📋" : "📁";
-    html += `<div style="margin:6px 0 18px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 12px;background:#eaf7fe;border-radius:8px">
-        <span style="font-size:16px">${icon}</span>
-        <b style="font-size:14px;color:var(--mg-blue)">${name}</b>
+    const fid = "afold_" + (folderIndex++);
+    // all folders start CLOSED
+    html += `<div style="margin:0 0 10px">
+      <div onclick="toggleFolder('${fid}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:11px 14px;background:#eaf7fe;border-radius:8px;user-select:none;transition:background .15s" onmouseover="this.style.background='#daf0fc'" onmouseout="this.style.background='#eaf7fe'">
+        <span id="${fid}_ic" style="font-size:16px">📁</span>
+        <b style="font-size:14px;color:var(--mg-blue);flex:1">${name}</b>
         <span style="font-size:12px;color:var(--mg-muted)">(${groups[name].length})</span>
+        <span id="${fid}_ar" style="font-size:12px;color:var(--mg-blue);transition:transform .2s">▶</span>
       </div>
-      ${groups[name].map(cardHtml).join("")}
+      <div id="${fid}" style="max-height:0;overflow:hidden;transition:max-height .3s ease;margin-top:0">
+        <div style="padding-top:10px">${groups[name].map(cardHtml).join("")}</div>
+      </div>
     </div>`;
   }
   order.forEach(section);
-  // any remaining groups not in the fixed order
   Object.keys(groups).forEach(section);
 
   box.innerHTML = html;
+}
+
+// open/close a folder smoothly (shared by Assessments + Training)
+function toggleFolder(fid){
+  const panel = document.getElementById(fid);
+  const icon = document.getElementById(fid + "_ic");
+  const arrow = document.getElementById(fid + "_ar");
+  if(!panel) return;
+  const isOpen = panel.dataset.open === "1";
+  if(isOpen){
+    panel.style.maxHeight = "0";
+    panel.dataset.open = "";
+    if(icon) icon.textContent = "📁";
+    if(arrow) arrow.style.transform = "rotate(0deg)";
+  } else {
+    panel.style.maxHeight = panel.scrollHeight + "px";
+    panel.dataset.open = "1";
+    if(icon) icon.textContent = "📂";
+    if(arrow) arrow.style.transform = "rotate(90deg)";
+  }
 }
 
 function escA(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
