@@ -435,16 +435,44 @@ async function loadCertificates(){
   }catch(e){ box.innerHTML = '<div class="empty">Could not load certificates.</div>'; }
 }
 
+// ---- Certificate designs: colour + title per achievement ----
+const CERT_STYLES = [
+  { match: /induction/i,                      colour:"#00AEEF", title:"Certificate of Induction",  badge:"INDUCTION"   },
+  { match: /\bbdm\b|business development manager/i, colour:"#534ab7", title:"Certified BDM",       badge:"MANAGEMENT"  },
+  { match: /\bbde\b|business development exec/i,   colour:"#1d9e75", title:"Certified BDE",       badge:"BUSINESS DEVELOPMENT" },
+  { match: /state\s*head/i,                   colour:"#c98a00", title:"Certified State Head",     badge:"LEADERSHIP"  },
+  { match: /\brsm\b|regional sales/i,         colour:"#e24b4a", title:"Certified RSM",            badge:"REGIONAL SALES" },
+  { match: /\bnsm\b|national sales/i,         colour:"#0b7a8c", title:"Certified NSM",            badge:"NATIONAL SALES" }
+];
+
+function certStyleFor(c){
+  // both assessment certs and completion certs put their name in c.assessment
+  const text = String(c.assessment || "");
+  for(const s of CERT_STYLES){
+    if(s.match.test(text)) return s;
+  }
+  // default (any other achievement) — brand blue
+  return { colour:"#00AEEF", title:"Certificate of Achievement", badge:"ACHIEVEMENT" };
+}
+
 function openCert(c){
+  const st = certStyleFor(c);
+
+  // one CSS variable drives every coloured element in the certificate
+  const card = $('certCard');
+  if(card) card.style.setProperty('--cert-c', st.colour);
+
+  $('certTitle').textContent = st.title;
+  $('certBadge').textContent = st.badge;
   $('certName').textContent = c.name;
   $('certAssessment').textContent = c.assessment;
-  // completion certs have no score — assessment certs show score + date
+
+  // completion certs have no score — assessment certs show the score
   const wrap = $('certScoreWrap');
-  if(c.score!=null){
-    wrap.innerHTML = 'with a score of <b>'+c.score+'%</b> &nbsp;·&nbsp; ' + esc(c.date);
-  } else {
-    wrap.innerHTML = 'Awarded on ' + esc(c.date);
-  }
+  wrap.innerHTML = (c.score != null)
+    ? ' <span style="color:#8a97a1">· scored</span> <b>' + c.score + '%</b><br><span style="font-size:9.5px;color:#9aa6ae">Issued on ' + esc(c.date) + '</span>'
+    : '<br><span style="font-size:9.5px;color:#9aa6ae">Issued on ' + esc(c.date) + '</span>';
+
   document.querySelector('#tab-certs .sectiontitle').style.display='none';
   $('certListBox').style.display='none';
   $('certView').classList.remove('hide');
