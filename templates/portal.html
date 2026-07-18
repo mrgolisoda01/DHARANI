@@ -268,7 +268,8 @@
      Listens on document, so buttons created later are covered too.
      ============================================================ */
   (function portalButtonGuard(){
-    var ACTION = /start|open|submit|complete|retake|retry|view|download|sign|mark/i;
+    // Guard EVERY button except pure navigation.
+    var SKIP = /showTab|closeCert|closeFileModule|goHome|backToList|cancel|^close|nextSlide|prevSlide|\bpick\(|\bpickAs\(/i;
 
     function toastP(msg){
       var t = document.getElementById('pguardToast');
@@ -290,10 +291,10 @@
       var btn = e.target.closest('button');
       if(!btn) return;
       var oc = btn.getAttribute('onclick') || '';
-      var label = btn.textContent || '';
-      // skip tabs, back/close buttons, and anything not an action
-      if(/showTab|closeCert|closeFileModule|goHome/i.test(oc)) return;
-      if(!ACTION.test(oc) && !ACTION.test(label)) return;
+      // skip tabs, back/close buttons, and anything without an action
+      if(!oc) return;
+      if(SKIP.test(oc)) return;
+      if(SKIP.test((btn.textContent || '').trim())) return;
 
       if(btn.dataset.busy === '1'){
         e.preventDefault(); e.stopImmediatePropagation();
