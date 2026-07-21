@@ -329,6 +329,21 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <!-- Quick add user -->
+    <!-- Designations -->
+    <div style="background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px;margin-bottom:18px">
+      <h3 style="font-size:15px;margin:0 0 4px">Designations</h3>
+      <p style="margin:0 0 14px;font-size:13px;color:var(--mg-muted)">
+        These are the roles you can assign to employees, assessments, modules and certificates.
+        Add a new one here and it appears everywhere immediately.
+        Renaming one also updates every employee already on it.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+        <input class="search" id="dsgNew" placeholder="e.g. Manager" style="flex:1;min-width:200px" />
+        <button class="btn primary" onclick="addDesignation()">Add designation</button>
+      </div>
+      <div id="dsgList"><div class="empty">Loading…</div></div>
+    </div>
+
       <div style="background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px">
         <h3 style="font-size:15px;margin:0 0 4px">Add a user</h3>
         <p style="margin:0 0 14px;font-size:13px;color:var(--mg-muted)">Add people one at a time. For many at once, use Bulk add on the Employees tab.</p>
@@ -579,7 +594,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       }
       if(which === 'crt') loadTracks();
       if(which === 'prog') loadCompletionReport();
-      if(which === 'set') loadSettings();
+      if(which === 'set'){ loadSettings(); loadDesignations(); }
     }
 
     async function loadSettings(){
@@ -703,6 +718,100 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     function downloadCompletion(kind){
       window.location.href = '/api/admin/completion-report.' + (kind==='xlsx'?'xlsx':'csv');
+    }
+
+    // ===== Designations =====
+    let DSG = [];
+
+    async function loadDesignations(){
+      const box = document.getElementById('dsgList');
+      if(!box) return;
+      let d;
+      try { d = await (await fetch('/api/admin/designations')).json(); }
+      catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.ok){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      DSG = d.designations || [];
+
+      box.innerHTML = DSG.length ? DSG.map(x=>{
+        const used = x.employees + x.assessments + x.modules;
+        const usedTxt = used
+          ? `${x.employees} employee(s) · ${x.assessments} assessment(s) · ${x.modules} module(s)`
+          : 'Not used yet';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;
+                     padding:9px 0;border-bottom:1px solid var(--mg-line);flex-wrap:wrap">
+          <div>
+            <b style="font-size:14px">${escP(x.name)}</b>
+            <div style="font-size:11.5px;color:var(--mg-muted)">${usedTxt}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn" style="padding:4px 10px;font-size:12px"
+              onclick="renameDesignation(${x.id}, '${escP(x.name).replace(/'/g,"\\\\'")}')">Rename</button>
+            <button class="btn" style="padding:4px 10px;font-size:12px;color:var(--mg-red)"
+              onclick="removeDesignation(${x.id}, '${escP(x.name).replace(/'/g,"\\\\'")}')">Delete</button>
+          </div>
+        </div>`;
+      }).join('') : '<div class="empty">No designations yet.</div>';
+
+      fillDesignationDropdown();
+    }
+
+    // employee form: use a dropdown so designations always match exactly
+    function fillDesignationDropdown(){
+      const inp = document.getElementById('quDesg');
+      if(!inp || !DSG.length) return;
+      if(inp.tagName === 'SELECT'){
+        const keep = inp.value;
+        inp.innerHTML = '<option value="">— Select designation —</option>'
+          + DSG.map(x=>`<option value="${escP(x.name)}">${escP(x.name)}</option>`).join('');
+        inp.value = keep;
+        return;
+      }
+      const sel = document.createElement('select');
+      sel.id = 'quDesg';
+      sel.innerHTML = '<option value="">— Select designation —</option>'
+        + DSG.map(x=>`<option value="${escP(x.name)}">${escP(x.name)}</option>`).join('');
+      inp.parentNode.replaceChild(sel, inp);
+    }
+
+    async function addDesignation(){
+      const box = document.getElementById('dsgNew');
+      const name = (box.value||'').trim();
+      if(!name){ toast('Type a designation name first.'); return; }
+      const r = await (await fetch('/api/admin/save-designation',{method:'POST',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})})).json();
+      toast(r.msg || (r.ok?'Added.':'Could not add.'));
+      if(r.ok){ box.value=''; loadDesignations(); }
+    }
+
+    async function renameDesignation(id, current){
+      const name = prompt('Rename this designation.\n\nEvery employee already on "'+current+
+                          '" will be moved to the new name automatically.', current);
+      if(name === null) return;
+      if(!name.trim()){ toast('Name cannot be blank.'); return; }
+      const r = await (await fetch('/api/admin/save-designation',{method:'POST',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({id, name})})).json();
+      toast(r.msg || (r.ok?'Renamed.':'Could not rename.'));
+      if(r.ok){ loadDesignations(); if(typeof loadDashboard==='function') loadDashboard(); }
+    }
+
+    async function removeDesignation(id, name){
+      let r = await (await fetch('/api/admin/delete-designation',{method:'POST',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})})).json();
+      if(r.ok){ toast(r.msg); loadDesignations(); return; }
+
+      if(r.in_use){
+        // tell the admin exactly what is using it, then let them decide
+        const go = confirm(r.msg + '\n\nDelete "' + name + '" anyway?\n\n' +
+          'Employees keep their current designation text, but it will no longer\n' +
+          'appear in the dropdowns. Cancel if you would rather rename it.');
+        if(!go) return;
+        r = await (await fetch('/api/admin/delete-designation',{method:'POST',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify({id, force:true})})).json();
+        toast(r.msg || (r.ok?'Deleted.':'Could not delete.'));
+        if(r.ok) loadDesignations();
+        return;
+      }
+      toast(r.msg || 'Could not delete.');
     }
 
     async function changePassword(){
