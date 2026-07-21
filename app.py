@@ -377,6 +377,23 @@ def init_db():
     """)
 
     # --- Safe migration for older tables (add columns if missing) ---
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS designations (
+            id         SERIAL PRIMARY KEY,
+            name       TEXT UNIQUE NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            created_at TEXT
+        )
+    """)
+    # seed the defaults the first time only
+    seeded = db.execute("SELECT COUNT(*) c FROM designations").fetchone()["c"]
+    if not seeded:
+        for i, r in enumerate(["BDE", "BDM", "State Head", "RSM", "NSM", "Corporate", "Back Office"]):
+            db.execute(
+                "INSERT INTO designations (name, sort_order, created_at) VALUES (?,?,?)",
+                (r, i, datetime.utcnow().isoformat())
+            )
+
     if not _column_exists(db, "users", "must_reset"):
         db.execute("ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0")
     if not _column_exists(db, "users", "last_login"):
@@ -885,7 +902,18 @@ def api_admin_bulk_add():
 # ===============================================================
 import random as _random
 
-ROLE_CHOICES = ["BDE", "BDM", "State Head", "RSM", "NSM", "Corporate", "Back Office"]
+FALLBACK_ROLES = ["BDE", "BDM", "State Head", "RSM", "NSM", "Corporate", "Back Office"]
+
+
+def get_role_choices():
+    """Designations, read live from the database so admins can add their own."""
+    try:
+        rows = get_db().execute(
+            "SELECT name FROM designations ORDER BY sort_order, name"
+        ).fetchall()
+        return [r["name"] for r in rows] or FALLBACK_ROLES
+    except Exception:
+        return FALLBACK_ROLES
 
 
 def _user_role_label(u):
@@ -1069,6 +1097,134 @@ def api_admin_completion_report_xlsx():
                     headers={"Content-Disposition": 'attachment; filename="completion_report.xlsx"'})
 
 
+def _designation_usage(name):
+    """How many employees and items currently use this designation."""
+    db = get_db()
+    low = (name or "").strip().lower()
+    emp = db.execute(
+        "SELECT COUNT(*) c FROM users WHERE LOWER(TRIM(designation)) = ?", (low,)
+    ).fetchone()["c"]
+
+    def _count(table):
+        n = 0
+        for r in db.execute(f"SELECT roles FROM {table}").fetchall():
+            parts = [p.strip().lower() for p in (r["roles"] or "").split(",")]
+            if low in parts:
+                n += 1
+        return n
+
+    return {"employees": emp,
+            "assessments": _count("assessments"),
+            "modules": _count("content_modules")}
+
+
+@app.route("/api/admin/designations")
+@admin_required
+def api_admin_designations():
+    """List designations with how many employees/items use each."""
+    db = get_db()
+    rows = db.execute("SELECT * FROM designations ORDER BY sort_order, name").fetchall()
+    out = []
+    for r in rows:
+        u = _designation_usage(r["name"])
+        out.append({"id": r["id"], "name": r["name"], **u})
+    return jsonify(ok=True, designations=out)
+
+
+@app.route("/api/admin/save-designation", methods=["POST"])
+@admin_required
+def api_admin_save_designation():
+    """Add a new designation, or rename an existing one.
+    A rename cascades: every employee on the old name is updated, and the
+    old name is swapped inside assessment/module role lists."""
+    d = request.get_json(force=True)
+    did = d.get("id")
+    name = (d.get("name") or "").strip()
+    if not name:
+        return jsonify(ok=False, msg="Please enter a designation name.")
+
+    db = get_db()
+    clash = db.execute(
+        "SELECT id FROM designations WHERE LOWER(name) = ? AND id != ?",
+        (name.lower(), did or -1)
+    ).fetchone()
+    if clash:
+        return jsonify(ok=False, msg=f'"{name}" already exists.')
+
+    if did:
+        old = db.execute("SELECT name FROM designations WHERE id=?", (did,)).fetchone()
+        if not old:
+            return jsonify(ok=False, msg="Designation not found.")
+        old_name = old["name"]
+        db.execute("UPDATE designations SET name=? WHERE id=?", (name, did))
+
+        moved = 0
+        if old_name.strip().lower() != name.strip().lower():
+            # 1) every employee carrying the old designation
+            cur = db.execute(
+                "UPDATE users SET designation=? WHERE LOWER(TRIM(designation))=?",
+                (name, old_name.strip().lower())
+            )
+            moved = cur.rowcount if hasattr(cur, "rowcount") else 0
+
+            # 2) the old name inside comma-separated role lists
+            for table in ("assessments", "content_modules", "certificate_tracks"):
+                try:
+                    for r in db.execute(f"SELECT id, roles FROM {table}").fetchall():
+                        parts = [p.strip() for p in (r["roles"] or "").split(",")]
+                        if any(p.lower() == old_name.strip().lower() for p in parts):
+                            new_parts = [name if p.lower() == old_name.strip().lower() else p
+                                         for p in parts if p]
+                            db.execute(f"UPDATE {table} SET roles=? WHERE id=?",
+                                       (",".join(new_parts), r["id"]))
+                except Exception:
+                    pass  # table may not have a roles column
+
+        db.commit()
+        msg = f'Renamed to "{name}".'
+        if moved:
+            msg += f" {moved} employee(s) updated."
+        return jsonify(ok=True, msg=msg)
+
+    nxt = db.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM designations").fetchone()["n"]
+    db.execute("INSERT INTO designations (name, sort_order, created_at) VALUES (?,?,?)",
+               (name, nxt, datetime.utcnow().isoformat()))
+    db.commit()
+    return jsonify(ok=True, msg=f'"{name}" added.')
+
+
+@app.route("/api/admin/delete-designation", methods=["POST"])
+@admin_required
+def api_admin_delete_designation():
+    """Delete a designation. Reports usage first unless force=true."""
+    d = request.get_json(force=True)
+    did = d.get("id")
+    force = bool(d.get("force"))
+
+    db = get_db()
+    row = db.execute("SELECT name FROM designations WHERE id=?", (did,)).fetchone()
+    if not row:
+        return jsonify(ok=False, msg="Designation not found.")
+
+    use = _designation_usage(row["name"])
+    total = use["employees"] + use["assessments"] + use["modules"]
+    if total and not force:
+        bits = []
+        if use["employees"]:
+            bits.append(f"{use['employees']} employee(s)")
+        if use["assessments"]:
+            bits.append(f"{use['assessments']} assessment(s)")
+        if use["modules"]:
+            bits.append(f"{use['modules']} module(s)")
+        return jsonify(ok=False, in_use=True, usage=use,
+                       msg=f'"{row["name"]}" is being used by ' + ", ".join(bits) +
+                           ". Rename it instead, or confirm to delete it anyway.")
+
+    db.execute("DELETE FROM designations WHERE id=?", (did,))
+    db.commit()
+    return jsonify(ok=True, msg=f'"{row["name"]}" deleted.')
+
+
 @app.route("/api/admin/assessments")
 @admin_required
 def api_admin_assessments():
@@ -1081,7 +1237,7 @@ def api_admin_assessments():
         at = db.execute("SELECT COUNT(*) c FROM assessment_results WHERE assessment_id=?", (a["id"],)).fetchone()["c"]
         d = dict(a); d["question_count"] = qn; d["attempt_count"] = at
         out.append(d)
-    return jsonify(ok=True, assessments=out, role_choices=ROLE_CHOICES)
+    return jsonify(ok=True, assessments=out, role_choices=get_role_choices())
 
 
 @app.route("/api/admin/create-assessment", methods=["POST"])
@@ -1206,7 +1362,7 @@ def api_admin_assessment_detail():
         return jsonify(ok=False, msg="Not found."), 404
     qs = db.execute("SELECT * FROM questions WHERE assessment_id=? ORDER BY id", (aid,)).fetchall()
     return jsonify(ok=True, assessment=dict(a), questions=[dict(q) for q in qs],
-                   role_choices=ROLE_CHOICES)
+                   role_choices=get_role_choices())
 
 
 @app.route("/api/admin/update-assessment", methods=["POST"])
@@ -1812,7 +1968,7 @@ def api_admin_modules():
     rows = db.execute("SELECT * FROM content_modules ORDER BY kind, sort_order, id").fetchall()
     vids = db.execute("SELECT * FROM videos ORDER BY sort_order, id").fetchall()
     return jsonify(ok=True, modules=[dict(r) for r in rows], videos=[dict(v) for v in vids],
-                   role_choices=ROLE_CHOICES, is_admin=(u["role"] == "admin"))
+                   role_choices=get_role_choices(), is_admin=(u["role"] == "admin"))
 
 
 @app.route("/api/admin/upload-file", methods=["POST"])
@@ -2183,7 +2339,7 @@ def api_admin_cert_tracks():
     # also send assessments list for the dropdown
     assessments = db.execute("SELECT id,title FROM assessments ORDER BY title").fetchall()
     return jsonify(ok=True, tracks=out, assessments=[dict(a) for a in assessments],
-                   role_choices=ROLE_CHOICES, is_admin=(u["role"] == "admin"))
+                   role_choices=get_role_choices(), is_admin=(u["role"] == "admin"))
 
 
 @app.route("/api/admin/save-cert-track", methods=["POST"])
