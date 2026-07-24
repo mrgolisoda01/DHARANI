@@ -403,11 +403,14 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
         <button class="btn" onclick="downloadCompletion('csv')">⬇ CSV</button>
       </div>
     </div>
-    <div class="note" style="margin-bottom:14px">
-      For each assessment and module: how many people are enrolled (their role matches),
-      how many completed, and how many are pending. Click "Who's pending" to see the exact people to follow up with.
+    <div style="display:inline-flex;border:1px solid var(--mg-line);border-radius:8px;overflow:hidden;margin-bottom:14px">
+      <button class="btn" id="pvPerson" onclick="setProgView('person')"
+        style="border:none;border-radius:0;background:var(--mg-blue);color:#fff;font-weight:600">By person</button>
+      <button class="btn" id="pvItem" onclick="setProgView('item')"
+        style="border:none;border-radius:0">By assessment / module</button>
     </div>
-    <div id="progBody"><div class="empty">Loading…</div></div>
+    <div id="progPersonBody"><div class="empty">Loading…</div></div>
+    <div id="progBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
 
   <!-- PENDING PEOPLE MODAL -->
@@ -593,7 +596,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         if(typeof buildVideoRoleChecks === 'function') buildVideoRoleChecks();
       }
       if(which === 'crt') loadTracks();
-      if(which === 'prog') loadCompletionReport();
+      if(which === 'prog'){ loadPersonProgress(); }
       if(which === 'set'){ loadSettings(); loadDesignations(); }
     }
 
@@ -661,6 +664,85 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     // ===== Completion tracking (Progress tab) =====
     function escP(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+    // ===== Progress: toggle between By person (folders) and By item =====
+    function setProgView(v){
+      const pP = document.getElementById('pvPerson'), pI = document.getElementById('pvItem');
+      const bP = document.getElementById('progPersonBody'), bI = document.getElementById('progBody');
+      const on = (b)=>{ b.style.background='var(--mg-blue)'; b.style.color='#fff'; b.style.fontWeight='600'; };
+      const off = (b)=>{ b.style.background=''; b.style.color=''; b.style.fontWeight=''; };
+      if(v==='person'){ on(pP); off(pI); bP.style.display=''; bI.style.display='none'; loadPersonProgress(); }
+      else { on(pI); off(pP); bI.style.display=''; bP.style.display='none'; loadCompletionReport(); }
+    }
+
+    async function loadPersonProgress(){
+      const box = document.getElementById('progPersonBody');
+      box.innerHTML = '<div class="empty">Loading…</div>';
+      let d;
+      try { d = await (await fetch('/api/admin/completion-by-person')).json(); }
+      catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.ok){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+
+      const order = ['BDE','BDM','State Head','RSM','NSM','Corporate','Back Office'];
+      const groups = (d.groups||[]).slice().sort((a,b)=>{
+        if(a.designation==='No designation') return 1;
+        if(b.designation==='No designation') return -1;
+        let ia=order.indexOf(a.designation), ib=order.indexOf(b.designation);
+        if(ia<0) ia=50; if(ib<0) ib=50;
+        return ia-ib || a.designation.localeCompare(b.designation);
+      });
+
+      function personRow(p){
+        const done = p.total_pending===0;
+        const badge = done
+          ? '<span class="pill p-approved">All done</span>'
+          : `<span class="pill p-pending">${p.total_pending} pending</span>`;
+        const detail = done ? '' :
+          `<div style="font-size:11.5px;color:var(--mg-muted);margin-top:2px">`+
+          [p.induction_pending?`Induction ${p.induction_pending}`:'',
+           p.training_pending?`Training ${p.training_pending}`:'',
+           p.assess_pending?`Assessments ${p.assess_pending}`:'',
+           p.video_pending?`Videos ${p.video_pending}`:''].filter(Boolean).join(' · ')+`</div>`;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--mg-line)">
+          <div><b style="font-size:13.5px">${escP(p.name)}</b>
+            <span style="font-size:11.5px;color:var(--mg-muted)"> · ${escP(p.emp_id)}</span>${detail}</div>
+          ${badge}
+        </div>`;
+      }
+
+      let html = `<div style="background:#eaf7fe;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px">
+        Total learners: <b>${d.total_learners}</b> · click a folder to open it</div>`;
+      let fi = 0;
+      groups.forEach(g=>{
+        const fid = 'pfold_'+(fi++);
+        const pendTxt = g.pending_people>0
+          ? `<span style="color:var(--mg-red)">${g.pending_people} with pending</span>`
+          : `<span style="color:var(--mg-green)">all complete</span>`;
+        html += `<div style="margin:0 0 10px">
+          <div onclick="togglePFold('${fid}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:11px 14px;background:#eaf7fe;border-radius:8px;user-select:none"
+               onmouseover="this.style.background='#daf0fc'" onmouseout="this.style.background='#eaf7fe'">
+            <span id="${fid}_ic" style="font-size:16px">📁</span>
+            <b style="font-size:14px;color:var(--mg-blue);flex:1">${escP(g.designation)}</b>
+            <span style="font-size:12px;color:var(--mg-muted)">${g.count} people · ${pendTxt}</span>
+            <span id="${fid}_ar" style="font-size:12px;color:var(--mg-blue)">▶</span>
+          </div>
+          <div id="${fid}" style="max-height:0;overflow:hidden;transition:max-height .3s ease">
+            <div style="padding-top:6px">${g.people.map(personRow).join('')}</div>
+          </div>
+        </div>`;
+      });
+      box.innerHTML = groups.length ? html : '<div class="empty">No learners yet.</div>';
+    }
+
+    function togglePFold(fid){
+      const panel = document.getElementById(fid);
+      const ic = document.getElementById(fid+'_ic');
+      const ar = document.getElementById(fid+'_ar');
+      if(!panel) return;
+      const open = panel.dataset.open==='1';
+      if(open){ panel.style.maxHeight='0'; panel.dataset.open=''; if(ic)ic.textContent='📁'; if(ar)ar.style.transform='rotate(0deg)'; }
+      else { panel.style.maxHeight=panel.scrollHeight+'px'; panel.dataset.open='1'; if(ic)ic.textContent='📂'; if(ar)ar.style.transform='rotate(90deg)'; }
+    }
 
     async function loadCompletionReport(){
       const body = document.getElementById('progBody');
