@@ -354,6 +354,14 @@ def init_db():
         )
     """)
     db.execute("""
+        CREATE TABLE IF NOT EXISTS video_completions (
+            id          SERIAL PRIMARY KEY,
+            video_id    INTEGER NOT NULL,
+            emp_id      TEXT NOT NULL,
+            completed_at TEXT
+        )
+    """)
+    db.execute("""
         CREATE TABLE IF NOT EXISTS certificate_tracks (
             id            SERIAL PRIMARY KEY,
             cert_name     TEXT NOT NULL,
@@ -939,6 +947,71 @@ def _roles_match_designation(roles_field, designation):
     desg = (designation or "").strip().lower()
     allowed = [r.strip().lower() for r in roles.split(",")]
     return any(a and a in desg for a in allowed)
+
+
+@app.route("/api/admin/completion-by-person")
+@admin_required
+def api_admin_completion_by_person():
+    """Per-employee pending counts, grouped by designation (for the folders view).
+    For each approved learner: how many induction/training modules and
+    assessments they still have pending, matched to their designation."""
+    db = get_db()
+    learners = db.execute(
+        "SELECT emp_id, name, designation FROM users "
+        "WHERE status='approved' AND role='staff' ORDER BY designation, name"
+    ).fetchall()
+
+    ind = db.execute("SELECT id, roles FROM content_modules WHERE kind='induction' AND status='live'").fetchall()
+    trn = db.execute("SELECT id, roles FROM content_modules WHERE kind='training' AND status='live'").fetchall()
+    ass = db.execute("SELECT id, roles FROM assessments WHERE active=1").fetchall()
+    vids = db.execute("SELECT id, roles FROM videos WHERE status='live'").fetchall()
+
+    comp = {}
+    for c in db.execute("SELECT module_id, emp_id FROM module_completions").fetchall():
+        comp.setdefault(c["emp_id"], set()).add(c["module_id"])
+    passed = {}
+    for pr in db.execute("SELECT assessment_id, emp_id FROM assessment_results WHERE passed=1").fetchall():
+        passed.setdefault(pr["emp_id"], set()).add(pr["assessment_id"])
+    vwatch = {}
+    for w in db.execute("SELECT video_id, emp_id FROM video_completions").fetchall():
+        vwatch.setdefault(w["emp_id"], set()).add(w["video_id"])
+
+    # start every known designation as an empty folder, so all of them show
+    groups = {}
+    try:
+        for dr in db.execute("SELECT name FROM designations ORDER BY sort_order, name").fetchall():
+            groups[dr["name"]] = []
+    except Exception:
+        pass
+
+    for u in learners:
+        desg = (u["designation"] or "").strip() or "No designation"
+        mine_i = [m for m in ind if _roles_match_designation(m["roles"], u["designation"])]
+        mine_t = [m for m in trn if _roles_match_designation(m["roles"], u["designation"])]
+        mine_a = [a for a in ass if _roles_match_designation(a["roles"], u["designation"])]
+        mine_v = [v for v in vids if _roles_match_designation(v["roles"], u["designation"])]
+        done = comp.get(u["emp_id"], set())
+        pa = passed.get(u["emp_id"], set())
+        vw = vwatch.get(u["emp_id"], set())
+        pi = sum(1 for m in mine_i if m["id"] not in done)
+        pt = sum(1 for m in mine_t if m["id"] not in done)
+        pas = sum(1 for a in mine_a if a["id"] not in pa)
+        pv = sum(1 for v in mine_v if v["id"] not in vw)
+        total_pending = pi + pt + pas + pv
+        total_items = len(mine_i) + len(mine_t) + len(mine_a) + len(mine_v)
+        groups.setdefault(desg, []).append({
+            "name": u["name"], "emp_id": u["emp_id"],
+            "induction_pending": pi, "training_pending": pt,
+            "assess_pending": pas, "video_pending": pv,
+            "total_pending": total_pending, "total_items": total_items
+        })
+
+    out = []
+    for desg, people in groups.items():
+        pending_people = sum(1 for p in people if p["total_pending"] > 0)
+        out.append({"designation": desg, "count": len(people),
+                    "pending_people": pending_people, "people": people})
+    return jsonify(ok=True, groups=out, total_learners=len(learners))
 
 
 @app.route("/api/admin/completion-report")
@@ -1736,6 +1809,50 @@ def api_admin_results_report_xlsx():
 
 
 # ---- Learner side ----
+@app.route("/api/my-pending-counts")
+@login_required
+def api_my_pending_counts():
+    """How many induction modules, training modules and assessments the
+    logged-in learner still has pending. Powers the red tab badges.
+    Module pending = no completion record. Assessment pending = not passed."""
+    u = current_user()
+    db = get_db()
+
+    def _modules_pending(kind):
+        rows = db.execute(
+            "SELECT id, roles FROM content_modules WHERE kind=? AND status='live'", (kind,)
+        ).fetchall()
+        mine = [r for r in rows if _roles_match_designation(r["roles"], u["designation"])]
+        if not mine:
+            return 0
+        done = {c["module_id"] for c in db.execute(
+            "SELECT module_id FROM module_completions WHERE emp_id=?", (u["emp_id"],)
+        ).fetchall()}
+        return sum(1 for r in mine if r["id"] not in done)
+
+    # assessments: matched by role, pending until passed
+    arows = db.execute("SELECT id, roles FROM assessments WHERE active=1").fetchall()
+    mine_a = [r for r in arows if _roles_match_designation(r["roles"], u["designation"])]
+    passed = {p["assessment_id"] for p in db.execute(
+        "SELECT DISTINCT assessment_id FROM assessment_results WHERE emp_id=? AND passed=1",
+        (u["emp_id"],)
+    ).fetchall()}
+    assess_pending = sum(1 for r in mine_a if r["id"] not in passed)
+
+    # videos: matched by role, pending until marked watched
+    vrows = db.execute("SELECT id, roles FROM videos WHERE status='live'").fetchall()
+    mine_v = [r for r in vrows if _roles_match_designation(r["roles"], u["designation"])]
+    watched = {w["video_id"] for w in db.execute(
+        "SELECT video_id FROM video_completions WHERE emp_id=?", (u["emp_id"],)).fetchall()}
+    video_pending = sum(1 for r in mine_v if r["id"] not in watched)
+
+    return jsonify(ok=True,
+                   induction=_modules_pending("induction"),
+                   training=_modules_pending("training"),
+                   assess=assess_pending,
+                   videos=video_pending)
+
+
 @app.route("/api/my-certificates")
 @login_required
 def api_my_certificates():
@@ -2220,8 +2337,37 @@ def api_content_videos():
     u = current_user()
     db = get_db()
     rows = db.execute("SELECT * FROM videos WHERE status='live' ORDER BY sort_order, id").fetchall()
-    out = [dict(v) for v in rows if _content_visible_for(v, u)]
+    done = {r["video_id"] for r in db.execute(
+        "SELECT video_id FROM video_completions WHERE emp_id=?", (u["emp_id"],)).fetchall()}
+    out = []
+    for v in rows:
+        if not _content_visible_for(v, u):
+            continue
+        d = dict(v); d["completed"] = v["id"] in done
+        out.append(d)
     return jsonify(ok=True, videos=out)
+
+
+@app.route("/api/content/complete-video", methods=["POST"])
+@login_required
+def api_content_complete_video():
+    """Mark a video watched for this learner (the 'Mark as watched' button)."""
+    u = current_user()
+    d = request.get_json(force=True)
+    vid = d.get("video_id")
+    if not vid:
+        return jsonify(ok=False, msg="Missing video."), 400
+    db = get_db()
+    already = db.execute(
+        "SELECT id FROM video_completions WHERE video_id=? AND emp_id=?", (vid, u["emp_id"])
+    ).fetchone()
+    if not already:
+        db.execute(
+            "INSERT INTO video_completions (video_id, emp_id, completed_at) VALUES (?,?,?)",
+            (vid, u["emp_id"], datetime.utcnow().isoformat())
+        )
+        db.commit()
+    return jsonify(ok=True)
 
 
 @app.route("/api/content/complete", methods=["POST"])
