@@ -32,6 +32,24 @@ function showTab(name){
   if(name==='videos') loadVideos();
 }
 
+// red count badges on the Induction / Training / Assessments tabs
+async function loadPendingBadges(){
+  let d;
+  try { d = await (await fetch('/api/my-pending-counts')).json(); }
+  catch(e){ return; }
+  if(!d || !d.ok) return;
+  const set = (id, n)=>{
+    const b = document.getElementById(id);
+    if(!b) return;
+    if(n > 0){ b.textContent = n; b.classList.add('show'); }
+    else { b.textContent = ''; b.classList.remove('show'); }
+  };
+  set('badgeInduction', d.induction);
+  set('badgeTraining', d.training);
+  set('badgeAssess', d.assess);
+  set('badgeVideos', d.videos);
+}
+
 /* ---------------- FILE MODULES (Drive PDF/HTML/PPT) ---------------- */
 let MOD_TIMER = null, MOD_VIEWING = null;
 
@@ -114,6 +132,7 @@ async function completeFileModule(){
   if(active==='induction') loadFileModules('induction');
   if(active==='training') loadFileModules('training');
   loadHomeStats();
+  loadPendingBadges();
 }
 
 function closeFileModule(){
@@ -136,10 +155,25 @@ async function loadVideos(){
     box.innerHTML = list.map(v=>`
       <div class="as-card">
         <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
-          <div><h4>🎥 ${esc(v.title)}</h4><div class="meta">${esc(v.description||'')}</div></div>
-          <a class="btn btn-pri" href="${esc(v.link)}" target="_blank">Watch ↗</a>
+          <div><h4>🎥 ${esc(v.title)} ${v.completed?'<span style="color:#1d9e75;font-size:12px">✓ Watched</span>':''}</h4>
+            <div class="meta">${esc(v.description||'')}</div></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <a class="btn btn-pri" href="${esc(v.link)}" target="_blank">Watch ↗</a>
+            ${v.completed
+              ? '<button class="btn btn-sec" disabled style="opacity:.6">Watched</button>'
+              : `<button class="btn btn-sec" onclick="markVideoWatched(${v.id})">Mark as watched</button>`}
+          </div>
         </div></div>`).join('');
   }catch(e){ box.innerHTML = '<div class="empty">Could not load videos.</div>'; }
+}
+
+async function markVideoWatched(id){
+  try{
+    await fetch('/api/content/complete-video',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({video_id:id})});
+  }catch(e){}
+  loadVideos();
+  loadPendingBadges();
 }
 
 /* ---------------- HOME STATS ---------------- */
@@ -389,6 +423,7 @@ async function submitAssessment(){
   catch(e){ alert('Submit failed.'); return; }
   if(!d.ok){ alert(d.msg||'Submit failed.'); return; }
   AS_LASTCERT = (d.passed && d.cert) ? d.cert : null;
+  loadPendingBadges();
   const newCerts = (d.new_certificates) || [];
   $('as-result').innerHTML = `
     <div class="qcard" style="text-align:center;padding:30px">
@@ -493,3 +528,4 @@ async function doSignOut(){
 
 /* start */
 boot();
+loadPendingBadges();
