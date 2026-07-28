@@ -369,6 +369,7 @@ def init_db():
             roles         TEXT NOT NULL DEFAULT 'all',
             require_modules INTEGER NOT NULL DEFAULT 1,
             require_assessment_id INTEGER,
+            valid_months  INTEGER,
             status        TEXT NOT NULL DEFAULT 'live',
             created_by    TEXT,
             created_at    TEXT
@@ -406,6 +407,8 @@ def init_db():
         db.execute("ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0")
     if not _column_exists(db, "users", "last_login"):
         db.execute("ALTER TABLE users ADD COLUMN last_login TEXT")
+    if not _column_exists(db, "certificate_tracks", "valid_months"):
+        db.execute("ALTER TABLE certificate_tracks ADD COLUMN valid_months INTEGER")
     # add time_taken to assessment_results if an older DB doesn't have it
     if not _column_exists(db, "assessment_results", "time_taken"):
         db.execute("ALTER TABLE assessment_results ADD COLUMN time_taken INTEGER DEFAULT 0")
@@ -2662,6 +2665,13 @@ def api_admin_save_cert_track():
     req_assess = d.get("require_assessment_id")
     if req_assess in ("", "none", "0", 0):
         req_assess = None
+    # validity period in months (blank/0 stored as NULL = admin must set one later)
+    try:
+        valid_months = int(d.get("valid_months")) if str(d.get("valid_months") or "").strip() else None
+    except (ValueError, TypeError):
+        valid_months = None
+    if valid_months is not None and valid_months <= 0:
+        valid_months = None
 
     if not cert_name:
         return jsonify(ok=False, msg="Certificate name is required."), 400
@@ -2674,11 +2684,11 @@ def api_admin_save_cert_track():
     db = get_db()
     if tid:
         new_status = "live" if u["role"] == "admin" else "pending"
-        db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,status=? WHERE id=?",
-                   (cert_name, kind, roles, require_modules, req_assess, new_status, tid))
+        db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,valid_months=?,status=? WHERE id=?",
+                   (cert_name, kind, roles, require_modules, req_assess, valid_months, new_status, tid))
     else:
-        db.execute("INSERT INTO certificate_tracks (cert_name,kind,roles,require_modules,require_assessment_id,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)",
-                   (cert_name, kind, roles, require_modules, req_assess, status, u["emp_id"], datetime.utcnow().isoformat()))
+        db.execute("INSERT INTO certificate_tracks (cert_name,kind,roles,require_modules,require_assessment_id,valid_months,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (cert_name, kind, roles, require_modules, req_assess, valid_months, status, u["emp_id"], datetime.utcnow().isoformat()))
     db.commit()
     msg = "Certificate track saved." if status == "live" else "Track submitted — pending admin approval."
     return jsonify(ok=True, msg=msg)
