@@ -1014,6 +1014,165 @@ def api_admin_completion_by_person():
     return jsonify(ok=True, groups=out, total_learners=len(learners))
 
 
+@app.route("/api/admin/full-report.xlsx")
+@admin_required
+def api_admin_full_report_xlsx():
+    """Complete per-employee workbook:
+       - Summary sheet (one row per designation)
+       - One sheet per designation, every employee with their full picture:
+         each assessment (Pass/Fail + score %), modules & videos done/pending,
+         overall status.
+    """
+    from flask import Response
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except Exception:
+        return jsonify(ok=False, msg="Excel export not available."), 500
+
+    db = get_db()
+    learners = db.execute(
+        "SELECT emp_id, name, designation, phone FROM users "
+        "WHERE status='approved' AND role='staff' ORDER BY designation, name"
+    ).fetchall()
+
+    assessments = db.execute("SELECT id, title, roles, pass_percent FROM assessments WHERE active=1 ORDER BY title").fetchall()
+    ind = db.execute("SELECT id, roles FROM content_modules WHERE kind='induction' AND status='live'").fetchall()
+    trn = db.execute("SELECT id, roles FROM content_modules WHERE kind='training' AND status='live'").fetchall()
+    vids = db.execute("SELECT id, roles FROM videos WHERE status='live'").fetchall()
+
+    # best score per (assessment, emp)
+    best = {}
+    for r in db.execute("SELECT assessment_id, emp_id, MAX(percent) p, MAX(passed) passed FROM assessment_results GROUP BY assessment_id, emp_id").fetchall():
+        best[(r["assessment_id"], r["emp_id"])] = (r["p"], r["passed"])
+    comp = {}
+    for c in db.execute("SELECT module_id, emp_id FROM module_completions").fetchall():
+        comp.setdefault(c["emp_id"], set()).add(c["module_id"])
+    vwatch = {}
+    for w in db.execute("SELECT video_id, emp_id FROM video_completions").fetchall():
+        vwatch.setdefault(w["emp_id"], set()).add(w["video_id"])
+
+    # group learners by designation, and seed all designations so empty ones appear
+    order = ["BDE", "BDM", "State Head", "RSM", "NSM", "Corporate", "Back Office"]
+    groups = {}
+    try:
+        for dr in db.execute("SELECT name FROM designations ORDER BY sort_order, name").fetchall():
+            groups[dr["name"]] = []
+    except Exception:
+        pass
+    for u in learners:
+        desg = (u["designation"] or "").strip() or "No designation"
+        groups.setdefault(desg, []).append(u)
+
+    def sort_key(name):
+        i = order.index(name) if name in order else 50
+        return (1 if name == "No designation" else 0, i, name)
+    desg_names = sorted(groups.keys(), key=sort_key)
+
+    wb = Workbook()
+    blue = PatternFill("solid", fgColor="00AEEF")
+    grey = PatternFill("solid", fgColor="EEF2F5")
+    green = PatternFill("solid", fgColor="E1F5EE")
+    red = PatternFill("solid", fgColor="FDECEC")
+    boldw = Font(bold=True, color="FFFFFF")
+    bold = Font(bold=True)
+    center = Alignment(horizontal="center")
+
+    # ---------- Summary sheet ----------
+    ws = wb.active; ws.title = "Summary"
+    ws.append(["Mr. Golisoda Training — Completion Summary"])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([f"Generated {datetime.utcnow().strftime('%d %b %Y')}"])
+    ws.append([])
+    hdr = ["Designation", "People", "Fully complete", "With pending", "Avg assessment score %"]
+    ws.append(hdr)
+    for c in ws[4]:
+        c.font = boldw; c.fill = blue
+
+    def emp_stats(u):
+        d = u["designation"]
+        mi = [m for m in ind if _roles_match_designation(m["roles"], d)]
+        mt = [m for m in trn if _roles_match_designation(m["roles"], d)]
+        ma = [a for a in assessments if _roles_match_designation(a["roles"], d)]
+        mv = [v for v in vids if _roles_match_designation(v["roles"], d)]
+        done = comp.get(u["emp_id"], set()); vw = vwatch.get(u["emp_id"], set())
+        pi = sum(1 for m in mi if m["id"] not in done)
+        pt = sum(1 for m in mt if m["id"] not in done)
+        pv = sum(1 for v in mv if v["id"] not in vw)
+        pas = sum(1 for a in ma if not (best.get((a["id"], u["emp_id"])) or (0, 0))[1])
+        scores = [best[(a["id"], u["emp_id"])][0] for a in ma if (a["id"], u["emp_id"]) in best]
+        avg = round(sum(scores) / len(scores)) if scores else None
+        total_pending = pi + pt + pv + pas
+        return mi, mt, ma, mv, pi, pt, pv, pas, avg, total_pending
+
+    for name in desg_names:
+        people = groups[name]
+        if not people:
+            ws.append([name, 0, 0, 0, "—"]); continue
+        full = 0; pend = 0; all_scores = []
+        for u in people:
+            *_, avg, tp = emp_stats(u)
+            if tp == 0: full += 1
+            else: pend += 1
+            if avg is not None: all_scores.append(avg)
+        avg_all = round(sum(all_scores) / len(all_scores)) if all_scores else "—"
+        ws.append([name, len(people), full, pend, avg_all])
+    for i, w in enumerate([22, 10, 15, 14, 22], start=1):
+        ws.column_dimensions[chr(64 + i)].width = w
+
+    # ---------- One sheet per designation ----------
+    for name in desg_names:
+        people = groups[name]
+        safe = re.sub(r"[^A-Za-z0-9 ]", "", name)[:28] or "Sheet"
+        sh = wb.create_sheet(safe)
+        # header row: fixed cols + one column per assessment
+        head = ["Name", "Emp ID", "Phone"]
+        for a in assessments:
+            if _roles_match_designation(a["roles"], name if name != "No designation" else ""):
+                head.append(a["title"][:22])
+        head += ["Induction done/total", "Training done/total", "Videos done/total",
+                 "Assessments passed/total", "Total pending", "Overall status"]
+        sh.append(head)
+        for c in sh[1]:
+            c.font = boldw; c.fill = blue; c.alignment = center
+
+        assess_cols = [a for a in assessments
+                       if _roles_match_designation(a["roles"], name if name != "No designation" else "")]
+
+        if not people:
+            sh.append(["(no employees in this designation yet)"])
+        for u in people:
+            mi, mt, ma, mv, pi, pt, pv, pas, avg, tp = emp_stats(u)
+            row = [u["name"], u["emp_id"], u["phone"] or ""]
+            for a in assess_cols:
+                key = (a["id"], u["emp_id"])
+                if key in best:
+                    pct, passed = best[key]
+                    row.append(f"{'Pass' if passed else 'Fail'} ({pct}%)")
+                else:
+                    row.append("Not attempted")
+            row.append(f"{len(mi)-pi}/{len(mi)}")
+            row.append(f"{len(mt)-pt}/{len(mt)}")
+            row.append(f"{len(mv)-pv}/{len(mv)}")
+            row.append(f"{len(ma)-pas}/{len(ma)}")
+            row.append(tp)
+            row.append("All done" if tp == 0 else f"{tp} pending")
+            sh.append(row)
+            # colour the status cell
+            cell = sh.cell(row=sh.max_row, column=len(row))
+            cell.fill = green if tp == 0 else red
+
+        widths = [20, 12, 14] + [16] * len(assess_cols) + [19, 18, 16, 22, 13, 15]
+        for i, w in enumerate(widths, start=1):
+            sh.column_dimensions[chr(64 + i) if i <= 26 else "A"].width = w
+
+    bio = io.BytesIO(); wb.save(bio); bio.seek(0)
+    fname = f"MRGOLISODA_Training_Report_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    return Response(bio.getvalue(),
+                    mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @app.route("/api/admin/completion-report")
 @admin_required
 def api_admin_completion_report():
