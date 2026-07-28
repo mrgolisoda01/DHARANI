@@ -399,7 +399,8 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
     <div class="sec-head">
       <h2>Completion tracking</h2>
       <div class="btns">
-        <button class="btn primary" onclick="downloadCompletion('xlsx')">⬇ Excel report</button>
+        <button class="btn primary" onclick="window.location.href='/api/admin/full-report.xlsx'">⬇ Full report (per designation)</button>
+        <button class="btn" onclick="downloadCompletion('xlsx')">⬇ Excel report</button>
         <button class="btn" onclick="downloadCompletion('csv')">⬇ CSV</button>
       </div>
     </div>
