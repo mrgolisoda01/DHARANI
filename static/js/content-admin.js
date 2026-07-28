@@ -67,62 +67,7 @@ function renderInduction(){
 function renderTraining(){
   const box = $c("trnList"); if(!box) return;
   const list = C_MODULES.filter(m=>m.kind==="training");
-  if(list.length === 0){ box.innerHTML = '<div class="empty">No training modules yet.</div>'; return; }
-
-  // which role-folder a module belongs to
-  function groupOf(m){
-    const r = (m.roles || "all").toLowerCase();
-    if(r === "all" || r.trim() === "" || r.split(",").length >= 5) return "All Roles";
-    const first = r.split(",")[0].trim();
-    const nice = {"bde":"BDE","bdm":"BDM","state head":"State Head","rsm":"RSM","nsm":"NSM",
-                  "corporate":"Corporate","back office":"Back Office"};
-    return nice[first] || (first.charAt(0).toUpperCase()+first.slice(1));
-  }
-
-  const groups = {};
-  list.forEach(m=>{ const g=groupOf(m); (groups[g]=groups[g]||[]).push(m); });
-
-  const order = ["All Roles","BDE","BDM","State Head","RSM","NSM","Corporate","Back Office"];
-  const seen = {};
-  let html = "";
-  let fIndex = 0;
-  function section(name){
-    if(!groups[name] || seen[name]) return;
-    seen[name] = true;
-    const fid = "tfold_" + (fIndex++);
-    html += `<div style="margin:0 0 10px">
-      <div onclick="toggleTrnFolder('${fid}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:11px 14px;background:#eaf7fe;border-radius:8px;user-select:none" onmouseover="this.style.background='#daf0fc'" onmouseout="this.style.background='#eaf7fe'">
-        <span id="${fid}_ic" style="font-size:16px">📁</span>
-        <b style="font-size:14px;color:var(--mg-blue);flex:1">${name}</b>
-        <span style="font-size:12px;color:var(--mg-muted)">(${groups[name].length})</span>
-        <span id="${fid}_ar" style="font-size:12px;color:var(--mg-blue)">▶</span>
-      </div>
-      <div id="${fid}" style="max-height:0;overflow:hidden;transition:max-height .3s ease">
-        <div style="padding-top:10px">${groups[name].map(moduleRow).join("")}</div>
-      </div>
-    </div>`;
-  }
-  order.forEach(section);
-  Object.keys(groups).forEach(section);
-  box.innerHTML = html;
-}
-
-// open/close a training folder smoothly
-function toggleTrnFolder(fid){
-  const panel = document.getElementById(fid);
-  const icon = document.getElementById(fid + "_ic");
-  const arrow = document.getElementById(fid + "_ar");
-  if(!panel) return;
-  const isOpen = panel.dataset.open === "1";
-  if(isOpen){
-    panel.style.maxHeight = "0"; panel.dataset.open = "";
-    if(icon) icon.textContent = "📁";
-    if(arrow) arrow.style.transform = "rotate(0deg)";
-  } else {
-    panel.style.maxHeight = panel.scrollHeight + "px"; panel.dataset.open = "1";
-    if(icon) icon.textContent = "📂";
-    if(arrow) arrow.style.transform = "rotate(90deg)";
-  }
+  box.innerHTML = list.length ? list.map(moduleRow).join("") : '<div class="empty">No training modules yet.</div>';
 }
 function renderVideos(){
   const box = $c("vidList"); if(!box) return;
@@ -254,7 +199,7 @@ function renderTracks(){
         <div>
           <div style="font-weight:700">🏅 ${escC(t.cert_name)} ${statusPill}</div>
           <div style="font-size:12px;color:var(--mg-muted);margin-top:4px">For: <b>${escC(t.roles)}</b> · Requires: ${req.join(" + ")||"(none)"}</div>
-          <div style="font-size:12px;color:var(--mg-muted);margin-top:3px">Awarded to <b>${t.issued_count}</b> employee(s)</div>
+          <div style="font-size:12px;color:var(--mg-muted);margin-top:3px">Valid for: <b>${t.valid_months?escC(t.valid_months)+" months":"⚠ not set"}</b> · Awarded to <b>${t.issued_count}</b> employee(s)</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">${approveBtn}
           <button class="btn" onclick="editTrack(${t.id})">Edit</button>
@@ -267,6 +212,7 @@ function openTrackForm(){
   EDIT_TRACK = null;
   $c("tkFormTitle").textContent = "Add certificate track";
   $c("tkName").value=""; $c("tkKind").value="training"; $c("tkReqModules").checked=true; $c("tkReqAssess").value="none";
+  if($c("tkValidMonths")) $c("tkValidMonths").value="";
   document.querySelectorAll(".tkroleck").forEach(c=>c.checked=false);
   $c("trackOv").classList.add("show");
 }
@@ -277,6 +223,7 @@ function editTrack(id){
   $c("tkName").value = t.cert_name; $c("tkKind").value = t.kind;
   $c("tkReqModules").checked = !!t.require_modules;
   $c("tkReqAssess").value = t.require_assessment_id || "none";
+  if($c("tkValidMonths")) $c("tkValidMonths").value = t.valid_months || "";
   const checked = (t.roles||"all").split(",").map(s=>s.trim().toLowerCase());
   document.querySelectorAll(".tkroleck").forEach(c=>{ c.checked = checked.includes(c.value.toLowerCase()); });
   $c("trackOv").classList.add("show");
@@ -287,7 +234,8 @@ async function saveTrack(){
   const body = {
     id: EDIT_TRACK, cert_name: $c("tkName").value.trim(), kind: $c("tkKind").value,
     roles, require_modules: $c("tkReqModules").checked,
-    require_assessment_id: $c("tkReqAssess").value
+    require_assessment_id: $c("tkReqAssess").value,
+    valid_months: $c("tkValidMonths") ? $c("tkValidMonths").value : ""
   };
   if(!body.cert_name){ toastC("Certificate name is required."); return; }
   const r = await apiC("/api/admin/save-cert-track", body);
