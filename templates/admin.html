@@ -440,6 +440,13 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
       <div class="fld"><label>Also require passing an assessment (optional)</label>
         <select id="tkReqAssess"><option value="none">— No assessment required —</option></select>
       </div>
+      <div class="fld"><label>Valid for (months before re-certification is needed)</label>
+        <input id="tkValidMonths" type="number" min="1" placeholder="e.g. 12" />
+        <div style="font-size:11.5px;color:var(--mg-muted);margin-top:3px">
+          Set how many months this certificate stays valid. After that the holder must re-certify.
+          A 30-day "expiring soon" warning shows before it lapses.
+        </div>
+      </div>
       <div class="modal-foot">
         <button class="btn" onclick="closeModal('trackOv')">Cancel</button>
         <button class="btn primary" onclick="saveTrack()">Save track</button>
