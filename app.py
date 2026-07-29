@@ -2017,13 +2017,40 @@ def api_my_pending_counts():
 
 @app.route("/api/my-certificates")
 @login_required
+def _expiry_state(issued_at, valid_months):
+    """Given when a certificate was issued and its validity in months,
+    return (state, expiry_date_str, days_left).
+    state is one of: 'valid', 'expiring', 'expired', or None (never expires)."""
+    if not valid_months or not issued_at:
+        return None, None, None
+    try:
+        issued = datetime.fromisoformat(issued_at.replace("Z", ""))
+    except Exception:
+        return None, None, None
+    # add months (simple, calendar-safe enough for whole months)
+    month0 = issued.month - 1 + int(valid_months)
+    year = issued.year + month0 // 12
+    month = month0 % 12 + 1
+    day = min(issued.day, [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
+                           31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+    expiry = issued.replace(year=year, month=month, day=day)
+    days_left = (expiry.date() - datetime.utcnow().date()).days
+    if days_left < 0:
+        state = "expired"
+    elif days_left <= 30:
+        state = "expiring"
+    else:
+        state = "valid"
+    return state, expiry.strftime("%d %B %Y"), days_left
+
+
 def api_my_certificates():
     """All certificates this learner earned: assessment passes + completion tracks."""
     u = current_user()
     db = get_db()
     certs = []
 
-    # 1) assessment certificates (passed assessments)
+    # 1) assessment certificates (passed assessments) — these do not expire
     rows = db.execute(
         "SELECT a.title, MAX(r.percent) AS best, MAX(r.taken_at) AS last_date "
         "FROM assessment_results r JOIN assessments a ON a.id = r.assessment_id "
@@ -2040,12 +2067,16 @@ def api_my_certificates():
             date_str = ""
         certs.append({
             "type": "assessment", "assessment": r["title"], "score": r["best"],
-            "date": date_str, "name": u["name"], "emp_id": u["emp_id"]
+            "date": date_str, "name": u["name"], "emp_id": u["emp_id"],
+            "expiry_state": None, "expiry_date": None, "days_left": None
         })
 
-    # 2) completion-track certificates (issued)
+    # 2) completion-track certificates (issued) — these can expire
     trows = db.execute(
-        "SELECT cert_name, issued_at FROM issued_certificates WHERE emp_id=? ORDER BY issued_at DESC",
+        "SELECT ic.cert_name, ic.issued_at, ct.valid_months "
+        "FROM issued_certificates ic "
+        "LEFT JOIN certificate_tracks ct ON ct.id = ic.track_id "
+        "WHERE ic.emp_id=? ORDER BY ic.issued_at DESC",
         (u["emp_id"],)
     ).fetchall()
     for t in trows:
@@ -2055,9 +2086,11 @@ def api_my_certificates():
             date_str = dt.strftime("%d %B %Y") if dt else ""
         except Exception:
             date_str = ""
+        state, expiry_date, days_left = _expiry_state(t["issued_at"], t["valid_months"])
         certs.append({
             "type": "completion", "assessment": t["cert_name"], "score": None,
-            "date": date_str, "name": u["name"], "emp_id": u["emp_id"]
+            "date": date_str, "name": u["name"], "emp_id": u["emp_id"],
+            "expiry_state": state, "expiry_date": expiry_date, "days_left": days_left
         })
 
     return jsonify(ok=True, certificates=certs)
