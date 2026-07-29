@@ -2015,35 +2015,44 @@ def api_my_pending_counts():
                    videos=video_pending)
 
 
-@app.route("/api/my-certificates")
-@login_required
 def _expiry_state(issued_at, valid_months):
     """Given when a certificate was issued and its validity in months,
     return (state, expiry_date_str, days_left).
-    state is one of: 'valid', 'expiring', 'expired', or None (never expires)."""
-    if not valid_months or not issued_at:
-        return None, None, None
+    state is one of: 'valid', 'expiring', 'expired', or None (never expires).
+    Wrapped so no unexpected input type can raise — a bad value simply
+    means 'no expiry shown' rather than crashing the whole page."""
     try:
-        issued = datetime.fromisoformat(issued_at.replace("Z", ""))
+        if not valid_months or not issued_at:
+            return None, None, None
+        vm = int(valid_months)
+        if vm <= 0:
+            return None, None, None
+        s = issued_at if isinstance(issued_at, str) else str(issued_at)
+        s = s.replace("Z", "").strip()
+        try:
+            issued = datetime.fromisoformat(s)
+        except Exception:
+            issued = datetime.fromisoformat(s[:19]) if len(s) >= 19 else datetime.fromisoformat(s[:10])
+        month0 = issued.month - 1 + vm
+        year = issued.year + month0 // 12
+        month = month0 % 12 + 1
+        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        day = min(issued.day, [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+        expiry = issued.replace(year=year, month=month, day=day)
+        days_left = (expiry.date() - datetime.utcnow().date()).days
+        if days_left < 0:
+            state = "expired"
+        elif days_left <= 30:
+            state = "expiring"
+        else:
+            state = "valid"
+        return state, expiry.strftime("%d %B %Y"), days_left
     except Exception:
         return None, None, None
-    # add months (simple, calendar-safe enough for whole months)
-    month0 = issued.month - 1 + int(valid_months)
-    year = issued.year + month0 // 12
-    month = month0 % 12 + 1
-    day = min(issued.day, [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
-                           31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
-    expiry = issued.replace(year=year, month=month, day=day)
-    days_left = (expiry.date() - datetime.utcnow().date()).days
-    if days_left < 0:
-        state = "expired"
-    elif days_left <= 30:
-        state = "expiring"
-    else:
-        state = "valid"
-    return state, expiry.strftime("%d %B %Y"), days_left
 
 
+@app.route("/api/my-certificates")
+@login_required
 def api_my_certificates():
     """All certificates this learner earned: assessment passes + completion tracks."""
     u = current_user()
