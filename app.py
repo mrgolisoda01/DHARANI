@@ -2071,14 +2071,23 @@ def api_my_certificates():
             "expiry_state": None, "expiry_date": None, "days_left": None
         })
 
-    # 2) completion-track certificates (issued) — these can expire
-    trows = db.execute(
-        "SELECT ic.cert_name, ic.issued_at, ct.valid_months "
-        "FROM issued_certificates ic "
-        "LEFT JOIN certificate_tracks ct ON ct.id = ic.track_id "
-        "WHERE ic.emp_id=? ORDER BY ic.issued_at DESC",
-        (u["emp_id"],)
-    ).fetchall()
+    # 2) completion-track certificates (issued) — these can expire.
+    # Fetch tracks defensively: if valid_months column is missing on an older
+    # database, fall back to a query without it rather than 500-ing.
+    try:
+        trows = db.execute(
+            "SELECT ic.cert_name, ic.issued_at, ct.valid_months "
+            "FROM issued_certificates ic "
+            "LEFT JOIN certificate_tracks ct ON ct.id = ic.track_id "
+            "WHERE ic.emp_id=? ORDER BY ic.issued_at DESC",
+            (u["emp_id"],)
+        ).fetchall()
+    except Exception:
+        trows = db.execute(
+            "SELECT cert_name, issued_at, NULL AS valid_months "
+            "FROM issued_certificates WHERE emp_id=? ORDER BY issued_at DESC",
+            (u["emp_id"],)
+        ).fetchall()
     for t in trows:
         d = t["issued_at"]
         try:
@@ -2086,7 +2095,11 @@ def api_my_certificates():
             date_str = dt.strftime("%d %B %Y") if dt else ""
         except Exception:
             date_str = ""
-        state, expiry_date, days_left = _expiry_state(t["issued_at"], t["valid_months"])
+        try:
+            vm = t["valid_months"]
+        except Exception:
+            vm = None
+        state, expiry_date, days_left = _expiry_state(t["issued_at"], vm)
         certs.append({
             "type": "completion", "assessment": t["cert_name"], "score": None,
             "date": date_str, "name": u["name"], "emp_id": u["emp_id"],
