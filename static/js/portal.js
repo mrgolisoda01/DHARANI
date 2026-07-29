@@ -455,15 +455,40 @@ async function loadCertificates(){
     const d = await (await fetch('/api/my-certificates')).json();
     const list = (d && d.certificates) || [];
     if(list.length===0){ box.innerHTML = '<div class="empty">No certificates yet. Pass an assessment to earn one.</div>'; return; }
-    box.innerHTML = list.map((c,i)=>{
+
+    // heads-up banner if anything is expiring or expired
+    const expired = list.filter(c=>c.expiry_state==='expired').length;
+    const expiring = list.filter(c=>c.expiry_state==='expiring').length;
+    let banner = '';
+    if(expired || expiring){
+      const parts = [];
+      if(expired) parts.push(`<b>${expired}</b> expired`);
+      if(expiring) parts.push(`<b>${expiring}</b> expiring soon`);
+      const col = expired ? '#e24b4a' : '#c98a00';
+      const bg = expired ? '#fdecec' : '#fff7e6';
+      banner = `<div style="background:${bg};border:1px solid ${col}55;border-left:4px solid ${col};
+        border-radius:8px;padding:11px 14px;margin-bottom:14px;font-size:13px;color:${col}">
+        ⚠ You have ${parts.join(' and ')}. Please re-certify to stay current.</div>`;
+    }
+    box.innerHTML = banner + list.map((c,i)=>{
       const isCompletion = c.type === 'completion';
       const scoreLine = (c.score!=null) ? `Score ${c.score}% · ${esc(c.date)}` : esc(c.date);
       const icon = isCompletion ? '🎖️' : '🏅';
       const tag = isCompletion ? '<span class="badge b-pass">Completion</span>' : '';
+      // expiry status line (only track certificates carry this)
+      let expiryLine = '';
+      if(c.expiry_state === 'valid'){
+        expiryLine = `<div style="font-size:12px;color:#1d9e75;margin-top:3px">✓ Valid until ${esc(c.expiry_date)}</div>`;
+      } else if(c.expiry_state === 'expiring'){
+        const dl = c.days_left;
+        expiryLine = `<div style="font-size:12px;color:#c98a00;font-weight:600;margin-top:3px">⚠ Expires in ${dl} day${dl===1?'':'s'} (${esc(c.expiry_date)}) — please re-certify</div>`;
+      } else if(c.expiry_state === 'expired'){
+        expiryLine = `<div style="font-size:12px;color:#e24b4a;font-weight:600;margin-top:3px">✗ Expired on ${esc(c.expiry_date)} — please re-certify</div>`;
+      }
       return `<div class="as-card">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
           <div><h4>${icon} ${esc(c.assessment)} ${tag}</h4>
-            <div class="meta">${scoreLine}</div></div>
+            <div class="meta">${scoreLine}</div>${expiryLine}</div>
           <button class="btn btn-pri" onclick='openCert(${JSON.stringify(c).replace(/'/g,"&#39;")})'>View certificate</button>
         </div></div>`;
     }).join('');
