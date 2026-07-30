@@ -952,6 +952,56 @@ def _roles_match_designation(roles_field, designation):
     return any(a and a in desg for a in allowed)
 
 
+@app.route("/api/admin/cert-expiry")
+@admin_required
+def api_admin_cert_expiry():
+    """Every issued track certificate with its expiry status, so the training
+    team can see who is due for re-certification. Grouped: expired first,
+    then expiring soon, then valid. Only tracks with a validity period appear."""
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT ic.emp_id, ic.cert_name, ic.issued_at, ct.valid_months, "
+            "       u.name AS emp_name, u.designation "
+            "FROM issued_certificates ic "
+            "LEFT JOIN certificate_tracks ct ON ct.id = ic.track_id "
+            "LEFT JOIN users u ON u.emp_id = ic.emp_id "
+            "ORDER BY ic.issued_at DESC"
+        ).fetchall()
+    except Exception:
+        rows = []
+
+    expired, expiring, valid = [], [], []
+    for r in rows:
+        vm = None
+        try:
+            vm = r["valid_months"]
+        except Exception:
+            vm = None
+        if not vm:
+            continue  # no validity set → doesn't expire → skip
+        state, expiry_date, days_left = _expiry_state(r["issued_at"], vm)
+        if state is None:
+            continue
+        item = {
+            "emp_id": r["emp_id"], "name": r["emp_name"] or r["emp_id"],
+            "designation": r["designation"] or "",
+            "cert_name": r["cert_name"], "expiry_date": expiry_date,
+            "days_left": days_left, "state": state
+        }
+        if state == "expired":
+            expired.append(item)
+        elif state == "expiring":
+            expiring.append(item)
+        else:
+            valid.append(item)
+
+    expired.sort(key=lambda x: x["days_left"])          # most overdue first
+    expiring.sort(key=lambda x: x["days_left"])          # soonest first
+    return jsonify(ok=True, expired=expired, expiring=expiring, valid=valid,
+                   counts={"expired": len(expired), "expiring": len(expiring), "valid": len(valid)})
+
+
 @app.route("/api/admin/completion-by-person")
 @admin_required
 def api_admin_completion_by_person():
