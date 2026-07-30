@@ -404,14 +404,17 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
         <button class="btn" onclick="downloadCompletion('csv')">⬇ CSV</button>
       </div>
     </div>
-    <div style="display:inline-flex;border:1px solid var(--mg-line);border-radius:8px;overflow:hidden;margin-bottom:14px">
+    <div style="display:inline-flex;border:1px solid var(--mg-line);border-radius:8px;overflow:hidden;margin-bottom:14px;flex-wrap:wrap">
       <button class="btn" id="pvPerson" onclick="setProgView('person')"
         style="border:none;border-radius:0;background:var(--mg-blue);color:#fff;font-weight:600">By person</button>
       <button class="btn" id="pvItem" onclick="setProgView('item')"
         style="border:none;border-radius:0">By assessment / module</button>
+      <button class="btn" id="pvCert" onclick="setProgView('cert')"
+        style="border:none;border-radius:0">Re-certification</button>
     </div>
     <div id="progPersonBody"><div class="empty">Loading…</div></div>
     <div id="progBody" style="display:none"><div class="empty">Loading…</div></div>
+    <div id="progCertBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
 
   <!-- PENDING PEOPLE MODAL -->
@@ -675,12 +678,71 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     // ===== Progress: toggle between By person (folders) and By item =====
     function setProgView(v){
-      const pP = document.getElementById('pvPerson'), pI = document.getElementById('pvItem');
-      const bP = document.getElementById('progPersonBody'), bI = document.getElementById('progBody');
+      const pP = document.getElementById('pvPerson'), pI = document.getElementById('pvItem'), pC = document.getElementById('pvCert');
+      const bP = document.getElementById('progPersonBody'), bI = document.getElementById('progBody'), bC = document.getElementById('progCertBody');
       const on = (b)=>{ b.style.background='var(--mg-blue)'; b.style.color='#fff'; b.style.fontWeight='600'; };
       const off = (b)=>{ b.style.background=''; b.style.color=''; b.style.fontWeight=''; };
-      if(v==='person'){ on(pP); off(pI); bP.style.display=''; bI.style.display='none'; loadPersonProgress(); }
-      else { on(pI); off(pP); bI.style.display=''; bP.style.display='none'; loadCompletionReport(); }
+      [pP,pI,pC].forEach(off); [bP,bI,bC].forEach(b=>b.style.display='none');
+      if(v==='person'){ on(pP); bP.style.display=''; loadPersonProgress(); }
+      else if(v==='item'){ on(pI); bI.style.display=''; loadCompletionReport(); }
+      else { on(pC); bC.style.display=''; loadCertExpiry(); }
+    }
+
+    async function loadCertExpiry(){
+      const box = document.getElementById('progCertBody');
+      box.innerHTML = '<div class="empty">Loading…</div>';
+      let d;
+      try { d = await (await fetch('/api/admin/cert-expiry')).json(); }
+      catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.ok){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+
+      const c = d.counts;
+      if(c.expired===0 && c.expiring===0 && c.valid===0){
+        box.innerHTML = '<div class="empty">No certificates with a validity period yet. Set "Valid for (months)" on a certificate track, and this fills in as people earn them.</div>';
+        return;
+      }
+
+      function row(x){
+        const col = x.state==='expired' ? '#e24b4a' : (x.state==='expiring' ? '#c98a00' : '#1d9e75');
+        const when = x.state==='expired'
+          ? `Expired ${Math.abs(x.days_left)} day${Math.abs(x.days_left)===1?'':'s'} ago (${escP(x.expiry_date)})`
+          : (x.state==='expiring'
+              ? `Expires in ${x.days_left} day${x.days_left===1?'':'s'} (${escP(x.expiry_date)})`
+              : `Valid until ${escP(x.expiry_date)}`);
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--mg-line)">
+          <div><b style="font-size:13.5px">${escP(x.name)}</b>
+            <span style="font-size:11.5px;color:var(--mg-muted)"> · ${escP(x.emp_id)}${x.designation?' · '+escP(x.designation):''}</span>
+            <div style="font-size:12px;color:var(--mg-muted)">${escP(x.cert_name)}</div></div>
+          <span style="font-size:12px;color:${col};font-weight:600;text-align:right;white-space:nowrap">${when}</span>
+        </div>`;
+      }
+
+      function section(title, items, colour, note){
+        if(!items.length) return '';
+        return `<div style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:8px;padding:9px 14px;background:${colour}15;border-left:4px solid ${colour};border-radius:6px;margin-bottom:6px">
+            <b style="font-size:14px;color:${colour}">${title}</b>
+            <span style="font-size:12px;color:var(--mg-muted)">${items.length}${note?' · '+note:''}</span>
+          </div>
+          ${items.map(row).join('')}
+        </div>`;
+      }
+
+      let html = `<div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:120px;background:#fdecec;border-radius:10px;padding:12px 14px">
+          <div style="font-size:12px;color:var(--mg-muted)">Expired</div>
+          <div style="font-size:22px;font-weight:700;color:#e24b4a">${c.expired}</div></div>
+        <div style="flex:1;min-width:120px;background:#fff7e6;border-radius:10px;padding:12px 14px">
+          <div style="font-size:12px;color:var(--mg-muted)">Expiring soon</div>
+          <div style="font-size:22px;font-weight:700;color:#c98a00">${c.expiring}</div></div>
+        <div style="flex:1;min-width:120px;background:#e9f9f2;border-radius:10px;padding:12px 14px">
+          <div style="font-size:12px;color:var(--mg-muted)">Valid</div>
+          <div style="font-size:22px;font-weight:700;color:#1d9e75">${c.valid}</div></div>
+      </div>`;
+      html += section('⚠ Expired — re-certify now', d.expired, '#e24b4a');
+      html += section('⏳ Expiring soon (within 30 days)', d.expiring, '#c98a00');
+      html += section('✓ Valid', d.valid, '#1d9e75');
+      box.innerHTML = html;
     }
 
     async function loadPersonProgress(){
