@@ -180,9 +180,17 @@ function buildTrackRoleChecks(){
   box.innerHTML = C_ROLES.map(r=>`<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12px"><input type="checkbox" class="tkroleck" value="${r}" style="width:auto"> ${r}</label>`).join("");
 }
 function buildTrackAssessDropdown(){
-  const sel = $c("tkReqAssess"); if(!sel) return;
-  sel.innerHTML = '<option value="none">— No assessment required —</option>' +
-    TRACK_ASSESS.map(a=>`<option value="${a.id}">${escC(a.title)}</option>`).join("");
+  const sel = $c("tkReqAssess");
+  if(sel){
+    sel.innerHTML = '<option value="none">— No assessment required —</option>' +
+      TRACK_ASSESS.map(a=>`<option value="${a.id}">${escC(a.title)}</option>`).join("");
+  }
+  // the re-take (renewal) dropdown uses the same list of assessments
+  const rsel = $c("tkRetakeAssess");
+  if(rsel){
+    rsel.innerHTML = '<option value="none">— Same as above / none —</option>' +
+      TRACK_ASSESS.map(a=>`<option value="${a.id}">${escC(a.title)}</option>`).join("");
+  }
 }
 
 function renderTracks(){
@@ -212,6 +220,7 @@ function openTrackForm(){
   EDIT_TRACK = null;
   $c("tkFormTitle").textContent = "Add certificate track";
   $c("tkName").value=""; $c("tkKind").value="training"; $c("tkReqModules").checked=true; $c("tkReqAssess").value="none";
+  if($c("tkRetakeAssess")) $c("tkRetakeAssess").value="none";
   if($c("tkValidMonths")) $c("tkValidMonths").value="";
   document.querySelectorAll(".tkroleck").forEach(c=>c.checked=false);
   $c("trackOv").classList.add("show");
@@ -223,6 +232,7 @@ function editTrack(id){
   $c("tkName").value = t.cert_name; $c("tkKind").value = t.kind;
   $c("tkReqModules").checked = !!t.require_modules;
   $c("tkReqAssess").value = t.require_assessment_id || "none";
+  if($c("tkRetakeAssess")) $c("tkRetakeAssess").value = t.retake_assessment_id || "none";
   if($c("tkValidMonths")) $c("tkValidMonths").value = t.valid_months || "";
   const checked = (t.roles||"all").split(",").map(s=>s.trim().toLowerCase());
   document.querySelectorAll(".tkroleck").forEach(c=>{ c.checked = checked.includes(c.value.toLowerCase()); });
@@ -235,6 +245,7 @@ async function saveTrack(){
     id: EDIT_TRACK, cert_name: $c("tkName").value.trim(), kind: $c("tkKind").value,
     roles, require_modules: $c("tkReqModules").checked,
     require_assessment_id: $c("tkReqAssess").value,
+    retake_assessment_id: $c("tkRetakeAssess") ? $c("tkRetakeAssess").value : "none",
     valid_months: $c("tkValidMonths") ? $c("tkValidMonths").value : ""
   };
   if(!body.cert_name){ toastC("Certificate name is required."); return; }
