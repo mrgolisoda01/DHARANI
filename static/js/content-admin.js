@@ -67,8 +67,65 @@ function renderInduction(){
 function renderTraining(){
   const box = $c("trnList"); if(!box) return;
   const list = C_MODULES.filter(m=>m.kind==="training");
-  box.innerHTML = list.length ? list.map(moduleRow).join("") : '<div class="empty">No training modules yet.</div>';
+  if(list.length===0){ box.innerHTML = '<div class="empty">No training modules yet.</div>'; return; }
+
+  // group modules by designation. A module with multiple roles appears under
+  // each of its designations. "all"/empty shows under "All roles".
+  const order = ["BDE","BDM","State Head","RSM","NSM","Corporate","Back Office"];
+  const groups = {};
+  // seed every known designation so empty folders still show
+  (C_ROLES||[]).forEach(r=>{ groups[r]=[]; });
+  list.forEach(m=>{
+    const roles = (m.roles||"all").split(",").map(s=>s.trim()).filter(Boolean);
+    if(roles.length===0 || roles.some(r=>r.toLowerCase()==="all")){
+      (groups["All roles"] = groups["All roles"]||[]).push(m);
+    } else {
+      roles.forEach(r=>{
+        // match to a known designation name case-insensitively, else use as-is
+        const key = (C_ROLES||[]).find(x=>x.toLowerCase()===r.toLowerCase()) || r;
+        (groups[key] = groups[key]||[]).push(m);
+      });
+    }
+  });
+
+  const names = Object.keys(groups).sort((a,b)=>{
+    if(a==="All roles") return -1; if(b==="All roles") return 1;
+    let ia=order.indexOf(a), ib=order.indexOf(b);
+    if(ia<0) ia=50; if(ib<0) ib=50;
+    return ia-ib || a.localeCompare(b);
+  });
+
+  let html = "", fi = 0;
+  names.forEach(name=>{
+    const items = groups[name];
+    const fid = "tfold_"+(fi++);
+    const countTxt = items.length ? items.length+" module"+(items.length===1?"":"s") : "empty";
+    html += `<div style="margin:0 0 10px">
+      <div onclick="toggleTrnFolder('${fid}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:11px 14px;background:#eaf7fe;border-radius:8px;user-select:none"
+           onmouseover="this.style.background='#daf0fc'" onmouseout="this.style.background='#eaf7fe'">
+        <span id="${fid}_ic" style="font-size:16px">📁</span>
+        <b style="font-size:14px;color:var(--mg-blue);flex:1">${escC(name)}</b>
+        <span style="font-size:12px;color:var(--mg-muted)">${countTxt}</span>
+        <span id="${fid}_ar" style="font-size:12px;color:var(--mg-blue);transition:transform .2s">▶</span>
+      </div>
+      <div id="${fid}" style="max-height:0;overflow:hidden;transition:max-height .3s ease">
+        <div style="padding-top:8px">${items.length ? items.map(moduleRow).join("") : '<div class="empty" style="padding:8px 0">No modules for this designation yet.</div>'}</div>
+      </div>
+    </div>`;
+  });
+  box.innerHTML = html;
 }
+
+function toggleTrnFolder(fid){
+  const panel = document.getElementById(fid);
+  const ic = document.getElementById(fid+"_ic");
+  const ar = document.getElementById(fid+"_ar");
+  if(!panel) return;
+  const open = panel.dataset.open==="1";
+  if(open){ panel.style.maxHeight="0"; panel.dataset.open=""; if(ic)ic.textContent="📁"; if(ar)ar.style.transform="rotate(0deg)"; }
+  else { panel.style.maxHeight=panel.scrollHeight+"px"; panel.dataset.open="1"; if(ic)ic.textContent="📂"; if(ar)ar.style.transform="rotate(90deg)"; }
+}
+
 function renderVideos(){
   const box = $c("vidList"); if(!box) return;
   box.innerHTML = C_VIDEOS.length ? C_VIDEOS.map(v=>{
