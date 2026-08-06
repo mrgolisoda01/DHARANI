@@ -369,6 +369,7 @@ def init_db():
             roles         TEXT NOT NULL DEFAULT 'all',
             require_modules INTEGER NOT NULL DEFAULT 1,
             require_assessment_id INTEGER,
+            retake_assessment_id INTEGER,
             valid_months  INTEGER,
             status        TEXT NOT NULL DEFAULT 'live',
             created_by    TEXT,
@@ -409,6 +410,8 @@ def init_db():
         db.execute("ALTER TABLE users ADD COLUMN last_login TEXT")
     if not _column_exists(db, "certificate_tracks", "valid_months"):
         db.execute("ALTER TABLE certificate_tracks ADD COLUMN valid_months INTEGER")
+    if not _column_exists(db, "certificate_tracks", "retake_assessment_id"):
+        db.execute("ALTER TABLE certificate_tracks ADD COLUMN retake_assessment_id INTEGER")
     # add time_taken to assessment_results if an older DB doesn't have it
     if not _column_exists(db, "assessment_results", "time_taken"):
         db.execute("ALTER TABLE assessment_results ADD COLUMN time_taken INTEGER DEFAULT 0")
@@ -2306,10 +2309,13 @@ def api_submit_assessment():
 
     # passing an assessment may complete a certificate track
     new_certs = _check_and_issue_tracks(u["emp_id"]) if passed else []
+    # or it may be a RE-TAKE that renews an existing certificate's validity
+    renewed_certs = _process_retakes(u["emp_id"], a["id"]) if passed else []
 
     return jsonify(ok=True, score=score, total=total, percent=percent,
                    passed=bool(passed), pass_percent=a["pass_percent"],
                    new_certificates=new_certs,
+                   renewed_certificates=renewed_certs,
                    cert={
                        "name": u["name"], "emp_id": u["emp_id"],
                        "assessment": a["title"], "score": percent,
@@ -2729,6 +2735,38 @@ def _check_and_issue_tracks(emp_id):
     return newly
 
 
+def _process_retakes(emp_id, assessment_id):
+    """If the assessment just passed is a track's RE-TAKE assessment, renew that
+    certificate: stamp a fresh issue date (today), resetting its validity period.
+    Returns list of renewed certificate names."""
+    db = get_db()
+    try:
+        tracks = db.execute(
+            "SELECT * FROM certificate_tracks WHERE status='live' AND retake_assessment_id=?",
+            (assessment_id,)
+        ).fetchall()
+    except Exception:
+        return []
+    renewed = []
+    for t in tracks:
+        # only renew if they already hold this certificate (re-take is for renewal)
+        existing = db.execute(
+            "SELECT id FROM issued_certificates WHERE track_id=? AND emp_id=? ORDER BY issued_at DESC LIMIT 1",
+            (t["id"], emp_id)
+        ).fetchone()
+        now = datetime.utcnow().isoformat()
+        if existing:
+            db.execute("UPDATE issued_certificates SET issued_at=? WHERE id=?", (now, existing["id"]))
+        else:
+            # they passed the re-take without ever holding it — issue it fresh
+            db.execute("INSERT INTO issued_certificates (track_id,emp_id,cert_name,issued_at) VALUES (?,?,?,?)",
+                       (t["id"], emp_id, t["cert_name"], now))
+        renewed.append(t["cert_name"])
+    if renewed:
+        db.commit()
+    return renewed
+
+
 @app.route("/api/admin/cert-tracks")
 @login_required
 def api_admin_cert_tracks():
@@ -2770,6 +2808,9 @@ def api_admin_save_cert_track():
     req_assess = d.get("require_assessment_id")
     if req_assess in ("", "none", "0", 0):
         req_assess = None
+    retake_assess = d.get("retake_assessment_id")
+    if retake_assess in ("", "none", "0", 0):
+        retake_assess = None
     # validity period in months (blank/0 stored as NULL = admin must set one later)
     try:
         valid_months = int(d.get("valid_months")) if str(d.get("valid_months") or "").strip() else None
@@ -2789,11 +2830,11 @@ def api_admin_save_cert_track():
     db = get_db()
     if tid:
         new_status = "live" if u["role"] == "admin" else "pending"
-        db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,valid_months=?,status=? WHERE id=?",
-                   (cert_name, kind, roles, require_modules, req_assess, valid_months, new_status, tid))
+        db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,retake_assessment_id=?,valid_months=?,status=? WHERE id=?",
+                   (cert_name, kind, roles, require_modules, req_assess, retake_assess, valid_months, new_status, tid))
     else:
-        db.execute("INSERT INTO certificate_tracks (cert_name,kind,roles,require_modules,require_assessment_id,valid_months,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                   (cert_name, kind, roles, require_modules, req_assess, valid_months, status, u["emp_id"], datetime.utcnow().isoformat()))
+        db.execute("INSERT INTO certificate_tracks (cert_name,kind,roles,require_modules,require_assessment_id,retake_assessment_id,valid_months,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                   (cert_name, kind, roles, require_modules, req_assess, retake_assess, valid_months, status, u["emp_id"], datetime.utcnow().isoformat()))
     db.commit()
     msg = "Certificate track saved." if status == "live" else "Track submitted — pending admin approval."
     return jsonify(ok=True, msg=msg)
