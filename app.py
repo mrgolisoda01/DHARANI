@@ -461,6 +461,22 @@ def admin_required(view):
     return wrapped
 
 
+def view_admin_required(view):
+    """Allows admin OR instructor. For READ-ONLY admin pages (dashboards,
+    reports, progress, viewing lists). Actions that change/delete/approve
+    stay on @admin_required so only admins can perform them."""
+    from functools import wraps
+    @wraps(view)
+    def wrapped(*a, **k):
+        u = current_user()
+        if u is None or u["role"] not in ("admin", "instructor"):
+            if request.path.startswith("/api/"):
+                return jsonify(ok=False, msg="Not authorised."), 403
+            return redirect(url_for("login_page"))
+        return view(*a, **k)
+    return wrapped
+
+
 # ---------------------------------------------------------------
 #  Pages
 # ---------------------------------------------------------------
@@ -478,7 +494,7 @@ def portal_page():
 
 
 @app.route("/admin")
-@admin_required
+@view_admin_required
 def admin_page():
     return render_template("admin.html", user=current_user())
 
@@ -637,7 +653,7 @@ def api_reject():
 # ===============================================================
 
 @app.route("/api/admin/dashboard")
-@admin_required
+@view_admin_required
 def api_admin_dashboard():
     """Stats for the dashboard home + full employee list."""
     db = get_db()
@@ -758,7 +774,7 @@ def api_admin_delete_user():
 
 # ---------- SETTINGS: team overview, admins/instructors, quick add, backup ----------
 @app.route("/api/admin/team-overview")
-@admin_required
+@view_admin_required
 def api_admin_team_overview():
     db = get_db()
     def cnt(q, *a): return db.execute(q, a).fetchone()["c"]
@@ -836,7 +852,7 @@ def api_admin_set_admin():
 
 
 @app.route("/api/admin/export-data")
-@admin_required
+@view_admin_required
 def api_admin_export_data():
     """Export all users + scores + assessment results as a single CSV (backup)."""
     db = get_db()
@@ -956,7 +972,7 @@ def _roles_match_designation(roles_field, designation):
 
 
 @app.route("/api/admin/cert-expiry")
-@admin_required
+@view_admin_required
 def api_admin_cert_expiry():
     """Every issued track certificate with its expiry status, so the training
     team can see who is due for re-certification. Grouped: expired first,
@@ -1006,7 +1022,7 @@ def api_admin_cert_expiry():
 
 
 @app.route("/api/admin/completion-by-person")
-@admin_required
+@view_admin_required
 def api_admin_completion_by_person():
     """Per-employee pending counts, grouped by designation (for the folders view).
     For each approved learner: how many induction/training modules and
@@ -1071,7 +1087,7 @@ def api_admin_completion_by_person():
 
 
 @app.route("/api/admin/full-report.xlsx")
-@admin_required
+@view_admin_required
 def api_admin_full_report_xlsx():
     """Complete per-employee workbook:
        - Summary sheet (one row per designation)
@@ -1230,7 +1246,7 @@ def api_admin_full_report_xlsx():
 
 
 @app.route("/api/admin/completion-report")
-@admin_required
+@view_admin_required
 def api_admin_completion_report():
     """For every assessment and training/induction module, show enrolled /
     completed / pending counts + the list of people who haven't done it.
@@ -1297,7 +1313,7 @@ def api_admin_completion_report():
 
 
 @app.route("/api/admin/completion-report.csv")
-@admin_required
+@view_admin_required
 def api_admin_completion_report_csv():
     """Download the completion report as CSV."""
     # rebuild the same data
@@ -1337,7 +1353,7 @@ def api_admin_completion_report_csv():
 
 
 @app.route("/api/admin/completion-report.xlsx")
-@admin_required
+@view_admin_required
 def api_admin_completion_report_xlsx():
     """Download the completion report as Excel."""
     from flask import Response
@@ -1407,7 +1423,7 @@ def _designation_usage(name):
 
 
 @app.route("/api/admin/designations")
-@admin_required
+@view_admin_required
 def api_admin_designations():
     """List designations with how many employees/items use each."""
     db = get_db()
@@ -1514,7 +1530,7 @@ def api_admin_delete_designation():
 
 
 @app.route("/api/admin/assessments")
-@admin_required
+@view_admin_required
 def api_admin_assessments():
     """List all assessments with question counts and attempt counts."""
     db = get_db()
@@ -1640,7 +1656,7 @@ def api_admin_delete_assessment():
 
 # ---------- EDIT an assessment: settings + questions ----------
 @app.route("/api/admin/assessment-detail")
-@admin_required
+@view_admin_required
 def api_admin_assessment_detail():
     """Full assessment + all its questions (for the edit screen)."""
     aid = request.args.get("id")
@@ -1777,7 +1793,7 @@ def api_admin_add_questions_csv():
 
 
 @app.route("/api/admin/assessment-results")
-@admin_required
+@view_admin_required
 def api_admin_assessment_results():
     """All results for one assessment (for the admin table + CSV export)."""
     aid = request.args.get("id")
@@ -1811,7 +1827,7 @@ def _fmt_mins(seconds):
 
 
 @app.route("/api/admin/attempt-details")
-@admin_required
+@view_admin_required
 def api_admin_attempt_details():
     """Full question-by-question breakdown for ONE attempt (on-screen view)."""
     result_id = request.args.get("result_id")
@@ -1855,7 +1871,7 @@ def _gather_report_rows(aid):
 
 
 @app.route("/api/admin/results-report.csv")
-@admin_required
+@view_admin_required
 def api_admin_results_report_csv():
     """Download the full detailed report as CSV (per-question rows)."""
     aid = request.args.get("id")
@@ -1902,7 +1918,7 @@ def api_admin_results_report_csv():
 
 
 @app.route("/api/admin/results-report.xlsx")
-@admin_required
+@view_admin_required
 def api_admin_results_report_xlsx():
     """Download the full detailed report as an Excel file with summary sheets."""
     aid = request.args.get("id")
