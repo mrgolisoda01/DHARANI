@@ -93,7 +93,10 @@ function renderTable(){
       : '<span class="pill p-pending">Pending</span>';
 
     let actions = "";
-    if(e.status === "pending"){
+    if(window.IS_ADMIN === false){
+      // instructors can view the employee list but not act on it
+      actions = '<span style="font-size:11px;color:#9aa6ae">view only</span>';
+    } else if(e.status === "pending"){
       actions =
         `<button class="act ok" title="Approve" onclick="approve('${e.emp_id}')">✔</button>`+
         `<button class="act no" title="Reject" onclick="reject('${e.emp_id}')">✖</button>`;
