@@ -90,7 +90,7 @@
     <div class="ad-brand">
       <div class="ad-logo"><img id="adLogo" alt="Mr. Golisoda" style="height:40px;width:auto;display:block" /></div>
       <div>
-        <h1>Mr. Golisoda Training · Admin</h1>
+        <h1 id="adTitle">Mr. Golisoda Training · Admin</h1>
         <p>South Asian Food Corporation</p>
       </div>
     </div>
@@ -553,6 +553,12 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     // who is logged in — used to hide admin-only actions from instructors
     window.MY_ROLE = "{{ user.role }}";
     window.IS_ADMIN = (window.MY_ROLE === "admin");
+
+    // top-left title reflects the role
+    document.addEventListener("DOMContentLoaded", function(){
+      var t = document.getElementById("adTitle");
+      if(t) t.textContent = "Mr. Golisoda Training · " + (window.IS_ADMIN ? "Admin" : "Instructor");
+    });
 
     // Instructors can SEE every admin page, but the actions that only admins
     // may perform (approving users/content, deleting people, managing
