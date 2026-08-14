@@ -730,13 +730,16 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       const contentRows = [];
       d.modules.forEach(m=> contentRows.push(rowWrap(
         `<b>${esc(m.title)}</b> <span style="color:var(--mg-muted)">· ${esc(m.kind)} module · ${esc(m.roles||'all')}</span>`,
-        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`)));
+        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('module',${m.id})">Decline</button>`)));
       d.videos.forEach(v=> contentRows.push(rowWrap(
         `<b>${esc(v.title)}</b> <span style="color:var(--mg-muted)">· video · ${esc(v.roles||'all')}</span>`,
-        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('video',${v.id})">Approve</button>`)));
+        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('video',${v.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('video',${v.id})">Decline</button>`)));
       d.certs.forEach(c=> contentRows.push(rowWrap(
         `<b>${esc(c.title)}</b> <span style="color:var(--mg-muted)">· certificate · ${esc(c.roles||'all')}</span>`,
-        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`)));
+        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('cert',${c.id})">Decline</button>`)));
       if(contentRows.length){
         html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''));
       }
@@ -771,6 +774,11 @@ Priya S,MG087,9876500000,State Head,"></textarea>
                 : '/api/admin/approve-cert-track';
       const r = await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})})).json();
       if(r.ok){ toast('Approved — now live.'); loadApprovals(); } else toast(r.msg||'Failed.');
+    }
+    async function apprDeclineContent(kind, id){
+      if(!confirm('Decline this? It stays saved in the system but will not go live.')) return;
+      const r = await (await fetch('/api/admin/decline-content',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id})})).json();
+      if(r.ok){ toast('Declined — kept but not live.'); loadApprovals(); } else toast(r.msg||'Failed.');
     }
     async function apprResolveDelete(id, decision){
       if(decision==='approve' && !confirm('Approve this delete? The item will be permanently removed.')) return;
