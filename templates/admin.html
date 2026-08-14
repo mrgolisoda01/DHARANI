@@ -117,6 +117,7 @@
     <button class="tabbtn" id="tabVidBtn" onclick="switchTab('vid')">🎥 Videos</button>
     <button class="tabbtn" id="tabCrtBtn" onclick="switchTab('crt')">📜 Certificates</button>
     <button class="tabbtn" id="tabProgBtn" onclick="switchTab('prog')">📊 Progress</button>
+    <button class="tabbtn admin-only" id="tabApprBtn" onclick="switchTab('appr')">✅ Approvals <span id="apprBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
     <button class="tabbtn" id="tabSetBtn" onclick="switchTab('set')">⚙️ Settings</button>
   </div>
 
@@ -426,6 +427,12 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
     <div id="progCertBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
 
+  <div class="wrap tabpane" id="tabAppr" style="display:none">
+    <div class="sec-head"><h2>Approvals</h2></div>
+    <p style="margin:0 0 16px;font-size:13px;color:var(--mg-muted)">Everything waiting for your approval in one place — new employees, content instructors created, and delete requests. Approve to make it live, or reject to cancel.</p>
+    <div id="apprBody"><div class="empty">Loading…</div></div>
+  </div>
+
   <!-- PENDING PEOPLE MODAL -->
   <div class="ov" id="pendingOv">
     <div class="modal" style="max-width:520px"><div id="pendingBody"></div></div>
@@ -577,7 +584,11 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     // may perform (approving users/content, deleting people, managing
     // designations, making someone an admin) are hidden for them.
     document.addEventListener("DOMContentLoaded", function(){
-      if(window.IS_ADMIN) return;  // admins see everything
+      if(window.IS_ADMIN){
+        // show the pending-approvals count on the tab as soon as the page loads
+        if(typeof refreshApprovalBadge === 'function') setTimeout(refreshApprovalBadge, 400);
+        return;  // admins see everything
+      }
       var css = document.createElement("style");
       css.textContent = ".admin-only{display:none !important;}";
       document.head.appendChild(css);
@@ -642,10 +653,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     }
 
     const TABS = {
-      emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', prog: 'tabProg', set: 'tabSet'
+      emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', prog: 'tabProg', appr: 'tabAppr', set: 'tabSet'
     };
     const TAB_BTNS = {
-      emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', set: 'tabSetBtn'
+      emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', appr: 'tabApprBtn', set: 'tabSetBtn'
     };
     function switchTab(which){
       Object.keys(TABS).forEach(k=>{
@@ -659,7 +670,112 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       }
       if(which === 'crt') loadTracks();
       if(which === 'prog'){ loadPersonProgress(); }
+      if(which === 'appr'){ loadApprovals(); }
       if(which === 'set'){ loadSettings(); loadDesignations(); }
+    }
+
+    // ---- Central Approvals tab ----
+    async function refreshApprovalBadge(){
+      try{
+        const d = await (await fetch('/api/admin/all-approvals')).json();
+        if(!d.ok) return;
+        const b = document.getElementById('apprBadge');
+        if(b){
+          if(d.total > 0){ b.textContent = d.total; b.style.display = 'inline-block'; }
+          else { b.style.display = 'none'; }
+        }
+      }catch(e){}
+    }
+
+    async function loadApprovals(){
+      const box = document.getElementById('apprBody');
+      box.innerHTML = '<div class="empty">Loading…</div>';
+      let d;
+      try{ d = await (await fetch('/api/admin/all-approvals')).json(); }
+      catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.ok){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+
+      const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const b = document.getElementById('apprBadge');
+      if(b){ if(d.total>0){ b.textContent=d.total; b.style.display='inline-block'; } else b.style.display='none'; }
+
+      if(d.total === 0){
+        box.innerHTML = '<div class="empty">🎉 Nothing waiting for approval. You\'re all caught up.</div>';
+        return;
+      }
+
+      function card(title, colour, bodyHtml){
+        return `<div style="background:#fff;border:1px solid var(--mg-line);border-left:4px solid ${colour};border-radius:12px;padding:16px;margin-bottom:14px">
+          <h3 style="font-size:14.5px;margin:0 0 10px;color:${colour}">${title}</h3>${bodyHtml}</div>`;
+      }
+      function rowWrap(left, buttons){
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--mg-line);flex-wrap:wrap">
+          <div style="font-size:13px">${left}</div><div style="display:flex;gap:6px">${buttons}</div></div>`;
+      }
+      let html = '';
+
+      // Employees
+      if(d.employees.length){
+        const rows = d.employees.map(e=>{
+          const src = e.added_by ? `added by instructor` : `self sign-up`;
+          const left = `<b>${esc(e.name)}</b> · ${esc(e.emp_id)} <span style="color:var(--mg-muted)">${e.designation?'· '+esc(e.designation):''} · ${src}</span>`;
+          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveEmployee('${esc(e.emp_id)}')">Approve</button>`
+                     + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprRejectEmployee('${esc(e.emp_id)}')">Reject</button>`;
+          return rowWrap(left, btns);
+        }).join('');
+        html += card('👥 New employees ('+d.employees.length+')', '#1f5fa9', rows);
+      }
+
+      // Content: modules, videos, certs
+      const contentRows = [];
+      d.modules.forEach(m=> contentRows.push(rowWrap(
+        `<b>${esc(m.title)}</b> <span style="color:var(--mg-muted)">· ${esc(m.kind)} module · ${esc(m.roles||'all')}</span>`,
+        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`)));
+      d.videos.forEach(v=> contentRows.push(rowWrap(
+        `<b>${esc(v.title)}</b> <span style="color:var(--mg-muted)">· video · ${esc(v.roles||'all')}</span>`,
+        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('video',${v.id})">Approve</button>`)));
+      d.certs.forEach(c=> contentRows.push(rowWrap(
+        `<b>${esc(c.title)}</b> <span style="color:var(--mg-muted)">· certificate · ${esc(c.roles||'all')}</span>`,
+        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`)));
+      if(contentRows.length){
+        html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''));
+      }
+
+      // Delete requests
+      if(d.deletes.length){
+        const typeLabel = { user:'Employee', assessment:'Assessment', module:'Module', video:'Video' };
+        const rows = d.deletes.map(a=>{
+          const left = `<b>Delete ${typeLabel[a.target_type]||a.target_type}:</b> ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>`;
+          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#e24b4a" onclick="apprResolveDelete(${a.id},'approve')">Approve delete</button>`
+                     + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
+          return rowWrap(left, btns);
+        }).join('');
+        html += card('🗑 Delete requests ('+d.deletes.length+')', '#e24b4a', rows);
+      }
+
+      box.innerHTML = html;
+    }
+
+    async function apprApproveEmployee(emp_id){
+      const r = await (await fetch('/api/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({emp_id})})).json();
+      if(r.ok){ toast('Employee approved.'); loadApprovals(); } else toast(r.msg||'Failed.');
+    }
+    async function apprRejectEmployee(emp_id){
+      if(!confirm('Reject and remove this sign-up?')) return;
+      const r = await (await fetch('/api/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({emp_id})})).json();
+      if(r.ok){ toast('Rejected.'); loadApprovals(); } else toast(r.msg||'Failed.');
+    }
+    async function apprApproveContent(kind, id){
+      const url = kind==='module' ? '/api/admin/approve-module'
+                : kind==='video'  ? '/api/admin/approve-video'
+                : '/api/admin/approve-cert-track';
+      const r = await (await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})})).json();
+      if(r.ok){ toast('Approved — now live.'); loadApprovals(); } else toast(r.msg||'Failed.');
+    }
+    async function apprResolveDelete(id, decision){
+      if(decision==='approve' && !confirm('Approve this delete? The item will be permanently removed.')) return;
+      const r = await (await fetch('/api/admin/resolve-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,decision})})).json();
+      if(r.ok){ toast(r.msg||'Done.'); loadApprovals(); } else toast(r.msg||'Failed.');
     }
 
     async function loadSettings(){
