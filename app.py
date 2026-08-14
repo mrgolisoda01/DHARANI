@@ -708,42 +708,54 @@ def api_admin_all_approvals():
     and instructor delete requests."""
     db = get_db()
 
-    # 1) pending employees (self-signup or instructor-added)
+    # 1) pending employees (self-signup or instructor-added), with adder's name
     try:
         emp_rows = db.execute(
-            "SELECT emp_id, name, designation, role, added_by, created_at "
-            "FROM users WHERE status='pending' ORDER BY created_at DESC"
+            "SELECT us.emp_id, us.name, us.designation, us.role, us.added_by, us.created_at, "
+            "       ad.name AS added_by_name "
+            "FROM users us LEFT JOIN users ad ON ad.emp_id = us.added_by "
+            "WHERE us.status='pending' ORDER BY us.created_at DESC"
         ).fetchall()
     except Exception:
         emp_rows = []
     employees = []
     for e in emp_rows:
         by = None
+        by_name = None
         try:
             by = e["added_by"]
+            by_name = e["added_by_name"]
         except Exception:
             by = None
         employees.append({
             "emp_id": e["emp_id"], "name": e["name"],
             "designation": e["designation"] or "", "role": e["role"],
-            "added_by": by
+            "added_by": by, "added_by_name": by_name
         })
 
-    # 2) pending content
+    # 2) pending content — include who created each (name), via join to users
     def pend(sql):
         try:
             return [dict(r) for r in db.execute(sql).fetchall()]
         except Exception:
             return []
-    modules = pend("SELECT id, title, kind, roles FROM content_modules WHERE status='pending' ORDER BY id DESC")
-    videos = pend("SELECT id, title, roles FROM videos WHERE status='pending' ORDER BY id DESC")
+    modules = pend("SELECT m.id, m.title, m.kind, m.roles, m.created_by, u.name AS by_name "
+                   "FROM content_modules m LEFT JOIN users u ON u.emp_id=m.created_by "
+                   "WHERE m.status='pending' ORDER BY m.id DESC")
+    videos = pend("SELECT v.id, v.title, v.roles, v.created_by, u.name AS by_name "
+                  "FROM videos v LEFT JOIN users u ON u.emp_id=v.created_by "
+                  "WHERE v.status='pending' ORDER BY v.id DESC")
     # assessments now have a status column (instructor-created start pending)
     try:
         assessments = [dict(r) for r in db.execute(
-            "SELECT id, title FROM assessments WHERE status='pending' ORDER BY id DESC").fetchall()]
+            "SELECT a.id, a.title, a.created_by, u.name AS by_name "
+            "FROM assessments a LEFT JOIN users u ON u.emp_id=a.created_by "
+            "WHERE a.status='pending' ORDER BY a.id DESC").fetchall()]
     except Exception:
         assessments = []
-    certs = pend("SELECT id, cert_name AS title, roles FROM certificate_tracks WHERE status='pending' ORDER BY id DESC")
+    certs = pend("SELECT c.id, c.cert_name AS title, c.roles, c.created_by, u.name AS by_name "
+                 "FROM certificate_tracks c LEFT JOIN users u ON u.emp_id=c.created_by "
+                 "WHERE c.status='pending' ORDER BY c.id DESC")
 
     # 3) delete requests
     try:
