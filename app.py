@@ -406,6 +406,8 @@ def init_db():
 
     if not _column_exists(db, "users", "must_reset"):
         db.execute("ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0")
+    if not _column_exists(db, "users", "added_by"):
+        db.execute("ALTER TABLE users ADD COLUMN added_by TEXT")
     if not _column_exists(db, "users", "last_login"):
         db.execute("ALTER TABLE users ADD COLUMN last_login TEXT")
     if not _column_exists(db, "certificate_tracks", "valid_months"):
@@ -793,9 +795,14 @@ def api_admin_team_overview():
 
 
 @app.route("/api/admin/quick-add-user", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_quick_add_user():
-    """Add a single user directly (name, emp_id, phone, designation, role, password)."""
+    """Add a single user directly (name, emp_id, phone, designation, role, password).
+    Admins can add directly. Instructors CAN add too, but the new employee is
+    always 'pending' until an admin approves them (approval workflow)."""
+    u = current_user()
+    is_instructor = (u["role"] == "instructor")
+
     d = request.get_json(force=True)
     name = (d.get("name") or "").strip()
     emp_id = (d.get("emp_id") or "").strip()
@@ -809,6 +816,9 @@ def api_admin_quick_add_user():
         return jsonify(ok=False, msg="Name and Employee ID are required."), 400
     if role not in VALID_ROLES:
         role = "staff"
+    # instructors may not create admins or other instructors — only learners
+    if is_instructor and role != "staff":
+        role = "staff"
     if not pw:
         pw = "Golisoda@123"
     if len(pw) < 6:
@@ -818,15 +828,22 @@ def api_admin_quick_add_user():
     if db.execute("SELECT 1 FROM users WHERE emp_id=?", (emp_id,)).fetchone():
         return jsonify(ok=False, msg="This Employee ID already exists."), 400
 
-    status = "approved" if auto_approve else "pending"
+    # instructor-added users are ALWAYS pending, regardless of the checkbox
+    if is_instructor:
+        status = "pending"
+    else:
+        status = "approved" if auto_approve else "pending"
     must_reset = 1 if pw == "Golisoda@123" else 0
+    added_by = u["emp_id"] if is_instructor else None
     db.execute(
-        "INSERT INTO users (emp_id,name,phone,designation,password_hash,status,role,created_at,must_reset) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO users (emp_id,name,phone,designation,password_hash,status,role,created_at,must_reset,added_by) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (emp_id, name, phone, desg, generate_password_hash(pw), status, role,
-         datetime.utcnow().isoformat(), must_reset)
+         datetime.utcnow().isoformat(), must_reset, added_by)
     )
     db.commit()
+    if is_instructor:
+        return jsonify(ok=True, msg=f"{name} added — pending admin approval.")
     return jsonify(ok=True, msg=f"{name} added as {role}.")
 
 
