@@ -700,6 +700,95 @@ def api_my_submissions():
     return jsonify(ok=True, items=items)
 
 
+@app.route("/api/admin/edit-diff")
+@admin_required
+def api_admin_edit_diff():
+    """For a pending edit request: return the current (live) values and the
+    proposed new values, field by field, so the admin can compare."""
+    import json as _json
+    rid = request.args.get("id")
+    db = get_db()
+    act = db.execute("SELECT * FROM pending_actions WHERE id=? AND action_type='edit' AND status='pending'", (rid,)).fetchone()
+    if not act:
+        return jsonify(ok=False, msg="Edit request not found."), 404
+    try:
+        proposed = _json.loads(act["payload"] or "{}")
+    except Exception:
+        proposed = {}
+
+    tt = act["target_type"]
+    tid = act["target_id"]
+    current = {}
+    if tt == "module":
+        row = db.execute("SELECT * FROM content_modules WHERE id=?", (tid,)).fetchone()
+        if row:
+            r = dict(row)
+            current = {
+                "title": r.get("title"), "description": r.get("description"),
+                "link": r.get("link"), "kind": r.get("kind"),
+                "file_type": r.get("file_type"), "min_minutes": r.get("min_minutes"),
+                "roles": r.get("roles"), "sort_order": r.get("sort_order")
+            }
+
+    # build a field-by-field comparison, marking which changed
+    labels = {
+        "title": "Title", "description": "Description", "link": "Link/URL",
+        "kind": "Type", "file_type": "File type", "min_minutes": "Min minutes",
+        "roles": "Roles", "sort_order": "Order"
+    }
+    fields = []
+    for key, lab in labels.items():
+        ov = current.get(key)
+        nv = proposed.get(key)
+        fields.append({
+            "label": lab,
+            "old": "" if ov is None else str(ov),
+            "new": "" if nv is None else str(nv),
+            "changed": (str(ov) if ov is not None else "") != (str(nv) if nv is not None else "")
+        })
+    return jsonify(ok=True, target_type=tt, target_label=act["target_label"],
+                   requested_by_name=act["requested_by_name"], fields=fields)
+
+
+@app.route("/api/admin/resolve-edit", methods=["POST"])
+@admin_required
+def api_admin_resolve_edit():
+    """Approve or reject a pending edit. Approve applies the staged new values
+    to the live item; reject discards them and the old version stays."""
+    import json as _json
+    d = request.get_json(force=True)
+    rid = d.get("id")
+    decision = (d.get("decision") or "").strip()
+    db = get_db()
+    act = db.execute("SELECT * FROM pending_actions WHERE id=? AND action_type='edit' AND status='pending'", (rid,)).fetchone()
+    if not act:
+        return jsonify(ok=False, msg="Edit request not found or already handled."), 404
+
+    if decision == "reject":
+        db.execute("UPDATE pending_actions SET status='rejected' WHERE id=?", (rid,))
+        db.commit()
+        return jsonify(ok=True, msg="Edit rejected — the current version stays live.")
+
+    if decision != "approve":
+        return jsonify(ok=False, msg="Invalid decision."), 400
+
+    try:
+        p = _json.loads(act["payload"] or "{}")
+    except Exception:
+        p = {}
+    tt = act["target_type"]
+    tid = act["target_id"]
+    if tt == "module":
+        db.execute(
+            "UPDATE content_modules SET kind=?,title=?,description=?,link=?,file_type=?,min_minutes=?,roles=?,sort_order=?,status='live' WHERE id=?",
+            (p.get("kind"), p.get("title"), p.get("description"), p.get("link"),
+             p.get("file_type"), p.get("min_minutes"), p.get("roles"), p.get("sort_order"), tid)
+        )
+    db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (rid,))
+    db.commit()
+    return jsonify(ok=True, msg="Edit approved — the new version is now live.")
+
+
 @app.route("/api/admin/all-approvals")
 @admin_required
 def api_admin_all_approvals():
@@ -757,20 +846,28 @@ def api_admin_all_approvals():
                  "FROM certificate_tracks c LEFT JOIN users u ON u.emp_id=c.created_by "
                  "WHERE c.status='pending' ORDER BY c.id DESC")
 
-    # 3) delete requests
+    # 3) delete requests + edit requests (from pending_actions)
     try:
         del_rows = db.execute(
-            "SELECT * FROM pending_actions WHERE status='pending' ORDER BY created_at DESC"
+            "SELECT * FROM pending_actions WHERE status='pending' AND action_type='delete' ORDER BY created_at DESC"
         ).fetchall()
         deletes = [dict(r) for r in del_rows]
     except Exception:
         deletes = []
+    try:
+        edit_rows = db.execute(
+            "SELECT id, target_type, target_id, target_label, requested_by, requested_by_name, created_at "
+            "FROM pending_actions WHERE status='pending' AND action_type='edit' ORDER BY created_at DESC"
+        ).fetchall()
+        edits = [dict(r) for r in edit_rows]
+    except Exception:
+        edits = []
 
     total = (len(employees) + len(modules) + len(videos) + len(assessments)
-             + len(certs) + len(deletes))
+             + len(certs) + len(deletes) + len(edits))
     return jsonify(ok=True, total=total,
                    employees=employees, modules=modules, videos=videos,
-                   assessments=assessments, certs=certs, deletes=deletes)
+                   assessments=assessments, certs=certs, deletes=deletes, edits=edits)
 
 
 @app.route("/api/admin/pending-actions")
@@ -779,7 +876,7 @@ def api_admin_pending_actions():
     """All pending action requests (currently: instructor delete requests)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type='delete' ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -2752,14 +2849,51 @@ def api_admin_save_module():
         existing = db.execute("SELECT * FROM content_modules WHERE id=?", (mid,)).fetchone()
         if not existing:
             return jsonify(ok=False, msg="Module not found."), 404
-        # if instructor edits, it goes back to pending; admin edits stay live
-        new_status = "live" if u["role"] == "admin" else "pending"
+
+        # ADMIN edit: applies immediately (stays live).
+        if u["role"] == "admin":
+            db.execute(
+                "UPDATE content_modules SET kind=?,title=?,description=?,link=?,file_type=?,min_minutes=?,roles=?,sort_order=?,status='live' WHERE id=?",
+                (kind, title, desc, link, file_type, mins, roles, sort_order, mid)
+            )
+            db.commit()
+            return jsonify(ok=True, msg="Module updated.")
+
+        # INSTRUCTOR edit of an EXISTING module:
+        # keep the OLD version live and untouched; stage the NEW version as a
+        # pending edit for admin approval (edit-approval workflow).
+        import json as _json
+        proposed = {
+            "kind": kind, "title": title, "description": desc, "link": link,
+            "file_type": file_type, "min_minutes": mins, "roles": roles,
+            "sort_order": sort_order
+        }
+        # if the module is itself still pending (never approved), just update it
+        # in place — there's no live version to protect yet.
+        if existing["status"] == "pending":
+            db.execute(
+                "UPDATE content_modules SET kind=?,title=?,description=?,link=?,file_type=?,min_minutes=?,roles=?,sort_order=? WHERE id=?",
+                (kind, title, desc, link, file_type, mins, roles, sort_order, mid)
+            )
+            db.commit()
+            return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+
+        # live module: stage the edit, don't touch the live copy
+        # replace any earlier pending edit for the same module
         db.execute(
-            "UPDATE content_modules SET kind=?,title=?,description=?,link=?,file_type=?,min_minutes=?,roles=?,sort_order=?,status=? WHERE id=?",
-            (kind, title, desc, link, file_type, mins, roles, sort_order, new_status, mid)
+            "UPDATE pending_actions SET status='rejected' "
+            "WHERE action_type='edit' AND target_type='module' AND target_id=? AND status='pending'",
+            (str(mid),)
+        )
+        db.execute(
+            "INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,"
+            "requested_by,requested_by_name,status,created_at) "
+            "VALUES ('edit','module',?,?,?,?,?,'pending',?)",
+            (str(mid), title, _json.dumps(proposed), u["emp_id"], u["name"],
+             datetime.utcnow().isoformat())
         )
         db.commit()
-        return jsonify(ok=True, msg="Module updated." + ("" if u["role"] == "admin" else " Pending admin approval."))
+        return jsonify(ok=True, msg="Edit submitted for admin approval. The current version stays live until approved.")
     else:
         db.execute(
             "INSERT INTO content_modules (kind,title,description,link,file_type,min_minutes,roles,sort_order,status,created_by,created_at) "
