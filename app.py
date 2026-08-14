@@ -719,23 +719,35 @@ def api_admin_edit_diff():
     tt = act["target_type"]
     tid = act["target_id"]
     current = {}
+    labels = {}
     if tt == "module":
         row = db.execute("SELECT * FROM content_modules WHERE id=?", (tid,)).fetchone()
+        labels = {"title":"Title","description":"Description","link":"Link/URL","kind":"Type",
+                  "file_type":"File type","min_minutes":"Min minutes","roles":"Roles","sort_order":"Order"}
         if row:
             r = dict(row)
-            current = {
-                "title": r.get("title"), "description": r.get("description"),
-                "link": r.get("link"), "kind": r.get("kind"),
-                "file_type": r.get("file_type"), "min_minutes": r.get("min_minutes"),
-                "roles": r.get("roles"), "sort_order": r.get("sort_order")
-            }
-
-    # build a field-by-field comparison, marking which changed
-    labels = {
-        "title": "Title", "description": "Description", "link": "Link/URL",
-        "kind": "Type", "file_type": "File type", "min_minutes": "Min minutes",
-        "roles": "Roles", "sort_order": "Order"
-    }
+            current = {k: r.get(k) for k in labels}
+    elif tt == "video":
+        row = db.execute("SELECT * FROM videos WHERE id=?", (tid,)).fetchone()
+        labels = {"title":"Title","description":"Description","link":"Link/URL","roles":"Roles","sort_order":"Order"}
+        if row:
+            r = dict(row)
+            current = {k: r.get(k) for k in labels}
+    elif tt == "assessment":
+        row = db.execute("SELECT * FROM assessments WHERE id=?", (tid,)).fetchone()
+        labels = {"title":"Title","roles":"Roles","num_questions":"No. of questions",
+                  "pass_percent":"Pass %","time_limit":"Time limit (min)"}
+        if row:
+            r = dict(row)
+            current = {k: r.get(k) for k in labels}
+    elif tt == "cert":
+        row = db.execute("SELECT * FROM certificate_tracks WHERE id=?", (tid,)).fetchone()
+        labels = {"cert_name":"Certificate name","kind":"Type","roles":"Roles",
+                  "require_modules":"Require modules","require_assessment_id":"Required assessment",
+                  "retake_assessment_id":"Re-take assessment","valid_months":"Valid (months)"}
+        if row:
+            r = dict(row)
+            current = {k: r.get(k) for k in labels}
     fields = []
     for key, lab in labels.items():
         ov = current.get(key)
@@ -783,6 +795,22 @@ def api_admin_resolve_edit():
             "UPDATE content_modules SET kind=?,title=?,description=?,link=?,file_type=?,min_minutes=?,roles=?,sort_order=?,status='live' WHERE id=?",
             (p.get("kind"), p.get("title"), p.get("description"), p.get("link"),
              p.get("file_type"), p.get("min_minutes"), p.get("roles"), p.get("sort_order"), tid)
+        )
+    elif tt == "video":
+        db.execute(
+            "UPDATE videos SET title=?,description=?,link=?,roles=?,sort_order=?,status='live' WHERE id=?",
+            (p.get("title"), p.get("description"), p.get("link"), p.get("roles"), p.get("sort_order"), tid)
+        )
+    elif tt == "assessment":
+        db.execute(
+            "UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=? WHERE id=?",
+            (p.get("title"), p.get("roles"), p.get("num_questions"), p.get("pass_percent"), p.get("time_limit"), tid)
+        )
+    elif tt == "cert":
+        db.execute(
+            "UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,retake_assessment_id=?,valid_months=?,status='live' WHERE id=?",
+            (p.get("cert_name"), p.get("kind"), p.get("roles"), p.get("require_modules"),
+             p.get("require_assessment_id"), p.get("retake_assessment_id"), p.get("valid_months"), tid)
         )
     db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (rid,))
     db.commit()
@@ -2025,9 +2053,10 @@ def api_admin_assessment_detail():
 
 
 @app.route("/api/admin/update-assessment", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_update_assessment():
     """Update assessment settings (title, roles, pass mark, num questions, time)."""
+    u = current_user()
     d = request.get_json(force=True)
     aid = d.get("id")
     db = get_db()
@@ -2050,10 +2079,32 @@ def api_admin_update_assessment():
     if num_q > pool and pool > 0:
         num_q = pool
 
-    db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=? WHERE id=?",
-               (title, roles, num_q, pass_pct, time_limit, aid))
+    # ADMIN: apply immediately
+    if u["role"] == "admin":
+        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=? WHERE id=?",
+                   (title, roles, num_q, pass_pct, time_limit, aid))
+        db.commit()
+        return jsonify(ok=True, msg="Settings saved.")
+
+    # INSTRUCTOR editing: stage the change; old stays live
+    import json as _json
+    proposed = {"title": title, "roles": roles, "num_questions": num_q,
+                "pass_percent": pass_pct, "time_limit": time_limit}
+    try:
+        a_status = a["status"]
+    except Exception:
+        a_status = "live"
+    if a_status == "pending":
+        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=? WHERE id=?",
+                   (title, roles, num_q, pass_pct, time_limit, aid))
+        db.commit()
+        return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+    db.execute("UPDATE pending_actions SET status='rejected' WHERE action_type='edit' AND target_type='assessment' AND target_id=? AND status='pending'", (str(aid),))
+    db.execute("INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,requested_by,requested_by_name,status,created_at) "
+               "VALUES ('edit','assessment',?,?,?,?,?,'pending',?)",
+               (str(aid), title, _json.dumps(proposed), u["emp_id"], u["name"], datetime.utcnow().isoformat()))
     db.commit()
-    return jsonify(ok=True, msg="Settings saved.")
+    return jsonify(ok=True, msg="Edit submitted for admin approval. The current version stays live until approved.")
 
 
 @app.route("/api/admin/save-question", methods=["POST"])
@@ -3002,9 +3053,29 @@ def api_admin_save_video():
     status = "live" if u["role"] == "admin" else "pending"
     db = get_db()
     if vid:
-        new_status = "live" if u["role"] == "admin" else "pending"
-        db.execute("UPDATE videos SET title=?,description=?,link=?,roles=?,sort_order=?,status=? WHERE id=?",
-                   (title, desc, link, roles, sort_order, new_status, vid))
+        existing = db.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone()
+        if not existing:
+            return jsonify(ok=False, msg="Video not found."), 404
+        if u["role"] == "admin":
+            db.execute("UPDATE videos SET title=?,description=?,link=?,roles=?,sort_order=?,status='live' WHERE id=?",
+                       (title, desc, link, roles, sort_order, vid))
+            db.commit()
+            return jsonify(ok=True, msg="Video saved.")
+        # instructor editing
+        import json as _json
+        proposed = {"title": title, "description": desc, "link": link,
+                    "roles": roles, "sort_order": sort_order}
+        if existing["status"] == "pending":
+            db.execute("UPDATE videos SET title=?,description=?,link=?,roles=?,sort_order=? WHERE id=?",
+                       (title, desc, link, roles, sort_order, vid))
+            db.commit()
+            return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+        db.execute("UPDATE pending_actions SET status='rejected' WHERE action_type='edit' AND target_type='video' AND target_id=? AND status='pending'", (str(vid),))
+        db.execute("INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,requested_by,requested_by_name,status,created_at) "
+                   "VALUES ('edit','video',?,?,?,?,?,'pending',?)",
+                   (str(vid), title, _json.dumps(proposed), u["emp_id"], u["name"], datetime.utcnow().isoformat()))
+        db.commit()
+        return jsonify(ok=True, msg="Edit submitted for admin approval. The current version stays live until approved.")
     else:
         db.execute("INSERT INTO videos (title,description,link,roles,sort_order,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)",
                    (title, desc, link, roles, sort_order, status, u["emp_id"], datetime.utcnow().isoformat()))
@@ -3291,9 +3362,30 @@ def api_admin_save_cert_track():
     status = "live" if u["role"] == "admin" else "pending"
     db = get_db()
     if tid:
-        new_status = "live" if u["role"] == "admin" else "pending"
-        db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,retake_assessment_id=?,valid_months=?,status=? WHERE id=?",
-                   (cert_name, kind, roles, require_modules, req_assess, retake_assess, valid_months, new_status, tid))
+        existing = db.execute("SELECT * FROM certificate_tracks WHERE id=?", (tid,)).fetchone()
+        if not existing:
+            return jsonify(ok=False, msg="Certificate track not found."), 404
+        if u["role"] == "admin":
+            db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,retake_assessment_id=?,valid_months=?,status='live' WHERE id=?",
+                       (cert_name, kind, roles, require_modules, req_assess, retake_assess, valid_months, tid))
+            db.commit()
+            return jsonify(ok=True, msg="Certificate track saved.")
+        # instructor editing
+        import json as _json
+        proposed = {"cert_name": cert_name, "kind": kind, "roles": roles,
+                    "require_modules": require_modules, "require_assessment_id": req_assess,
+                    "retake_assessment_id": retake_assess, "valid_months": valid_months}
+        if existing["status"] == "pending":
+            db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,retake_assessment_id=?,valid_months=? WHERE id=?",
+                       (cert_name, kind, roles, require_modules, req_assess, retake_assess, valid_months, tid))
+            db.commit()
+            return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+        db.execute("UPDATE pending_actions SET status='rejected' WHERE action_type='edit' AND target_type='cert' AND target_id=? AND status='pending'", (str(tid),))
+        db.execute("INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,requested_by,requested_by_name,status,created_at) "
+                   "VALUES ('edit','cert',?,?,?,?,?,'pending',?)",
+                   (str(tid), cert_name, _json.dumps(proposed), u["emp_id"], u["name"], datetime.utcnow().isoformat()))
+        db.commit()
+        return jsonify(ok=True, msg="Edit submitted for admin approval. The current version stays live until approved.")
     else:
         db.execute("INSERT INTO certificate_tracks (cert_name,kind,roles,require_modules,require_assessment_id,retake_assessment_id,valid_months,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                    (cert_name, kind, roles, require_modules, req_assess, retake_assess, valid_months, status, u["emp_id"], datetime.utcnow().isoformat()))
