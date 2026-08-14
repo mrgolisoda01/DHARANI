@@ -117,7 +117,7 @@
     <button class="tabbtn" id="tabVidBtn" onclick="switchTab('vid')">🎥 Videos</button>
     <button class="tabbtn" id="tabCrtBtn" onclick="switchTab('crt')">📜 Certificates</button>
     <button class="tabbtn" id="tabProgBtn" onclick="switchTab('prog')">📊 Progress</button>
-    <button class="tabbtn admin-only" id="tabApprBtn" onclick="switchTab('appr')">✅ Approvals <span id="apprBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
+    <button class="tabbtn" id="tabApprBtn" onclick="switchTab('appr')">✅ <span id="apprTabLabel">Approvals</span> <span id="apprBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
     <button class="tabbtn" id="tabSetBtn" onclick="switchTab('set')">⚙️ Settings</button>
   </div>
 
@@ -428,9 +428,10 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
   </div>
 
   <div class="wrap tabpane" id="tabAppr" style="display:none">
-    <div class="sec-head"><h2>Approvals</h2></div>
-    <p style="margin:0 0 16px;font-size:13px;color:var(--mg-muted)">Everything waiting for your approval in one place — new employees, content instructors created, and delete requests. Approve to make it live, or reject to cancel.</p>
+    <div class="sec-head"><h2 id="apprHeading">Approvals</h2></div>
+    <p id="apprIntro" style="margin:0 0 16px;font-size:13px;color:var(--mg-muted)">Everything waiting for your approval in one place — new employees, content instructors created, and delete requests. Approve to make it live, or reject to cancel.</p>
     <div id="apprBody"><div class="empty">Loading…</div></div>
+    <div id="mySubBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
 
   <!-- PENDING PEOPLE MODAL -->
@@ -577,6 +578,13 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       if(!window.IS_ADMIN){
         var n = document.getElementById("instrAddNote");
         if(n) n.style.display = "block";
+        // instructors see the same tab as a read-only "My Submissions" view
+        var lbl = document.getElementById("apprTabLabel");
+        if(lbl) lbl.textContent = "My Submissions";
+        var h = document.getElementById("apprHeading");
+        if(h) h.textContent = "My Submissions";
+        var intro = document.getElementById("apprIntro");
+        if(intro) intro.textContent = "The status of everything you've submitted — content, employees you added, and delete requests. Pending items are waiting for an admin; Approved are live; Declined were not approved.";
       }
     });
 
@@ -670,8 +678,39 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       }
       if(which === 'crt') loadTracks();
       if(which === 'prog'){ loadPersonProgress(); }
-      if(which === 'appr'){ loadApprovals(); }
+      if(which === 'appr'){ if(window.IS_ADMIN) loadApprovals(); else loadMySubmissions(); }
       if(which === 'set'){ loadSettings(); loadDesignations(); }
+    }
+
+    // ---- Instructor read-only "My Submissions" view ----
+    async function loadMySubmissions(){
+      document.getElementById('apprBody').style.display = 'none';
+      const box = document.getElementById('mySubBody');
+      box.style.display = 'block';
+      box.innerHTML = '<div class="empty">Loading…</div>';
+      let d;
+      try{ d = await (await fetch('/api/my-submissions')).json(); }
+      catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.ok){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.items || d.items.length === 0){
+        box.innerHTML = '<div class="empty">You haven\'t submitted anything yet. Content, employees, or delete requests you submit will show here with their status.</div>';
+        return;
+      }
+      const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      function pill(status){
+        const s = status.toLowerCase();
+        let col = '#c9a227', bg = '#fff7e6';           // pending
+        if(s.indexOf('approved')>=0){ col='#1d9e75'; bg='#e9f9f2'; }
+        else if(s.indexOf('declined')>=0){ col='#e24b4a'; bg='#fdecec'; }
+        return `<span style="background:${bg};color:${col};font-size:11.5px;font-weight:600;padding:2px 10px;border-radius:10px">${esc(status)}</span>`;
+      }
+      const rows = d.items.map(it=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--mg-line);flex-wrap:wrap">
+          <div style="font-size:13px"><b>${esc(it.title)}</b>
+            <span style="color:var(--mg-muted)">· ${esc(it.kind)}</span></div>
+          ${pill(it.status)}
+        </div>`).join('');
+      box.innerHTML = `<div style="background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:16px">${rows}</div>`;
     }
 
     // ---- Central Approvals tab ----
