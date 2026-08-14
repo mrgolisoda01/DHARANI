@@ -756,7 +756,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       // Employees
       if(d.employees.length){
         const rows = d.employees.map(e=>{
-          const src = e.added_by ? `added by instructor` : `self sign-up`;
+          const src = e.added_by ? ('added by ' + esc(e.added_by_name || 'instructor')) : 'self sign-up';
           const left = `<b>${esc(e.name)}</b> · ${esc(e.emp_id)} <span style="color:var(--mg-muted)">${e.designation?'· '+esc(e.designation):''} · ${src}</span>`;
           const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveEmployee('${esc(e.emp_id)}')">Approve</button>`
                      + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprRejectEmployee('${esc(e.emp_id)}')">Reject</button>`;
@@ -767,20 +767,21 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
       // Content: modules, videos, certs
       const contentRows = [];
+      const byTxt = x => x.by_name ? ` · by ${esc(x.by_name)}` : '';
       (d.assessments||[]).forEach(a=> contentRows.push(rowWrap(
-        `<b>${esc(a.title)}</b> <span style="color:var(--mg-muted)">· assessment</span>`,
+        `<b>${esc(a.title)}</b> <span style="color:var(--mg-muted)">· assessment${byTxt(a)}</span>`,
         `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveAssessment(${a.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineAssessment(${a.id})">Decline</button>`)));
       d.modules.forEach(m=> contentRows.push(rowWrap(
-        `<b>${esc(m.title)}</b> <span style="color:var(--mg-muted)">· ${esc(m.kind)} module · ${esc(m.roles||'all')}</span>`,
+        `<b>${esc(m.title)}</b> <span style="color:var(--mg-muted)">· ${esc(m.kind)} module · ${esc(m.roles||'all')}${byTxt(m)}</span>`,
         `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('module',${m.id})">Decline</button>`)));
       d.videos.forEach(v=> contentRows.push(rowWrap(
-        `<b>${esc(v.title)}</b> <span style="color:var(--mg-muted)">· video · ${esc(v.roles||'all')}</span>`,
+        `<b>${esc(v.title)}</b> <span style="color:var(--mg-muted)">· video · ${esc(v.roles||'all')}${byTxt(v)}</span>`,
         `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('video',${v.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('video',${v.id})">Decline</button>`)));
       d.certs.forEach(c=> contentRows.push(rowWrap(
-        `<b>${esc(c.title)}</b> <span style="color:var(--mg-muted)">· certificate · ${esc(c.roles||'all')}</span>`,
+        `<b>${esc(c.title)}</b> <span style="color:var(--mg-muted)">· certificate · ${esc(c.roles||'all')}${byTxt(c)}</span>`,
         `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('cert',${c.id})">Decline</button>`)));
       if(contentRows.length){
