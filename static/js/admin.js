@@ -51,6 +51,8 @@ async function loadDashboard(){
   const data = await api("/api/admin/dashboard");
   if(!data.ok){ toast("Could not load dashboard."); return; }
 
+  loadPendingRequests();
+
   $("cTotal").textContent = data.stats.total;
   $("cPending").textContent = data.stats.pending;
   $("cCompletion").textContent = data.stats.completion + "%";
@@ -94,8 +96,11 @@ function renderTable(){
 
     let actions = "";
     if(window.IS_ADMIN === false){
-      // instructors can view the employee list but not act on it
-      actions = '<span style="font-size:11px;color:#9aa6ae">view only</span>';
+      // instructors: can REQUEST a delete (goes for admin approval), but not
+      // approve/edit/reset — those stay with admins
+      actions = (e.status === "pending" || e.role === "admin")
+        ? '<span style="font-size:11px;color:#9aa6ae">view only</span>'
+        : `<button class="act del" title="Request delete (needs admin approval)" onclick="del('${e.emp_id}')">🗑</button>`;
     } else if(e.status === "pending"){
       actions =
         `<button class="act ok" title="Approve" onclick="approve('${e.emp_id}')">✔</button>`+
@@ -177,11 +182,51 @@ async function saveReset(){
 }
 
 /* ---- delete ---- */
+// ---- Pending action requests (instructor delete requests) — admin only ----
+async function loadPendingRequests(){
+  if(window.IS_ADMIN === false) return;  // only admins see these
+  const panel = document.getElementById("pendingReqPanel");
+  const list = document.getElementById("pendingReqList");
+  if(!panel || !list) return;
+  let d;
+  try { d = await api("/api/admin/pending-actions"); } catch(e){ return; }
+  if(!d || !d.ok || !d.actions || d.actions.length === 0){
+    panel.style.display = "none";
+    return;
+  }
+  const typeLabel = { user:"Employee", assessment:"Assessment", module:"Module", video:"Video" };
+  list.innerHTML = d.actions.map(a=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #e7dcc0;flex-wrap:wrap">
+      <div style="font-size:13px">
+        <b>Delete ${typeLabel[a.target_type]||a.target_type}:</b> ${escH(a.target_label||a.target_id)}
+        <div style="font-size:11.5px;color:#8a6d1a">requested by ${escH(a.requested_by_name||a.requested_by||"")}</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="resolveAction(${a.id},'approve')">Approve delete</button>
+        <button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="resolveAction(${a.id},'reject')">Reject</button>
+      </div>
+    </div>`).join("");
+  panel.style.display = "block";
+}
+
+async function resolveAction(id, decision){
+  if(decision === "approve" && !confirm("Approve this delete? The item will be permanently removed.")) return;
+  const r = await api("/api/admin/resolve-action", { id, decision });
+  if(r.ok){ toast(r.msg || "Done."); loadDashboard(); }
+  else toast(r.msg || "Failed.");
+}
+
+function escH(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
 async function del(emp_id){
   const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
-  if(!confirm("Delete " + (e?e.name:emp_id) + " permanently? Their scores are removed too.")) return;
+  const who = e?e.name:emp_id;
+  const msg = window.IS_ADMIN
+    ? "Delete " + who + " permanently? Their scores are removed too."
+    : "Send a request to delete " + who + "? An admin must approve before they are removed.";
+  if(!confirm(msg)) return;
   const r = await api("/api/admin/delete-user", { emp_id });
-  if(r.ok){ toast("Deleted."); loadDashboard(); } else toast(r.msg||"Failed.");
+  if(r.ok){ toast(r.msg || (window.IS_ADMIN?"Deleted.":"Request sent.")); loadDashboard(); } else toast(r.msg||"Failed.");
 }
 
 /* ---- bulk add ---- */
