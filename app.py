@@ -642,6 +642,60 @@ def api_my_progress():
 # ---------------------------------------------------------------
 #  API: admin approve / reject  (UNCHANGED)
 # ---------------------------------------------------------------
+@app.route("/api/my-submissions")
+@view_admin_required
+def api_my_submissions():
+    """Read-only history for an instructor: the status (pending/live/declined)
+    of content they created, employees they added, and delete requests they
+    raised. Admins get an empty set (they use the Approvals tab)."""
+    u = current_user()
+    db = get_db()
+    if u["role"] != "instructor":
+        return jsonify(ok=True, items=[])
+
+    me = u["emp_id"]
+    items = []
+
+    def status_label(s):
+        return {"live": "Approved", "pending": "Pending", "declined": "Declined"}.get(s, s or "")
+
+    def collect(sql, kind):
+        try:
+            for r in db.execute(sql, (me,)).fetchall():
+                items.append({
+                    "kind": kind, "title": r["title"],
+                    "status": status_label(r["status"]),
+                    "raw_status": r["status"],
+                    "created_at": r["created_at"] if "created_at" in r.keys() else ""
+                })
+        except Exception:
+            pass
+
+    collect("SELECT title, status, created_at FROM content_modules WHERE created_by=? ORDER BY id DESC", "Module")
+    collect("SELECT title, status, created_at FROM videos WHERE created_by=? ORDER BY id DESC", "Video")
+    collect("SELECT cert_name AS title, status, created_at FROM certificate_tracks WHERE created_by=? ORDER BY id DESC", "Certificate")
+
+    # employees this instructor added (pending or already approved)
+    try:
+        for r in db.execute("SELECT name, status, created_at FROM users WHERE added_by=? ORDER BY created_at DESC", (me,)).fetchall():
+            st = "Approved" if r["status"] == "approved" else ("Pending" if r["status"] == "pending" else r["status"])
+            items.append({"kind": "Employee", "title": r["name"], "status": st,
+                          "raw_status": r["status"], "created_at": r["created_at"]})
+    except Exception:
+        pass
+
+    # delete requests this instructor raised
+    try:
+        for r in db.execute("SELECT target_type, target_label, status, created_at FROM pending_actions WHERE requested_by=? ORDER BY created_at DESC", (me,)).fetchall():
+            st = {"approved": "Approved (deleted)", "pending": "Pending", "rejected": "Declined"}.get(r["status"], r["status"])
+            items.append({"kind": "Delete: " + (r["target_type"] or ""), "title": r["target_label"] or "",
+                          "status": st, "raw_status": r["status"], "created_at": r["created_at"]})
+    except Exception:
+        pass
+
+    return jsonify(ok=True, items=items)
+
+
 @app.route("/api/admin/all-approvals")
 @admin_required
 def api_admin_all_approvals():
