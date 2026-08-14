@@ -271,6 +271,7 @@ def init_db():
             pass_percent  INTEGER NOT NULL DEFAULT 90,
             time_limit    INTEGER NOT NULL DEFAULT 0,
             active        INTEGER NOT NULL DEFAULT 1,
+            status        TEXT NOT NULL DEFAULT 'live',
             created_by    TEXT,
             created_at    TEXT
         )
@@ -422,6 +423,8 @@ def init_db():
         db.execute("ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0")
     if not _column_exists(db, "users", "added_by"):
         db.execute("ALTER TABLE users ADD COLUMN added_by TEXT")
+    if not _column_exists(db, "assessments", "status"):
+        db.execute("ALTER TABLE assessments ADD COLUMN status TEXT NOT NULL DEFAULT 'live'")
     if not _column_exists(db, "users", "last_login"):
         db.execute("ALTER TABLE users ADD COLUMN last_login TEXT")
     if not _column_exists(db, "certificate_tracks", "valid_months"):
@@ -674,6 +677,7 @@ def api_my_submissions():
     collect("SELECT title, status, created_at FROM content_modules WHERE created_by=? ORDER BY id DESC", "Module")
     collect("SELECT title, status, created_at FROM videos WHERE created_by=? ORDER BY id DESC", "Video")
     collect("SELECT cert_name AS title, status, created_at FROM certificate_tracks WHERE created_by=? ORDER BY id DESC", "Certificate")
+    collect("SELECT title, status, created_at FROM assessments WHERE created_by=? ORDER BY id DESC", "Assessment")
 
     # employees this instructor added (pending or already approved)
     try:
@@ -733,7 +737,7 @@ def api_admin_all_approvals():
             return []
     modules = pend("SELECT id, title, kind, roles FROM content_modules WHERE status='pending' ORDER BY id DESC")
     videos = pend("SELECT id, title, roles FROM videos WHERE status='pending' ORDER BY id DESC")
-    # assessments may or may not have a status column
+    # assessments now have a status column (instructor-created start pending)
     try:
         assessments = [dict(r) for r in db.execute(
             "SELECT id, title FROM assessments WHERE status='pending' ORDER BY id DESC").fetchall()]
@@ -1775,7 +1779,7 @@ def api_admin_assessments():
 
 
 @app.route("/api/admin/create-assessment", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_create_assessment():
     """Create an assessment and load its question pool from CSV."""
     d = request.get_json(force=True)
@@ -1839,10 +1843,12 @@ def api_admin_create_assessment():
 
     db = get_db()
     u = current_user()
+    # instructor-created assessments are pending until an admin approves
+    a_status = "pending" if u["role"] == "instructor" else "live"
     cur = db.execute(
-        "INSERT INTO assessments (title,description,roles,num_questions,pass_percent,time_limit,active,created_by,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?) RETURNING id",
-        (title, desc, roles, num_q, pass_pct, time_limit, 1, u["emp_id"], datetime.utcnow().isoformat())
+        "INSERT INTO assessments (title,description,roles,num_questions,pass_percent,time_limit,active,status,created_by,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id",
+        (title, desc, roles, num_q, pass_pct, time_limit, 1, a_status, u["emp_id"], datetime.utcnow().isoformat())
     )
     aid = cur.fetchone()["id"]
     for (q, a, b, cc, dd, correct, cat) in parsed:
@@ -1852,6 +1858,9 @@ def api_admin_create_assessment():
             (aid, q, a, b, cc, dd, correct, cat)
         )
     db.commit()
+    if u["role"] == "instructor":
+        return jsonify(ok=True, id=aid, loaded=len(parsed), errors=errors,
+                       msg=f"Assessment created with {len(parsed)} questions — pending admin approval.")
     return jsonify(ok=True, id=aid, loaded=len(parsed), errors=errors,
                    msg=f"Assessment created with {len(parsed)} questions.")
 
@@ -2430,7 +2439,7 @@ def api_my_assessments():
     """Assessments available to the logged-in learner, with their best result."""
     u = current_user()
     db = get_db()
-    rows = db.execute("SELECT * FROM assessments WHERE active=1 ORDER BY created_at DESC").fetchall()
+    rows = db.execute("SELECT * FROM assessments WHERE active=1 AND (status IS NULL OR status='live') ORDER BY created_at DESC").fetchall()
     out = []
     for a in rows:
         if not _assessment_allowed_for(a, u):
@@ -2759,6 +2768,27 @@ def api_admin_approve_module():
     db.execute("UPDATE content_modules SET status='live' WHERE id=?", (mid,))
     db.commit()
     return jsonify(ok=True, msg="Module approved and live.")
+
+
+@app.route("/api/admin/approve-assessment", methods=["POST"])
+@admin_required
+def api_admin_approve_assessment():
+    d = request.get_json(force=True)
+    db = get_db()
+    db.execute("UPDATE assessments SET status='live' WHERE id=?", (d.get("id"),))
+    db.commit()
+    return jsonify(ok=True, msg="Assessment approved and live.")
+
+
+@app.route("/api/admin/decline-assessment", methods=["POST"])
+@admin_required
+def api_admin_decline_assessment():
+    """Decline a pending assessment: kept in the system but not live."""
+    d = request.get_json(force=True)
+    db = get_db()
+    db.execute("UPDATE assessments SET status='declined' WHERE id=?", (d.get("id"),))
+    db.commit()
+    return jsonify(ok=True, msg="Declined. The assessment is kept but not live.")
 
 
 @app.route("/api/admin/decline-content", methods=["POST"])
