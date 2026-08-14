@@ -434,6 +434,22 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
     <div id="mySubBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
 
+  <div class="ov" id="editDiffOv">
+    <div class="modal" style="max-width:640px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <h3 style="margin:0;font-size:16px">Review changes</h3>
+        <button class="btn" onclick="closeModal('editDiffOv')" style="padding:2px 10px">✕</button>
+      </div>
+      <p id="editDiffSub" style="margin:0 0 14px;font-size:12.5px;color:var(--mg-muted)"></p>
+      <div id="editDiffBody"><div class="empty">Loading…</div></div>
+      <div class="modal-foot" style="margin-top:14px">
+        <button class="btn" onclick="closeModal('editDiffOv')">Cancel</button>
+        <button class="btn" style="color:#8a97a1" onclick="apprResolveEdit('reject')">Reject (keep current)</button>
+        <button class="btn primary" onclick="apprResolveEdit('approve')">Approve changes</button>
+      </div>
+    </div>
+  </div>
+
   <!-- PENDING PEOPLE MODAL -->
   <div class="ov" id="pendingOv">
     <div class="modal" style="max-width:520px"><div id="pendingBody"></div></div>
@@ -788,6 +804,17 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''));
       }
 
+      // Edit requests (old stays live until approved)
+      if(d.edits && d.edits.length){
+        const typeLabel = { module:'Module', video:'Video', assessment:'Assessment', cert:'Certificate' };
+        const rows = d.edits.map(e=>{
+          const left = `<b>Edit ${typeLabel[e.target_type]||e.target_type}:</b> ${esc(e.target_label||e.target_id)} <span style="color:var(--mg-muted)">${e.requested_by_name?'· by '+esc(e.requested_by_name):''}</span>`;
+          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprViewEdit(${e.id})">View changes</button>`;
+          return rowWrap(left, btns);
+        }).join('');
+        html += card('✏️ Edit requests ('+d.edits.length+')', '#1f5fa9', rows);
+      }
+
       // Delete requests
       if(d.deletes.length){
         const typeLabel = { user:'Employee', assessment:'Assessment', module:'Module', video:'Video' };
@@ -837,6 +864,49 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       if(decision==='approve' && !confirm('Approve this delete? The item will be permanently removed.')) return;
       const r = await (await fetch('/api/admin/resolve-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,decision})})).json();
       if(r.ok){ toast(r.msg||'Done.'); loadApprovals(); } else toast(r.msg||'Failed.');
+    }
+
+    let CURRENT_EDIT_ID = null;
+    async function apprViewEdit(id){
+      CURRENT_EDIT_ID = id;
+      const body = document.getElementById('editDiffBody');
+      const sub = document.getElementById('editDiffSub');
+      body.innerHTML = '<div class="empty">Loading…</div>';
+      sub.textContent = '';
+      openModal('editDiffOv');
+      let d;
+      try{ d = await (await fetch('/api/admin/edit-diff?id='+id)).json(); }
+      catch(e){ body.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.ok){ body.innerHTML = '<div class="empty">'+(d.msg||'Could not load.')+'</div>'; return; }
+      const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      sub.textContent = (d.target_label||'') + (d.requested_by_name ? ' · edited by '+d.requested_by_name : '');
+      const rows = d.fields.map(f=>{
+        const hi = f.changed ? 'background:#fffceb' : '';
+        const emptyTag = '<span style="color:#aaa;font-style:italic">(empty)</span>';
+        const dash = '<span style="color:#bbb">—</span>';
+        const oldCell = f.changed ? `<span style="color:#e24b4a">${esc(f.old)||emptyTag}</span>` : (esc(f.old)||dash);
+        const newCell = f.changed ? `<b style="color:#1d9e75">${esc(f.new)||emptyTag}</b>` : (esc(f.new)||dash);
+        const dot = f.changed ? ' <span style="color:#c9a227">●</span>' : '';
+        return `<tr style="${hi}">
+          <td style="padding:7px 10px;font-size:12px;color:var(--mg-muted);vertical-align:top;white-space:nowrap">${esc(f.label)}${dot}</td>
+          <td style="padding:7px 10px;font-size:12.5px;vertical-align:top;border-left:1px solid var(--mg-line)">${oldCell}</td>
+          <td style="padding:7px 10px;font-size:12.5px;vertical-align:top;border-left:1px solid var(--mg-line)">${newCell}</td>
+        </tr>`;
+      }).join('');
+      body.innerHTML = `<table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:2px solid var(--mg-line)">
+          <th style="text-align:left;padding:6px 10px;font-size:11px;color:var(--mg-muted)">Field</th>
+          <th style="text-align:left;padding:6px 10px;font-size:11px;color:var(--mg-muted)">Current (live)</th>
+          <th style="text-align:left;padding:6px 10px;font-size:11px;color:#1d9e75">Proposed (new)</th>
+        </tr></thead><tbody>${rows}</tbody></table>
+        <p style="font-size:11.5px;color:var(--mg-muted);margin:12px 0 0">● = changed. The current version stays live until you approve.</p>`;
+    }
+    async function apprResolveEdit(decision){
+      if(!CURRENT_EDIT_ID) return;
+      if(decision==='approve' && !confirm('Approve these changes? The new version replaces the current one for learners.')) return;
+      const r = await (await fetch('/api/admin/resolve-edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CURRENT_EDIT_ID,decision})})).json();
+      if(r.ok){ toast(r.msg||'Done.'); closeModal('editDiffOv'); CURRENT_EDIT_ID=null; loadApprovals(); }
+      else toast(r.msg||'Failed.');
     }
 
     async function loadSettings(){
