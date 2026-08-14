@@ -767,6 +767,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
       // Content: modules, videos, certs
       const contentRows = [];
+      (d.assessments||[]).forEach(a=> contentRows.push(rowWrap(
+        `<b>${esc(a.title)}</b> <span style="color:var(--mg-muted)">· assessment</span>`,
+        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveAssessment(${a.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineAssessment(${a.id})">Decline</button>`)));
       d.modules.forEach(m=> contentRows.push(rowWrap(
         `<b>${esc(m.title)}</b> <span style="color:var(--mg-muted)">· ${esc(m.kind)} module · ${esc(m.roles||'all')}</span>`,
         `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`
@@ -817,6 +821,15 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     async function apprDeclineContent(kind, id){
       if(!confirm('Decline this? It stays saved in the system but will not go live.')) return;
       const r = await (await fetch('/api/admin/decline-content',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,id})})).json();
+      if(r.ok){ toast('Declined — kept but not live.'); loadApprovals(); } else toast(r.msg||'Failed.');
+    }
+    async function apprApproveAssessment(id){
+      const r = await (await fetch('/api/admin/approve-assessment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})})).json();
+      if(r.ok){ toast('Assessment approved — now live.'); loadApprovals(); } else toast(r.msg||'Failed.');
+    }
+    async function apprDeclineAssessment(id){
+      if(!confirm('Decline this assessment? It stays saved but will not go live.')) return;
+      const r = await (await fetch('/api/admin/decline-assessment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})})).json();
       if(r.ok){ toast('Declined — kept but not live.'); loadApprovals(); } else toast(r.msg||'Failed.');
     }
     async function apprResolveDelete(id, decision){
