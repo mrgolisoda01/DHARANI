@@ -557,7 +557,7 @@ def api_login():
     db.execute("UPDATE users SET last_login = ? WHERE emp_id = ?",
                (datetime.utcnow().isoformat(), u["emp_id"]))
     db.commit()
-    dest = url_for("admin_page") if u["role"] == "admin" else url_for("portal_page")
+    dest = url_for("admin_page") if u["role"] in ("admin", "instructor") else url_for("portal_page")
     return jsonify(ok=True, redirect=dest)
 
 
