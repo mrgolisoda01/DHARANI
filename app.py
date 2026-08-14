@@ -2707,6 +2707,27 @@ def api_admin_approve_module():
     return jsonify(ok=True, msg="Module approved and live.")
 
 
+@app.route("/api/admin/decline-content", methods=["POST"])
+@admin_required
+def api_admin_decline_content():
+    """Decline pending content: it is KEPT in the system but marked 'declined'
+    so it leaves the Approvals tab and does not go live to learners."""
+    d = request.get_json(force=True)
+    kind = (d.get("kind") or "").strip()   # 'module' | 'video' | 'cert'
+    cid = d.get("id")
+    db = get_db()
+    if kind == "module":
+        db.execute("UPDATE content_modules SET status='declined' WHERE id=?", (cid,))
+    elif kind == "video":
+        db.execute("UPDATE videos SET status='declined' WHERE id=?", (cid,))
+    elif kind == "cert":
+        db.execute("UPDATE certificate_tracks SET status='declined' WHERE id=?", (cid,))
+    else:
+        return jsonify(ok=False, msg="Unknown content type."), 400
+    db.commit()
+    return jsonify(ok=True, msg="Declined. The item is kept but not live.")
+
+
 @app.route("/api/admin/delete-module", methods=["POST"])
 @login_required
 def api_admin_delete_module():
