@@ -344,9 +344,12 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
       <div id="dsgList"><div class="empty">Loading…</div></div>
     </div>
 
-      <div class="admin-only" style="background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px">
+      <div style="background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px">
         <h3 style="font-size:15px;margin:0 0 4px">Add a user</h3>
         <p style="margin:0 0 14px;font-size:13px;color:var(--mg-muted)">Add people one at a time. For many at once, use Bulk add on the Employees tab.</p>
+        <div id="instrAddNote" style="display:none;background:#fff7e6;border:1px solid #c9a22755;border-radius:8px;padding:9px 12px;font-size:12.5px;color:#8a6d1a;margin-bottom:12px">
+          Employees you add will be <b>pending admin approval</b> before they become active.
+        </div>
         <div class="fld"><label>Full name</label><input id="quName" /></div>
         <div class="fld"><label>Employee ID</label><input id="quEmp" /></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -354,7 +357,7 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
           <div class="fld"><label>Designation</label><input id="quDesg" placeholder="BDE, State Head…" /></div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <div class="fld"><label>Role</label>
+          <div class="fld admin-only"><label>Role</label>
             <select id="quRole"><option value="staff">Learner</option><option value="instructor">Instructor</option><option value="admin">Admin</option></select>
           </div>
           <div class="fld"><label>Password (blank = Golisoda@123)</label><input id="quPw" placeholder="Golisoda@123" /></div>
@@ -558,6 +561,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     document.addEventListener("DOMContentLoaded", function(){
       var t = document.getElementById("adTitle");
       if(t) t.textContent = "Mr. Golisoda Training · " + (window.IS_ADMIN ? "Admin" : "Instructor");
+      if(!window.IS_ADMIN){
+        var n = document.getElementById("instrAddNote");
+        if(n) n.style.display = "block";
+      }
     });
 
     // Instructors can SEE every admin page, but the actions that only admins
