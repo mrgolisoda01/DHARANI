@@ -642,6 +642,67 @@ def api_my_progress():
 # ---------------------------------------------------------------
 #  API: admin approve / reject  (UNCHANGED)
 # ---------------------------------------------------------------
+@app.route("/api/admin/all-approvals")
+@admin_required
+def api_admin_all_approvals():
+    """Everything waiting for admin approval, in one place:
+    pending employees, pending content (modules/videos/assessments/certs),
+    and instructor delete requests."""
+    db = get_db()
+
+    # 1) pending employees (self-signup or instructor-added)
+    try:
+        emp_rows = db.execute(
+            "SELECT emp_id, name, designation, role, added_by, created_at "
+            "FROM users WHERE status='pending' ORDER BY created_at DESC"
+        ).fetchall()
+    except Exception:
+        emp_rows = []
+    employees = []
+    for e in emp_rows:
+        by = None
+        try:
+            by = e["added_by"]
+        except Exception:
+            by = None
+        employees.append({
+            "emp_id": e["emp_id"], "name": e["name"],
+            "designation": e["designation"] or "", "role": e["role"],
+            "added_by": by
+        })
+
+    # 2) pending content
+    def pend(sql):
+        try:
+            return [dict(r) for r in db.execute(sql).fetchall()]
+        except Exception:
+            return []
+    modules = pend("SELECT id, title, kind, roles FROM content_modules WHERE status='pending' ORDER BY id DESC")
+    videos = pend("SELECT id, title, roles FROM videos WHERE status='pending' ORDER BY id DESC")
+    # assessments may or may not have a status column
+    try:
+        assessments = [dict(r) for r in db.execute(
+            "SELECT id, title FROM assessments WHERE status='pending' ORDER BY id DESC").fetchall()]
+    except Exception:
+        assessments = []
+    certs = pend("SELECT id, cert_name AS title, roles FROM certificate_tracks WHERE status='pending' ORDER BY id DESC")
+
+    # 3) delete requests
+    try:
+        del_rows = db.execute(
+            "SELECT * FROM pending_actions WHERE status='pending' ORDER BY created_at DESC"
+        ).fetchall()
+        deletes = [dict(r) for r in del_rows]
+    except Exception:
+        deletes = []
+
+    total = (len(employees) + len(modules) + len(videos) + len(assessments)
+             + len(certs) + len(deletes))
+    return jsonify(ok=True, total=total,
+                   employees=employees, modules=modules, videos=videos,
+                   assessments=assessments, certs=certs, deletes=deletes)
+
+
 @app.route("/api/admin/pending-actions")
 @admin_required
 def api_admin_pending_actions():
