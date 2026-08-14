@@ -395,6 +395,20 @@ def init_db():
             created_at TEXT
         )
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS pending_actions (
+            id            SERIAL PRIMARY KEY,
+            action_type   TEXT NOT NULL,        -- 'delete' (later: 'edit')
+            target_type   TEXT NOT NULL,        -- 'user' | 'assessment' | 'module' | 'video'
+            target_id     TEXT NOT NULL,        -- emp_id or numeric id (stored as text)
+            target_label  TEXT,                 -- human name shown to admin
+            payload       TEXT,                 -- JSON for edits (unused for delete)
+            requested_by  TEXT,                 -- instructor emp_id
+            requested_by_name TEXT,
+            status        TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | rejected
+            created_at    TEXT
+        )
+    """)
     # seed the defaults the first time only
     seeded = db.execute("SELECT COUNT(*) c FROM designations").fetchone()["c"]
     if not seeded:
@@ -628,6 +642,61 @@ def api_my_progress():
 # ---------------------------------------------------------------
 #  API: admin approve / reject  (UNCHANGED)
 # ---------------------------------------------------------------
+@app.route("/api/admin/pending-actions")
+@admin_required
+def api_admin_pending_actions():
+    """All pending action requests (currently: instructor delete requests)."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM pending_actions WHERE status='pending' ORDER BY created_at DESC"
+    ).fetchall()
+    out = [dict(r) for r in rows]
+    return jsonify(ok=True, actions=out, count=len(out))
+
+
+@app.route("/api/admin/resolve-action", methods=["POST"])
+@admin_required
+def api_admin_resolve_action():
+    """Admin approves or rejects a pending action. Approving a delete performs
+    the actual delete now."""
+    d = request.get_json(force=True)
+    aid = d.get("id")
+    decision = (d.get("decision") or "").strip()  # 'approve' | 'reject'
+    db = get_db()
+    act = db.execute("SELECT * FROM pending_actions WHERE id=? AND status='pending'", (aid,)).fetchone()
+    if not act:
+        return jsonify(ok=False, msg="Request not found or already handled."), 404
+
+    if decision == "reject":
+        db.execute("UPDATE pending_actions SET status='rejected' WHERE id=?", (aid,))
+        db.commit()
+        return jsonify(ok=True, msg="Request rejected.")
+
+    if decision != "approve":
+        return jsonify(ok=False, msg="Invalid decision."), 400
+
+    # perform the delete that was requested
+    tt = act["target_type"]
+    tid = act["target_id"]
+    if tt == "user":
+        tgt = db.execute("SELECT role FROM users WHERE emp_id=?", (tid,)).fetchone()
+        if tgt and tgt["role"] != "admin":
+            db.execute("DELETE FROM users WHERE emp_id=?", (tid,))
+    elif tt == "assessment":
+        db.execute("DELETE FROM questions WHERE assessment_id=?", (tid,))
+        db.execute("DELETE FROM assessment_results WHERE assessment_id=?", (tid,))
+        db.execute("DELETE FROM assessments WHERE id=?", (tid,))
+    elif tt == "module":
+        db.execute("DELETE FROM content_modules WHERE id=?", (tid,))
+        db.execute("DELETE FROM module_completions WHERE module_id=?", (tid,))
+    elif tt == "video":
+        db.execute("DELETE FROM videos WHERE id=?", (tid,))
+
+    db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+    db.commit()
+    return jsonify(ok=True, msg="Approved — the item has been deleted.")
+
+
 @app.route("/api/approve", methods=["POST"])
 @admin_required
 def api_approve():
@@ -752,10 +821,34 @@ def api_admin_reset_password():
     return jsonify(ok=True, msg="Password reset. Share the temporary password with the employee.")
 
 
+def _queue_delete_request(target_type, target_id, target_label):
+    """Instructor requested a delete. Record it as pending for admin approval
+    instead of performing it. Returns True if a request was queued."""
+    u = current_user()
+    db = get_db()
+    # avoid duplicate pending requests for the same target
+    dup = db.execute(
+        "SELECT 1 FROM pending_actions WHERE action_type='delete' AND target_type=? "
+        "AND target_id=? AND status='pending'", (target_type, str(target_id))
+    ).fetchone()
+    if not dup:
+        db.execute(
+            "INSERT INTO pending_actions (action_type,target_type,target_id,target_label,"
+            "requested_by,requested_by_name,status,created_at) "
+            "VALUES ('delete',?,?,?,?,?,'pending',?)",
+            (target_type, str(target_id), target_label, u["emp_id"], u["name"],
+             datetime.utcnow().isoformat())
+        )
+        db.commit()
+    return True
+
+
 @app.route("/api/admin/delete-user", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_delete_user():
-    """Delete an employee (and their scores). Admin accounts are protected."""
+    """Delete an employee (and their scores). Admin accounts are protected.
+    Instructors can request a delete — it goes pending until an admin approves."""
+    u = current_user()
     d = request.get_json(force=True)
     emp_id = (d.get("emp_id") or "").strip()
     if not emp_id:
@@ -767,6 +860,11 @@ def api_admin_delete_user():
         return jsonify(ok=False, msg="Employee not found."), 404
     if target["role"] == "admin":
         return jsonify(ok=False, msg="Admin accounts cannot be deleted here."), 400
+
+    # instructor -> queue for approval instead of deleting
+    if u["role"] == "instructor":
+        _queue_delete_request("user", emp_id, target["name"])
+        return jsonify(ok=True, msg="Delete request sent for admin approval.")
 
     db.execute("DELETE FROM users WHERE emp_id = ?", (emp_id,))
     db.execute("DELETE FROM scores WHERE emp_id = ?", (emp_id,))
@@ -1659,11 +1757,18 @@ def api_admin_toggle_assessment():
 
 
 @app.route("/api/admin/delete-assessment", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_delete_assessment():
+    u = current_user()
     d = request.get_json(force=True)
     aid = d.get("id")
     db = get_db()
+    a = db.execute("SELECT title FROM assessments WHERE id=?", (aid,)).fetchone()
+    if not a:
+        return jsonify(ok=False, msg="Assessment not found."), 404
+    if u["role"] == "instructor":
+        _queue_delete_request("assessment", aid, a["title"])
+        return jsonify(ok=True, msg="Delete request sent for admin approval.")
     db.execute("DELETE FROM questions WHERE assessment_id=?", (aid,))
     db.execute("DELETE FROM assessment_results WHERE assessment_id=?", (aid,))
     db.execute("DELETE FROM assessments WHERE id=?", (aid,))
@@ -2550,6 +2655,12 @@ def api_admin_delete_module():
     d = request.get_json(force=True)
     mid = d.get("id")
     db = get_db()
+    m = db.execute("SELECT title FROM content_modules WHERE id=?", (mid,)).fetchone()
+    if not m:
+        return jsonify(ok=False, msg="Module not found."), 404
+    if u["role"] == "instructor":
+        _queue_delete_request("module", mid, m["title"])
+        return jsonify(ok=True, msg="Delete request sent for admin approval.")
     db.execute("DELETE FROM content_modules WHERE id=?", (mid,))
     db.execute("DELETE FROM module_completions WHERE module_id=?", (mid,))
     db.commit()
@@ -2609,6 +2720,12 @@ def api_admin_delete_video():
     d = request.get_json(force=True)
     vid = d.get("id")
     db = get_db()
+    v = db.execute("SELECT title FROM videos WHERE id=?", (vid,)).fetchone()
+    if not v:
+        return jsonify(ok=False, msg="Video not found."), 404
+    if u["role"] == "instructor":
+        _queue_delete_request("video", vid, v["title"])
+        return jsonify(ok=True, msg="Delete request sent for admin approval.")
     db.execute("DELETE FROM videos WHERE id=?", (vid,))
     db.commit()
     return jsonify(ok=True)
