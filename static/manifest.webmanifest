@@ -1,0 +1,31 @@
+{
+  "name": "SAFC-LMS — Mr. Golisoda Training",
+  "short_name": "SAFC-LMS",
+  "description": "South Asian Foods Corporation learning portal — training modules, assessments and certificates.",
+  "start_url": "/portal",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12284B",
+  "theme_color": "#12284B",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
