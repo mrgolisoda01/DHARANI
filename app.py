@@ -28,7 +28,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlparse, unquote
 from flask import (Flask, request, session, redirect, url_for,
-                   render_template, jsonify, g)
+                   render_template, jsonify, g, send_from_directory)
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import psycopg2
@@ -499,6 +499,24 @@ def view_admin_required(view):
 # ---------------------------------------------------------------
 #  Pages
 # ---------------------------------------------------------------
+@app.route("/sw.js")
+def service_worker():
+    """Serve the service worker from the site root so it can control the
+    whole app (scope '/'). Must not be cached, so updates take effect."""
+    resp = send_from_directory(app.static_folder, "sw.js")
+    resp.headers["Content-Type"] = "application/javascript"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.route("/manifest.webmanifest")
+def web_manifest():
+    resp = send_from_directory(app.static_folder, "manifest.webmanifest")
+    resp.headers["Content-Type"] = "application/manifest+json"
+    return resp
+
+
 @app.route("/")
 def login_page():
     if current_user():
