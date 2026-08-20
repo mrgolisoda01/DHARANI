@@ -156,7 +156,7 @@
     <div class="sec-head">
       <h2>Employee management</h2>
       <div class="btns">
-        <input class="search" id="searchBox" placeholder="Search name, ID, designation…" oninput="renderTable()" />
+        <input class="search" id="searchBox" placeholder="Search name, ID, designation…" oninput="renderTable()" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" name="emp-search-nofill" />
         <button class="btn admin-only" onclick="openBulk()">＋ Bulk add (CSV)</button>
       </div>
     </div>
@@ -703,6 +703,11 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         document.getElementById(TABS[k]).style.display = (k===which) ? 'block' : 'none';
         document.getElementById(TAB_BTNS[k]).classList.toggle('active', k===which);
       });
+      if(which === 'emp'){
+        // returning to Employees: clear any leftover search text and show all
+        var _sb = document.getElementById('searchBox');
+        if(_sb && _sb.value){ _sb.value = ''; if(typeof renderTable === 'function') renderTable(); }
+      }
       if(which === 'as') loadAssessments();
       if(which === 'ind' || which === 'trn' || which === 'vid'){
         loadContent();
