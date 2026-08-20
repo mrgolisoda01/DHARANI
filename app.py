@@ -42,6 +42,18 @@ app = Flask(__name__)
 # Strong random secret key (set for production). Keep this private.
 app.secret_key = os.environ.get("SECRET_KEY", "9fe42eef27a6bfbbd6764513ed4d5b10ec0e2b4e803984c917b3d89cd8960016")
 
+# Make login sessions survive reliably behind the Render proxy and across
+# short idle periods (free-plan sleep). Without these, the session cookie can
+# be dropped between loading a page and submitting a form, causing spurious
+# "Not authorised" errors on POSTs.
+from datetime import timedelta
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=True,   # site is served over HTTPS on Render
+)
+
 # ---------------------------------------------------------------
 #  DATABASE: Supabase (PostgreSQL)
 #  The connection string can be provided via the DATABASE_URL env var
@@ -623,6 +635,7 @@ def api_login():
     if u["status"] == "pending":
         return jsonify(ok=False, msg="Your account is awaiting admin approval."), 403
 
+    session.permanent = True
     session["emp_id"] = u["emp_id"]
     # record last login time
     db.execute("UPDATE users SET last_login = ? WHERE emp_id = ?",
