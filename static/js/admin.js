@@ -69,6 +69,10 @@ async function loadDashboard(){
   }
 
   EMPLOYEES = data.employees || [];
+  // Always clear any leftover/auto-filled search text on reload, so the full
+  // employee list is shown (a stray value here would hide most rows).
+  var _sb = $("searchBox");
+  if(_sb && _sb.value){ _sb.value = ""; }
   renderTable();
 }
 
