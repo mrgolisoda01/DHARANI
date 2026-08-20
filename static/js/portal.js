@@ -543,6 +543,56 @@ function closeCert(){
   $('certListBox').style.display='';
 }
 
+// Reliable certificate download (works on Android + iPhone, unlike window.print()).
+// Snapshots the certificate card to a PNG and triggers a download / share.
+async function downloadCert(){
+  const card = $('certCard');
+  const btn = $('certDlBtn');
+  if(!card){ return; }
+  if(typeof html2canvas === 'undefined'){
+    window.print();   // library didn't load — fall back to print
+    return;
+  }
+  const oldLabel = btn ? btn.textContent : '';
+  if(btn){ btn.textContent = 'Preparing…'; btn.disabled = true; }
+  const restore = ()=>{ if(btn){ btn.textContent = oldLabel; btn.disabled = false; } };
+  try{
+    const canvas = await html2canvas(card, {
+      scale: 2,                 // higher-res so text is crisp
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      logging: false
+    });
+    const nameSafe = ($('certName').textContent || 'certificate')
+      .trim().replace(/[^\w]+/g, '_');
+    const fname = 'Certificate_' + nameSafe + '.png';
+
+    canvas.toBlob(async (blob)=>{
+      if(!blob){ restore(); return; }
+      const file = new File([blob], fname, { type: 'image/png' });
+      // Prefer the native share sheet on mobile (save to Photos / Files)
+      if(navigator.canShare && navigator.canShare({ files: [file] })){
+        try{
+          await navigator.share({ files: [file], title: 'My Certificate' });
+          restore();
+          return;
+        }catch(e){ /* user cancelled — fall through to direct download */ }
+      }
+      // Direct download (desktop + Android Chrome)
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      setTimeout(()=>URL.revokeObjectURL(url), 4000);
+      restore();
+    }, 'image/png');
+  }catch(e){
+    restore();
+    window.print();   // last-resort fallback
+  }
+}
+
 /* ---------------- misc ---------------- */
 function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
