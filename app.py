@@ -33,6 +33,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 # ---------------------------------------------------------------
 #  Basic setup
@@ -190,23 +191,56 @@ class _Conn:
         return self._conn
 
 
+_POOL = None
+
+def _get_pool():
+    """A small pool of reusable database connections. Opening a fresh
+    connection to Supabase on every request is slow; a pool keeps a few
+    open and hands them out, which makes every page noticeably faster."""
+    global _POOL
+    if _POOL is None:
+        _POOL = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=8, connect_timeout=15, **_pg_params()
+        )
+    return _POOL
+
+
 def get_db():
-    """Open a database connection for this request (Postgres/Supabase)."""
+    """Borrow a database connection for this request from the pool."""
     if "db" not in g:
-        conn = psycopg2.connect(connect_timeout=15, **_pg_params())
+        try:
+            conn = _get_pool().getconn()
+        except Exception:
+            # if the pool is exhausted or broke, fall back to a direct
+            # connection so the request still works
+            conn = psycopg2.connect(connect_timeout=15, **_pg_params())
+            g._db_direct = True
         conn.autocommit = False
         g.db = _Conn(conn)
+        g._raw_conn = conn
     return g.db
 
 
 @app.teardown_appcontext
 def close_db(exception):
     db = g.pop("db", None)
-    if db is not None:
-        try:
+    raw = g.pop("_raw_conn", None)
+    direct = g.pop("_db_direct", False)
+    if db is None:
+        return
+    try:
+        # roll back anything uncommitted so a returned connection is clean
+        if exception is not None:
+            try: raw.rollback()
+            except Exception: pass
+        if direct:
             db.close()
-        except Exception:
-            pass
+        else:
+            # return the connection to the pool for reuse (don't close it)
+            _get_pool().putconn(raw)
+    except Exception:
+        try: db.close()
+        except Exception: pass
 
 
 _db_ready = False
