@@ -466,6 +466,28 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
     </div>
   </div>
 
+  <!-- Review new content before approving -->
+  <div class="ov" id="contentReviewOv">
+    <div class="modal" style="max-width:680px;max-height:88vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <h3 style="margin:0;font-size:16px" id="crvTitle">Review submission</h3>
+        <button class="btn" onclick="closeModal('contentReviewOv')" style="padding:2px 10px">✕</button>
+      </div>
+      <p id="crvSub" style="margin:0 0 14px;font-size:12.5px;color:var(--mg-muted)"></p>
+      <div id="crvBody"><div class="empty">Loading…</div></div>
+      <div id="crvNoteWrap" style="margin-top:14px;display:none">
+        <label style="font-size:12px;color:var(--mg-muted);display:block;margin-bottom:4px">Note to instructor (what needs fixing)</label>
+        <textarea id="crvNote" rows="3" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px;resize:vertical" placeholder="e.g. Fix the pass mark to 90% and correct question 3's answer."></textarea>
+      </div>
+      <div class="modal-foot" style="margin-top:14px">
+        <button class="btn" onclick="closeModal('contentReviewOv')">Cancel</button>
+        <button class="btn" style="color:#c9a227" onclick="crvToggleSendBack()" id="crvSendBackToggle">Send back to fix…</button>
+        <button class="btn" style="color:#c9a227;display:none" onclick="crvSendBack()" id="crvSendBackConfirm">Confirm send back</button>
+        <button class="btn primary" onclick="crvApprove()" id="crvApproveBtn">Approve — make live</button>
+      </div>
+    </div>
+  </div>
+
   <!-- PENDING PEOPLE MODAL -->
   <div class="ov" id="pendingOv">
     <div class="modal" style="max-width:520px"><div id="pendingBody"></div></div>
@@ -805,21 +827,26 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       // Content: modules, videos, certs
       const contentRows = [];
       const byTxt = x => x.by_name ? ` · by ${esc(x.by_name)}` : '';
+      const viewBtn = (kind,id,title) => `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprViewContent('${kind}',${id},'${esc(String(title)).replace(/'/g,"\\'")}')">View details</button>`;
       (d.assessments||[]).forEach(a=> contentRows.push(rowWrap(
         `<b>${esc(a.title)}</b> <span style="color:var(--mg-muted)">· assessment${byTxt(a)}</span>`,
-        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveAssessment(${a.id})">Approve</button>`
+        viewBtn('assessment',a.id,a.title)
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveAssessment(${a.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineAssessment(${a.id})">Decline</button>`)));
       d.modules.forEach(m=> contentRows.push(rowWrap(
         `<b>${esc(m.title)}</b> <span style="color:var(--mg-muted)">· ${esc(m.kind)} module · ${esc(m.roles||'all')}${byTxt(m)}</span>`,
-        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`
+        viewBtn('module',m.id,m.title)
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('module',${m.id})">Decline</button>`)));
       d.videos.forEach(v=> contentRows.push(rowWrap(
         `<b>${esc(v.title)}</b> <span style="color:var(--mg-muted)">· video · ${esc(v.roles||'all')}${byTxt(v)}</span>`,
-        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('video',${v.id})">Approve</button>`
+        viewBtn('video',v.id,v.title)
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('video',${v.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('video',${v.id})">Decline</button>`)));
       d.certs.forEach(c=> contentRows.push(rowWrap(
         `<b>${esc(c.title)}</b> <span style="color:var(--mg-muted)">· certificate · ${esc(c.roles||'all')}${byTxt(c)}</span>`,
-        `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`
+        viewBtn('cert',c.id,c.title)
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('cert',${c.id})">Decline</button>`)));
       if(contentRows.length){
         html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''));
@@ -927,6 +954,95 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       if(decision==='approve' && !confirm('Approve these changes? The new version replaces the current one for learners.')) return;
       const r = await (await fetch('/api/admin/resolve-edit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:CURRENT_EDIT_ID,decision})})).json();
       if(r.ok){ toast(r.msg||'Done.'); closeModal('editDiffOv'); CURRENT_EDIT_ID=null; loadApprovals(); }
+      else toast(r.msg||'Failed.');
+    }
+
+    // ---- Review NEW content (module/video/assessment/cert) before approving ----
+    let CRV_KIND = null, CRV_ID = null;
+    async function apprViewContent(kind, id, title){
+      CRV_KIND = kind; CRV_ID = id;
+      const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const kindLabel = {module:'Module', video:'Video', assessment:'Assessment', cert:'Certificate'}[kind] || kind;
+      document.getElementById('crvTitle').textContent = 'Review '+kindLabel;
+      document.getElementById('crvSub').textContent = title || '';
+      document.getElementById('crvBody').innerHTML = '<div class="empty">Loading…</div>';
+      // reset the send-back state each time
+      document.getElementById('crvNoteWrap').style.display = 'none';
+      document.getElementById('crvNote').value = '';
+      document.getElementById('crvSendBackToggle').style.display = 'inline-block';
+      document.getElementById('crvSendBackConfirm').style.display = 'none';
+      openModal('contentReviewOv');
+      let d;
+      try{ d = await (await fetch('/api/admin/content-details?kind='+encodeURIComponent(kind)+'&id='+encodeURIComponent(id))).json(); }
+      catch(e){ document.getElementById('crvBody').innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      if(!d.ok){ document.getElementById('crvBody').innerHTML = '<div class="empty">'+(esc(d.msg)||'Could not load.')+'</div>'; return; }
+
+      // field table (label / value)
+      let html = '<table style="width:100%;border-collapse:collapse">';
+      (d.fields||[]).forEach(f=>{
+        const val = (f.value===''||f.value==null) ? '<span style="color:#aaa;font-style:italic">(empty)</span>' : esc(f.value);
+        html += `<tr>
+          <td style="padding:7px 10px;font-size:12px;color:var(--mg-muted);vertical-align:top;white-space:nowrap;border-bottom:1px solid var(--mg-line)">${esc(f.label)}</td>
+          <td style="padding:7px 10px;font-size:12.5px;vertical-align:top;border-bottom:1px solid var(--mg-line)">${val}</td>
+        </tr>`;
+      });
+      html += '</table>';
+
+      // link preview if present
+      if(d.link){
+        html += `<p style="margin:12px 0 0;font-size:12.5px"><a href="${esc(d.link)}" target="_blank" rel="noopener" style="color:#1f5fa9">↗ Open the attached link / file</a></p>`;
+      }
+
+      // questions for assessments (extra.type === 'questions')
+      if(d.extra && d.extra.type==='questions' && Array.isArray(d.extra.items)){
+        const qs = d.extra.items;
+        html += `<h4 style="margin:16px 0 8px;font-size:13px;color:#12284B">Questions (${qs.length})</h4>`;
+        if(!qs.length){
+          html += '<div class="empty" style="font-size:12.5px">No questions added yet.</div>';
+        } else {
+          qs.forEach((q,i)=>{
+            const correct = String(q.correct||'').trim().toUpperCase();
+            const opt = (letter, text) => {
+              if(text==null || text==='') return '';
+              const isC = correct===letter;
+              const style = isC ? 'background:#eaf7f0;border:1px solid #1d9e75;color:#0f6b45;font-weight:600' : 'background:#fafafa;border:1px solid var(--mg-line)';
+              const tick = isC ? ' ✓' : '';
+              return `<div style="padding:5px 9px;border-radius:6px;margin:3px 0;font-size:12.5px;${style}"><b>${letter}.</b> ${esc(text)}${tick}</div>`;
+            };
+            html += `<div style="border:1px solid var(--mg-line);border-radius:10px;padding:11px;margin-bottom:9px">
+              <div style="font-size:13px;margin-bottom:6px"><b>Q${i+1}.</b> ${esc(q.question)}${q.category?` <span style="color:var(--mg-muted);font-size:11px">· ${esc(q.category)}</span>`:''}</div>
+              ${opt('A',q.opt_a)}${opt('B',q.opt_b)}${opt('C',q.opt_c)}${opt('D',q.opt_d)}
+            </div>`;
+          });
+        }
+      }
+      document.getElementById('crvBody').innerHTML = html;
+    }
+
+    function crvToggleSendBack(){
+      document.getElementById('crvNoteWrap').style.display = 'block';
+      document.getElementById('crvSendBackToggle').style.display = 'none';
+      document.getElementById('crvSendBackConfirm').style.display = 'inline-block';
+      document.getElementById('crvNote').focus();
+    }
+
+    async function crvApprove(){
+      if(!CRV_KIND || CRV_ID==null) return;
+      if(CRV_KIND==='assessment'){ return _crvDo(apprApproveAssessment); }
+      return _crvDo(()=>apprApproveContent(CRV_KIND, CRV_ID));
+    }
+    async function _crvDo(fn){
+      await fn(CRV_ID);            // reuses existing approve flow (shows its own toast + reloads)
+      closeModal('contentReviewOv');
+      CRV_KIND=null; CRV_ID=null;
+    }
+
+    async function crvSendBack(){
+      if(!CRV_KIND || CRV_ID==null) return;
+      const note = document.getElementById('crvNote').value.trim();
+      if(!note){ toast('Please write a short note on what to fix.'); return; }
+      const r = await (await fetch('/api/admin/send-back-content',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:CRV_KIND,id:CRV_ID,note})})).json();
+      if(r.ok){ toast(r.msg||'Sent back to the instructor.'); closeModal('contentReviewOv'); CRV_KIND=null; CRV_ID=null; loadApprovals(); }
       else toast(r.msg||'Failed.');
     }
 
