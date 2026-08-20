@@ -712,24 +712,34 @@ def api_my_submissions():
     items = []
 
     def status_label(s):
-        return {"live": "Approved", "pending": "Pending", "declined": "Declined"}.get(s, s or "")
+        return {"live": "Approved", "pending": "Pending", "declined": "Declined",
+                "needs_changes": "Needs changes"}.get(s, s or "")
 
     def collect(sql, kind):
         try:
             for r in db.execute(sql, (me,)).fetchall():
+                rk = r.keys()
                 items.append({
                     "kind": kind, "title": r["title"],
                     "status": status_label(r["status"]),
                     "raw_status": r["status"],
-                    "created_at": r["created_at"] if "created_at" in r.keys() else ""
+                    "note": (r["review_note"] if "review_note" in rk else "") or "",
+                    "created_at": r["created_at"] if "created_at" in rk else ""
                 })
         except Exception:
             pass
 
-    collect("SELECT title, status, created_at FROM content_modules WHERE created_by=? ORDER BY id DESC", "Module")
-    collect("SELECT title, status, created_at FROM videos WHERE created_by=? ORDER BY id DESC", "Video")
-    collect("SELECT cert_name AS title, status, created_at FROM certificate_tracks WHERE created_by=? ORDER BY id DESC", "Certificate")
-    collect("SELECT title, status, created_at FROM assessments WHERE created_by=? ORDER BY id DESC", "Assessment")
+    # try with review_note (may not exist on older DBs — fall back without it)
+    def collect2(table, title_col, kind):
+        try:
+            collect(f"SELECT {title_col} AS title, status, created_at, review_note FROM {table} WHERE created_by=? ORDER BY id DESC", kind)
+        except Exception:
+            collect(f"SELECT {title_col} AS title, status, created_at FROM {table} WHERE created_by=? ORDER BY id DESC", kind)
+
+    collect2("content_modules", "title", "Module")
+    collect2("videos", "title", "Video")
+    collect2("certificate_tracks", "cert_name", "Certificate")
+    collect2("assessments", "title", "Assessment")
 
     # employees this instructor added (pending or already approved)
     try:
@@ -867,6 +877,324 @@ def api_admin_resolve_edit():
     db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (rid,))
     db.commit()
     return jsonify(ok=True, msg="Edit approved — the new version is now live.")
+
+
+@app.route("/api/admin/send-back-content", methods=["POST"])
+@admin_required
+def api_admin_send_back_content():
+    """Send a pending content item back to the instructor to fix, with a note.
+    The item is marked 'needs_changes' (not live, leaves the approvals queue)
+    and the admin's note is saved so the instructor can see what to fix."""
+    d = request.get_json(force=True)
+    kind = (d.get("kind") or "").strip()
+    cid = d.get("id")
+    note = (d.get("note") or "").strip()
+    db = get_db()
+    table = {"module": "content_modules", "video": "videos",
+             "assessment": "assessments", "cert": "certificate_tracks"}.get(kind)
+    if not table:
+        return jsonify(ok=False, msg="Unknown type."), 400
+    # ensure a review_note column exists (added on the fly, safe)
+    if not _column_exists(db, table, "review_note"):
+        try:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN review_note TEXT")
+        except Exception:
+            pass
+    db.execute(f"UPDATE {table} SET status='needs_changes', review_note=? WHERE id=?", (note, cid))
+    db.commit()
+    return jsonify(ok=True, msg="Sent back to the instructor with your note.")
+
+
+@app.route("/api/admin/content-details")
+@admin_required
+def api_admin_content_details():
+    """Full details of one pending content item, so the admin can review
+    everything before approving. For assessments, includes the questions."""
+    kind = (request.args.get("kind") or "").strip()   # module|video|assessment|cert
+    cid = request.args.get("id")
+    db = get_db()
+
+    def creator_name(emp_id):
+        if not emp_id:
+            return ""
+        r = db.execute("SELECT name FROM users WHERE emp_id=?", (emp_id,)).fetchone()
+        return r["name"] if r else emp_id
+
+    fields = []
+    title = ""
+    extra = None
+    if kind == "module":
+        row = db.execute("SELECT * FROM content_modules WHERE id=?", (cid,)).fetchone()
+        if not row: return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row); title = r.get("title", "")
+        fields = [
+            ("Title", r.get("title")), ("Type", r.get("kind")),
+            ("Description", r.get("description")), ("Link / file", r.get("link")),
+            ("File type", r.get("file_type")), ("Min minutes", r.get("min_minutes")),
+            ("For roles", r.get("roles")), ("Order", r.get("sort_order")),
+            ("Created by", creator_name(r.get("created_by"))),
+        ]
+    elif kind == "video":
+        row = db.execute("SELECT * FROM videos WHERE id=?", (cid,)).fetchone()
+        if not row: return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row); title = r.get("title", "")
+        fields = [
+            ("Title", r.get("title")), ("Description", r.get("description")),
+            ("Link", r.get("link")), ("For roles", r.get("roles")),
+            ("Order", r.get("sort_order")), ("Created by", creator_name(r.get("created_by"))),
+        ]
+    elif kind == "assessment":
+        row = db.execute("SELECT * FROM assessments WHERE id=?", (cid,)).fetchone()
+        if not row: return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row); title = r.get("title", "")
+        fields = [
+            ("Title", r.get("title")), ("For roles", r.get("roles")),
+            ("No. of questions", r.get("num_questions")), ("Pass %", r.get("pass_percent")),
+            ("Time limit (min)", r.get("time_limit")), ("Created by", creator_name(r.get("created_by"))),
+        ]
+        # include the questions so the admin can read them
+        qs = db.execute(
+            "SELECT question, opt_a, opt_b, opt_c, opt_d, correct, category "
+            "FROM questions WHERE assessment_id=? ORDER BY id", (cid,)
+        ).fetchall()
+        extra = {"type": "questions", "items": [dict(q) for q in qs]}
+    elif kind == "cert":
+        row = db.execute("SELECT * FROM certificate_tracks WHERE id=?", (cid,)).fetchone()
+        if not row: return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row); title = r.get("cert_name", "")
+        # resolve linked assessment names
+        def assess_name(aid):
+            if not aid: return "—"
+            a = db.execute("SELECT title FROM assessments WHERE id=?", (aid,)).fetchone()
+            return a["title"] if a else str(aid)
+        fields = [
+            ("Certificate name", r.get("cert_name")), ("Type", r.get("kind")),
+            ("For roles", r.get("roles")),
+            ("Requires modules", "Yes" if r.get("require_modules") else "No"),
+            ("Required assessment", assess_name(r.get("require_assessment_id"))),
+            ("Re-take assessment", assess_name(r.get("retake_assessment_id"))),
+            ("Valid (months)", r.get("valid_months") or "No expiry"),
+            ("Created by", creator_name(r.get("created_by"))),
+        ]
+    else:
+        return jsonify(ok=False, msg="Unknown type."), 400
+
+    # normalise field values to strings
+    out_fields = [{"label": lab, "value": ("" if v is None else str(v))} for lab, v in fields]
+    return jsonify(ok=True, kind=kind, title=title, fields=out_fields, extra=extra)
+
+
+@app.route("/api/admin/content-details")
+@admin_required
+def api_admin_content_details():
+    """Full details of one pending content item so the admin can review
+    everything before approving. Works for module / video / assessment / cert."""
+    kind = (request.args.get("kind") or "").strip()
+    cid = request.args.get("id")
+    db = get_db()
+
+    def creator_name(emp):
+        if not emp:
+            return ""
+        r = db.execute("SELECT name FROM users WHERE emp_id=?", (emp,)).fetchone()
+        return r["name"] if r else emp
+
+    if kind == "module":
+        r = db.execute("SELECT * FROM content_modules WHERE id=?", (cid,)).fetchone()
+        if not r:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(r)
+        fields = [
+            ("Title", r.get("title")),
+            ("Type", r.get("kind")),
+            ("For roles", r.get("roles")),
+            ("File type", r.get("file_type")),
+            ("Minimum minutes", r.get("min_minutes")),
+            ("Order", r.get("sort_order")),
+            ("Description", r.get("description")),
+            ("Link / file", r.get("link")),
+        ]
+        return jsonify(ok=True, kind="Module", title=r.get("title"),
+                       created_by=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": v} for l, v in fields],
+                       link=r.get("link"))
+
+    if kind == "video":
+        r = db.execute("SELECT * FROM videos WHERE id=?", (cid,)).fetchone()
+        if not r:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(r)
+        fields = [
+            ("Title", r.get("title")),
+            ("For roles", r.get("roles")),
+            ("Order", r.get("sort_order")),
+            ("Description", r.get("description")),
+            ("Video link", r.get("link")),
+        ]
+        return jsonify(ok=True, kind="Video", title=r.get("title"),
+                       created_by=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": v} for l, v in fields],
+                       link=r.get("link"))
+
+    if kind == "cert":
+        r = db.execute("SELECT * FROM certificate_tracks WHERE id=?", (cid,)).fetchone()
+        if not r:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(r)
+        # resolve linked assessment names
+        def assess_name(aid):
+            if not aid:
+                return "—"
+            a = db.execute("SELECT title FROM assessments WHERE id=?", (aid,)).fetchone()
+            return a["title"] if a else str(aid)
+        fields = [
+            ("Certificate name", r.get("cert_name")),
+            ("Type", r.get("kind")),
+            ("For roles", r.get("roles")),
+            ("Requires modules", "Yes" if r.get("require_modules") else "No"),
+            ("Required assessment", assess_name(r.get("require_assessment_id"))),
+            ("Re-take assessment", assess_name(r.get("retake_assessment_id"))),
+            ("Valid for (months)", r.get("valid_months") or "No expiry"),
+        ]
+        return jsonify(ok=True, kind="Certificate", title=r.get("cert_name"),
+                       created_by=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": v} for l, v in fields])
+
+    if kind == "assessment":
+        r = db.execute("SELECT * FROM assessments WHERE id=?", (cid,)).fetchone()
+        if not r:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(r)
+        fields = [
+            ("Title", r.get("title")),
+            ("For roles", r.get("roles")),
+            ("Number of questions", r.get("num_questions")),
+            ("Pass mark %", r.get("pass_percent")),
+            ("Time limit (min)", r.get("time_limit") or "No limit"),
+        ]
+        # include the actual questions so admin can review them
+        qs = db.execute(
+            "SELECT question, opt_a, opt_b, opt_c, opt_d, correct, category "
+            "FROM questions WHERE assessment_id=? ORDER BY id", (cid,)
+        ).fetchall()
+        questions = []
+        for q in qs:
+            q = dict(q)
+            questions.append({
+                "question": q.get("question"),
+                "options": {"A": q.get("opt_a"), "B": q.get("opt_b"),
+                            "C": q.get("opt_c"), "D": q.get("opt_d")},
+                "correct": q.get("correct"),
+                "category": q.get("category")
+            })
+        return jsonify(ok=True, kind="Assessment", title=r.get("title"),
+                       created_by=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": v} for l, v in fields],
+                       questions=questions)
+
+    return jsonify(ok=False, msg="Unknown content type."), 400
+
+
+@app.route("/api/admin/content-details")
+@admin_required
+def api_admin_content_details():
+    """Return the FULL details of a pending content item so the admin can
+    review everything before approving. kind = module|video|assessment|cert."""
+    kind = (request.args.get("kind") or "").strip()
+    cid = request.args.get("id")
+    db = get_db()
+
+    def creator_name(emp):
+        if not emp:
+            return None
+        r = db.execute("SELECT name FROM users WHERE emp_id=?", (emp,)).fetchone()
+        return r["name"] if r else emp
+
+    if kind == "module":
+        row = db.execute("SELECT * FROM content_modules WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row)
+        fields = [
+            ("Title", r.get("title")),
+            ("Type", r.get("kind")),
+            ("For roles", r.get("roles")),
+            ("Description", r.get("description")),
+            ("File type", r.get("file_type")),
+            ("Link / file URL", r.get("link")),
+            ("Minimum minutes", r.get("min_minutes")),
+            ("Order", r.get("sort_order")),
+        ]
+        return jsonify(ok=True, kind="Module", title=r.get("title"),
+                       by_name=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": "" if v is None else str(v)} for l, v in fields],
+                       link=r.get("link"))
+
+    if kind == "video":
+        row = db.execute("SELECT * FROM videos WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row)
+        fields = [
+            ("Title", r.get("title")),
+            ("For roles", r.get("roles")),
+            ("Description", r.get("description")),
+            ("Video link", r.get("link")),
+            ("Order", r.get("sort_order")),
+        ]
+        return jsonify(ok=True, kind="Video", title=r.get("title"),
+                       by_name=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": "" if v is None else str(v)} for l, v in fields],
+                       link=r.get("link"))
+
+    if kind == "cert":
+        row = db.execute("SELECT * FROM certificate_tracks WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row)
+        # resolve the linked assessment names if any
+        def assess_name(aid):
+            if not aid:
+                return "—"
+            a = db.execute("SELECT title FROM assessments WHERE id=?", (aid,)).fetchone()
+            return a["title"] if a else str(aid)
+        fields = [
+            ("Certificate name", r.get("cert_name")),
+            ("Type", r.get("kind")),
+            ("For roles", r.get("roles")),
+            ("Require modules", "Yes" if r.get("require_modules") else "No"),
+            ("Required assessment", assess_name(r.get("require_assessment_id"))),
+            ("Re-take assessment", assess_name(r.get("retake_assessment_id"))),
+            ("Valid for (months)", r.get("valid_months") or "No expiry"),
+        ]
+        return jsonify(ok=True, kind="Certificate", title=r.get("cert_name"),
+                       by_name=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": "" if v is None else str(v)} for l, v in fields])
+
+    if kind == "assessment":
+        row = db.execute("SELECT * FROM assessments WHERE id=?", (cid,)).fetchone()
+        if not row:
+            return jsonify(ok=False, msg="Not found."), 404
+        r = dict(row)
+        fields = [
+            ("Title", r.get("title")),
+            ("For roles", r.get("roles")),
+            ("Pass mark %", r.get("pass_percent")),
+            ("Questions shown", r.get("num_questions")),
+            ("Time limit (min)", r.get("time_limit") or "No limit"),
+        ]
+        # include the actual questions so the admin can review them
+        qrows = db.execute(
+            "SELECT question, opt_a, opt_b, opt_c, opt_d, correct, category "
+            "FROM questions WHERE assessment_id=? ORDER BY id", (cid,)
+        ).fetchall()
+        questions = [dict(q) for q in qrows]
+        return jsonify(ok=True, kind="Assessment", title=r.get("title"),
+                       by_name=creator_name(r.get("created_by")),
+                       fields=[{"label": l, "value": "" if v is None else str(v)} for l, v in fields],
+                       extra={"type": "questions", "items": questions})
+
+    return jsonify(ok=False, msg="Unknown content type."), 400
 
 
 @app.route("/api/admin/all-approvals")
@@ -2146,11 +2474,12 @@ def api_admin_update_assessment():
         a_status = a["status"]
     except Exception:
         a_status = "live"
-    if a_status == "pending":
-        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=? WHERE id=?",
+    if a_status in ("pending", "needs_changes"):
+        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=?,status='pending' WHERE id=?",
                    (title, roles, num_q, pass_pct, time_limit, aid))
         db.commit()
-        return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+        resubmit = a_status == "needs_changes"
+        return jsonify(ok=True, msg=("Resubmitted for admin approval." if resubmit else "Changes saved — still pending admin approval."))
     db.execute("UPDATE pending_actions SET status='rejected' WHERE action_type='edit' AND target_type='assessment' AND target_id=? AND status='pending'", (str(aid),))
     db.execute("INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,requested_by,requested_by_name,status,created_at) "
                "VALUES ('edit','assessment',?,?,?,?,?,'pending',?)",
@@ -2971,15 +3300,16 @@ def api_admin_save_module():
             "file_type": file_type, "min_minutes": mins, "roles": roles,
             "sort_order": sort_order
         }
-        # if the module is itself still pending (never approved), just update it
-        # in place — there's no live version to protect yet.
-        if existing["status"] == "pending":
+        # if the module is still pending, OR was sent back for changes,
+        # update it in place and put it (back) into the pending queue.
+        if existing["status"] in ("pending", "needs_changes"):
             db.execute(
-                "UPDATE content_modules SET kind=?,title=?,description=?,link=?,file_type=?,min_minutes=?,roles=?,sort_order=? WHERE id=?",
+                "UPDATE content_modules SET kind=?,title=?,description=?,link=?,file_type=?,min_minutes=?,roles=?,sort_order=?,status='pending' WHERE id=?",
                 (kind, title, desc, link, file_type, mins, roles, sort_order, mid)
             )
             db.commit()
-            return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+            resubmit = existing["status"] == "needs_changes"
+            return jsonify(ok=True, msg=("Resubmitted for admin approval." if resubmit else "Changes saved — still pending admin approval."))
 
         # live module: stage the edit, don't touch the live copy
         # replace any earlier pending edit for the same module
@@ -3117,11 +3447,12 @@ def api_admin_save_video():
         import json as _json
         proposed = {"title": title, "description": desc, "link": link,
                     "roles": roles, "sort_order": sort_order}
-        if existing["status"] == "pending":
-            db.execute("UPDATE videos SET title=?,description=?,link=?,roles=?,sort_order=? WHERE id=?",
+        if existing["status"] in ("pending", "needs_changes"):
+            db.execute("UPDATE videos SET title=?,description=?,link=?,roles=?,sort_order=?,status='pending' WHERE id=?",
                        (title, desc, link, roles, sort_order, vid))
             db.commit()
-            return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+            resubmit = existing["status"] == "needs_changes"
+            return jsonify(ok=True, msg=("Resubmitted for admin approval." if resubmit else "Changes saved — still pending admin approval."))
         db.execute("UPDATE pending_actions SET status='rejected' WHERE action_type='edit' AND target_type='video' AND target_id=? AND status='pending'", (str(vid),))
         db.execute("INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,requested_by,requested_by_name,status,created_at) "
                    "VALUES ('edit','video',?,?,?,?,?,'pending',?)",
@@ -3427,11 +3758,12 @@ def api_admin_save_cert_track():
         proposed = {"cert_name": cert_name, "kind": kind, "roles": roles,
                     "require_modules": require_modules, "require_assessment_id": req_assess,
                     "retake_assessment_id": retake_assess, "valid_months": valid_months}
-        if existing["status"] == "pending":
-            db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,retake_assessment_id=?,valid_months=? WHERE id=?",
+        if existing["status"] in ("pending", "needs_changes"):
+            db.execute("UPDATE certificate_tracks SET cert_name=?,kind=?,roles=?,require_modules=?,require_assessment_id=?,retake_assessment_id=?,valid_months=?,status='pending' WHERE id=?",
                        (cert_name, kind, roles, require_modules, req_assess, retake_assess, valid_months, tid))
             db.commit()
-            return jsonify(ok=True, msg="Changes saved — still pending admin approval.")
+            resubmit = existing["status"] == "needs_changes"
+            return jsonify(ok=True, msg=("Resubmitted for admin approval." if resubmit else "Changes saved — still pending admin approval."))
         db.execute("UPDATE pending_actions SET status='rejected' WHERE action_type='edit' AND target_type='cert' AND target_id=? AND status='pending'", (str(tid),))
         db.execute("INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,requested_by,requested_by_name,status,created_at) "
                    "VALUES ('edit','cert',?,?,?,?,?,'pending',?)",
