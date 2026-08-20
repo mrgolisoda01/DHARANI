@@ -381,7 +381,7 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div class="fld admin-only"><label>Role</label>
-            <select id="quRole"><option value="staff">Learner</option><option value="instructor">Instructor</option><option value="admin">Admin</option></select>
+            <select id="quRole"><option value="staff">Learner</option><option value="instructor" class="admin-only">Instructor</option><option value="admin" class="admin-only">Admin</option></select>
           </div>
           <div class="fld"><label>Password (blank = Golisoda@123)</label><input id="quPw" placeholder="Golisoda@123" /></div>
         </div>
@@ -1084,7 +1084,15 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         auto_approve: true
       };
       if(!body.name || !body.emp_id){ toast('Name and Employee ID are required.'); return; }
-      const r = await (await fetch('/api/admin/quick-add-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+      let resp;
+      try{ resp = await fetch('/api/admin/quick-add-user',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); }
+      catch(e){ toast('Network error — please try again.'); return; }
+      if(resp.status === 403){
+        toast('Your session has expired. Please sign in again.');
+        setTimeout(()=>{ location.href = '/'; }, 1500);
+        return;
+      }
+      const r = await resp.json();
       if(r.ok){
         toast(r.msg);
         ['quName','quEmp','quPhone','quDesg','quPw'].forEach(id=>document.getElementById(id).value='');
