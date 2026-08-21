@@ -516,26 +516,32 @@ function certStyleFor(c){
 }
 
 function openCert(c){
+  if(!c){ return; }
   const st = certStyleFor(c);
 
   // one CSS variable drives every coloured element in the certificate
   const card = $('certCard');
   if(card) card.style.setProperty('--cert-c', st.colour);
 
-  $('certTitle').textContent = st.title;
-  $('certBadge').textContent = st.badge;
-  $('certName').textContent = c.name;
-  $('certAssessment').textContent = c.assessment;
+  // null-safe setter: if an element is missing, skip it instead of crashing
+  const setTxt = (id, val)=>{ const el = $(id); if(el) el.textContent = val; };
+  setTxt('certTitle', st.title);
+  setTxt('certBadge', st.badge);
+  setTxt('certName', c.name);
+  setTxt('certAssessment', c.assessment);
 
   // completion certs have no score — assessment certs show the score
   const wrap = $('certScoreWrap');
-  wrap.innerHTML = (c.score != null)
-    ? ' <span style="color:#8a97a1">· scored</span> <b>' + c.score + '%</b><br><span style="font-size:9.5px;color:#9aa6ae">Issued on ' + esc(c.date) + '</span>'
-    : '<br><span style="font-size:9.5px;color:#9aa6ae">Issued on ' + esc(c.date) + '</span>';
+  if(wrap){
+    wrap.innerHTML = (c.score != null)
+      ? ' <span style="color:#8a97a1">· scored</span> <b>' + c.score + '%</b><br><span style="font-size:9.5px;color:#9aa6ae">Issued on ' + esc(c.date) + '</span>'
+      : '<br><span style="font-size:9.5px;color:#9aa6ae">Issued on ' + esc(c.date) + '</span>';
+  }
 
-  document.querySelector('#tab-certs .sectiontitle').style.display='none';
-  $('certListBox').style.display='none';
-  $('certView').classList.remove('hide');
+  const sec = document.querySelector('#tab-certs .sectiontitle');
+  if(sec) sec.style.display='none';
+  const listBox = $('certListBox'); if(listBox) listBox.style.display='none';
+  const view = $('certView'); if(view) view.classList.remove('hide');
 }
 function closeCert(){
   $('certView').classList.add('hide');
