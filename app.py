@@ -2289,7 +2289,7 @@ def api_admin_update_assessment():
 
 
 @app.route("/api/admin/save-question", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_save_question():
     """Add a new question or update an existing one."""
     d = request.get_json(force=True)
@@ -2302,6 +2302,15 @@ def api_admin_save_question():
     dd = (d.get("opt_d") or "").strip()
     correct = (d.get("correct") or "").strip().upper()
     cat = (d.get("category") or "").strip()
+
+    # Instructors may only build questions on an assessment that is still
+    # pending (nothing live yet). Editing questions on a LIVE assessment is a
+    # change to live content and stays admin-only.
+    _u = current_user()
+    if _u["role"] == "instructor":
+        _a = get_db().execute("SELECT status FROM assessments WHERE id=?", (aid,)).fetchone()
+        if _a and _a["status"] == "live":
+            return jsonify(ok=False, msg="This assessment is already live. Ask an admin to change its questions."), 403
 
     if not q or not a or not b:
         return jsonify(ok=False, msg="Question and options A and B are required."), 400
@@ -2326,13 +2335,19 @@ def api_admin_save_question():
 
 
 @app.route("/api/admin/delete-question", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_delete_question():
     """Remove a single question from an assessment."""
     d = request.get_json(force=True)
     qid = d.get("id")
     aid = d.get("assessment_id")
     db = get_db()
+    # Instructors can only edit questions on a still-pending assessment.
+    _u = current_user()
+    if _u["role"] == "instructor":
+        _a = db.execute("SELECT status FROM assessments WHERE id=?", (aid,)).fetchone()
+        if _a and _a["status"] == "live":
+            return jsonify(ok=False, msg="This assessment is already live. Ask an admin to remove questions."), 403
     db.execute("DELETE FROM questions WHERE id=? AND assessment_id=?", (qid, aid))
     # if num_questions now exceeds pool, shrink it
     pool = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (aid,)).fetchone()["c"]
@@ -2344,7 +2359,7 @@ def api_admin_delete_question():
 
 
 @app.route("/api/admin/add-questions-csv", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_add_questions_csv():
     """Append more questions to an existing assessment from CSV."""
     d = request.get_json(force=True)
@@ -2354,6 +2369,10 @@ def api_admin_add_questions_csv():
     a = db.execute("SELECT * FROM assessments WHERE id=?", (aid,)).fetchone()
     if not a:
         return jsonify(ok=False, msg="Not found."), 404
+    # Instructors can only add questions to a still-pending assessment.
+    _u = current_user()
+    if _u["role"] == "instructor" and a["status"] == "live":
+        return jsonify(ok=False, msg="This assessment is already live. Ask an admin to add questions."), 403
     reader = csv.DictReader(io.StringIO(csv_text))
     parsed, errors = [], []
     for i, raw in enumerate(reader, start=2):
