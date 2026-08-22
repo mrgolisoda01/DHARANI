@@ -2878,7 +2878,29 @@ def api_submit_assessment():
     if not a:
         return jsonify(ok=False, msg="Assessment not found."), 404
 
-    qids = [int(k) for k in answers.keys()] if answers else []
+    # ---- Duplicate-submission guard ----
+    # If this learner already submitted THIS assessment moments ago (e.g. they
+    # tapped Submit several times because the network felt slow), don't record
+    # another row. Return the result they already got. A genuine re-take later
+    # is unaffected because it falls outside this short window.
+    _recent = db.execute(
+        "SELECT id, score, total, percent, passed FROM assessment_results "
+        "WHERE assessment_id=? AND emp_id=? "
+        "AND taken_at > ? ORDER BY id DESC LIMIT 1",
+        (aid, u["emp_id"], (datetime.utcnow() - timedelta(seconds=60)).isoformat())
+    ).fetchone()
+    if _recent:
+        _p = bool(_recent["passed"])
+        return jsonify(ok=True, score=_recent["score"], total=_recent["total"],
+                       percent=_recent["percent"], passed=_p,
+                       pass_percent=a["pass_percent"],
+                       new_certificates=[], renewed_certificates=[],
+                       duplicate=True,
+                       cert={
+                           "name": u["name"], "emp_id": u["emp_id"],
+                           "assessment": a["title"], "score": _recent["percent"],
+                           "date": datetime.utcnow().strftime("%d %B %Y")
+                       } if _p else None)
     score = 0
     total = len(answers)
     qinfo = {}   # qid -> full question row (for saving details)
