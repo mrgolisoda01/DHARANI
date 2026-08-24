@@ -15,8 +15,18 @@ const $q = (id) => document.getElementById(id);
 async function apiQ(url, body){
   const opt = { method: body ? "POST" : "GET", headers:{ "Content-Type":"application/json" } };
   if(body) opt.body = JSON.stringify(body);
-  const res = await fetch(url, opt);
-  return res.json();
+  try{
+    const res = await fetch(url, opt);
+    // If the server returned an error page (not JSON), don't let .json() throw —
+    // surface a clean, retryable message instead.
+    const ct = res.headers.get("content-type") || "";
+    if(!ct.includes("application/json")){
+      return { ok:false, msg:"The server is waking up or busy. Please try again in a moment." };
+    }
+    return await res.json();
+  }catch(e){
+    return { ok:false, msg:"Network problem — please check your connection and try again." };
+  }
 }
 
 function esc(s){ return String(s||"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
