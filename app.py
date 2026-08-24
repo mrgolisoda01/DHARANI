@@ -2921,40 +2921,57 @@ def api_submit_assessment():
     passed = 1 if percent >= a["pass_percent"] else 0
     now_iso = datetime.utcnow().isoformat()
 
-    # Save the summary result and get its id back (for linking the details)
-    cur = db.execute(
-        "INSERT INTO assessment_results (assessment_id,emp_id,score,total,percent,passed,taken_at,time_taken) "
-        "VALUES (?,?,?,?,?,?,?,?) RETURNING id",
-        (aid, u["emp_id"], score, total, percent, passed, now_iso, time_taken)
-    )
-    result_id = cur.fetchone()["id"]
-
-    # Save each question's detail (what they chose, correct answer, right/wrong)
-    def _letter_text(row, letter):
-        m = {"A": row["opt_a"], "B": row["opt_b"], "C": row["opt_c"], "D": row["opt_d"]}
-        return m.get((letter or "").upper(), "")
-
-    for qid_str, chosen in answers.items():
-        qid = int(qid_str)
-        r = qinfo.get(qid)
-        if not r:
-            continue
-        chosen_u = str(chosen).upper()
-        is_correct = 1 if chosen_u == r["correct"] else 0
-        chosen_full = f"{chosen_u}. {_letter_text(r, chosen_u)}" if chosen_u else "(no answer)"
-        correct_full = f"{r['correct']}. {_letter_text(r, r['correct'])}"
-        db.execute(
-            "INSERT INTO answer_details (result_id,assessment_id,emp_id,question_id,question_text,chosen,correct,is_correct,category,taken_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (result_id, aid, u["emp_id"], qid, r["question"], chosen_full, correct_full,
-             is_correct, r["category"] or "", now_iso)
+    # Save the summary result and get its id back (for linking the details).
+    # Wrapped so a transient database blip (e.g. the free-plan server was just
+    # waking up) returns a clean "please try again" instead of a 500 error page
+    # that the app can't read. Nothing is half-saved: on failure we roll back.
+    try:
+        cur = db.execute(
+            "INSERT INTO assessment_results (assessment_id,emp_id,score,total,percent,passed,taken_at,time_taken) "
+            "VALUES (?,?,?,?,?,?,?,?) RETURNING id",
+            (aid, u["emp_id"], score, total, percent, passed, now_iso, time_taken)
         )
-    db.commit()
+        result_id = cur.fetchone()["id"]
 
-    # passing an assessment may complete a certificate track
-    new_certs = _check_and_issue_tracks(u["emp_id"]) if passed else []
-    # or it may be a RE-TAKE that renews an existing certificate's validity
-    renewed_certs = _process_retakes(u["emp_id"], a["id"]) if passed else []
+        # Save each question's detail (what they chose, correct answer, right/wrong)
+        def _letter_text(row, letter):
+            m = {"A": row["opt_a"], "B": row["opt_b"], "C": row["opt_c"], "D": row["opt_d"]}
+            return m.get((letter or "").upper(), "")
+
+        for qid_str, chosen in answers.items():
+            qid = int(qid_str)
+            r = qinfo.get(qid)
+            if not r:
+                continue
+            chosen_u = str(chosen).upper()
+            is_correct = 1 if chosen_u == r["correct"] else 0
+            chosen_full = f"{chosen_u}. {_letter_text(r, chosen_u)}" if chosen_u else "(no answer)"
+            correct_full = f"{r['correct']}. {_letter_text(r, r['correct'])}"
+            db.execute(
+                "INSERT INTO answer_details (result_id,assessment_id,emp_id,question_id,question_text,chosen,correct,is_correct,category,taken_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (result_id, aid, u["emp_id"], qid, r["question"], chosen_full, correct_full,
+                 is_correct, r["category"] or "", now_iso)
+            )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify(ok=False,
+                       msg="Your answers couldn't be saved just now — the connection may have dropped. Please tap Submit once more."), 503
+
+    # Passing an assessment may complete a certificate track, or renew one on a
+    # re-take. The result is already safely saved above, so if this extra step
+    # hits a snag we don't fail the whole submission — the learner still passed.
+    new_certs, renewed_certs = [], []
+    if passed:
+        try:
+            new_certs = _check_and_issue_tracks(u["emp_id"])
+            renewed_certs = _process_retakes(u["emp_id"], a["id"])
+        except Exception:
+            new_certs, renewed_certs = [], []
 
     return jsonify(ok=True, score=score, total=total, percent=percent,
                    passed=bool(passed), pass_percent=a["pass_percent"],
