@@ -2901,6 +2901,7 @@ def api_submit_assessment():
                            "assessment": a["title"], "score": _recent["percent"],
                            "date": datetime.utcnow().strftime("%d %B %Y")
                        } if _p else None)
+    qids = [int(k) for k in answers.keys()] if answers else []
     score = 0
     total = len(answers)
     qinfo = {}   # qid -> full question row (for saving details)
