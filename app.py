@@ -1434,6 +1434,76 @@ def api_admin_export_data():
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
+@app.route("/api/admin/enrolment-report.xlsx")
+@view_admin_required
+def api_admin_enrolment_report_xlsx():
+    """Simple one-sheet report: every person and the date they were enrolled
+    (account created), with designation, status, role and last login."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except Exception:
+        return jsonify(ok=False, msg="Excel export not available."), 500
+
+    db = get_db()
+    rows = db.execute(
+        "SELECT emp_id, name, designation, role, status, created_at, last_login "
+        "FROM users ORDER BY created_at, name"
+    ).fetchall()
+
+    def _fmt_date(iso):
+        if not iso:
+            return ""
+        try:
+            return datetime.fromisoformat(iso.replace("Z", "")).strftime("%d %b %Y")
+        except Exception:
+            return iso
+    def _fmt_dt(iso):
+        if not iso:
+            return "Never"
+        try:
+            return datetime.fromisoformat(iso.replace("Z", "")).strftime("%d %b %Y, %I:%M %p")
+        except Exception:
+            return iso
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Enrolment"
+    ws.append(["Mr. Golisoda Training — Enrolment Report"])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([f"Generated {datetime.utcnow().strftime('%d %b %Y')}   ·   {len(rows)} people"])
+    ws.append([])
+
+    header = ["Name", "Emp ID", "Designation", "Role", "Status", "Enrolled Date", "Last Login"]
+    ws.append(header)
+    blue = PatternFill("solid", fgColor="00AEEF")
+    boldw = Font(bold=True, color="FFFFFF")
+    for c in ws[4]:
+        c.font = boldw
+        c.fill = blue
+
+    for u in rows:
+        ws.append([
+            u["name"] or "",
+            u["emp_id"] or "",
+            u["designation"] or "",
+            (u["role"] or "").title(),
+            (u["status"] or "").title(),
+            _fmt_date(u["created_at"]),
+            _fmt_dt(u["last_login"]),
+        ])
+
+    for i, wdt in enumerate([24, 12, 18, 12, 12, 16, 22], start=1):
+        ws.column_dimensions[chr(64 + i)].width = wdt
+
+    from flask import Response
+    bio = io.BytesIO(); wb.save(bio); bio.seek(0)
+    fname = f"MRGOLISODA_Enrolment_Report_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    return Response(bio.getvalue(),
+                    mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @app.route("/api/admin/bulk-add", methods=["POST"])
 @admin_required
 def api_admin_bulk_add():
