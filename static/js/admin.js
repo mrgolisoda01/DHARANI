@@ -34,6 +34,15 @@ function fmtWhen(iso){
   }catch(e){ return ""; }
 }
 
+// Date only (no time) — for the "Enrolled" column, e.g. "25 Aug 2026"
+function fmtDate(iso){
+  if(!iso) return "—";
+  try{
+    const d = new Date(iso + (iso.endsWith("Z")?"":"Z"));
+    return d.toLocaleDateString(undefined, { day:"numeric", month:"short", year:"numeric" });
+  }catch(e){ return "—"; }
+}
+
 function toast(msg){
   const t = $("toast");
   t.textContent = msg; t.classList.add("show");
@@ -87,7 +96,7 @@ function renderTable(){
   });
 
   if(list.length === 0){
-    body.innerHTML = '<tr><td colspan="7" class="empty">No employees found.</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="empty">No employees found.</td></tr>';
     return;
   }
 
@@ -123,6 +132,7 @@ function renderTable(){
       <td>${escapeHtml(e.phone||"")}</td>
       <td><span class="pill ${rc}">${rl}</span></td>
       <td>${statusPill}</td>
+      <td style="white-space:nowrap;color:var(--mg-muted);font-size:12px">${fmtDate(e.created_at)}</td>
       <td>${actions}</td>
     </tr>`;
   }).join("");
