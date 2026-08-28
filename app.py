@@ -565,7 +565,10 @@ def web_manifest():
 
 @app.route("/")
 def login_page():
-    if current_user():
+    u = current_user()
+    if u:
+        if u["role"] in ("admin", "instructor"):
+            return redirect(url_for("admin_page"))
         return redirect(url_for("portal_page"))
     return render_template("login.html")
 
@@ -573,6 +576,12 @@ def login_page():
 @app.route("/portal")
 @login_required
 def portal_page():
+    # Instructors and admins manage content in the admin portal. If they land
+    # here — e.g. the installed phone app opens /portal as its start URL — send
+    # them to the admin side so they get the same view as on desktop.
+    u = current_user()
+    if u and u["role"] in ("admin", "instructor"):
+        return redirect(url_for("admin_page"))
     return render_template("portal.html", user=current_user())
 
 
