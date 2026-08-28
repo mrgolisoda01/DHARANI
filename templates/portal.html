@@ -100,6 +100,9 @@
     <div class="brand"><img id="hdrLogo" alt="Mr. Golisoda" style="height:34px;vertical-align:middle" /> <span style="vertical-align:middle">Training</span></div>
     <div style="display:flex;align-items:center;gap:12px">
       <span class="who">{{ user['name'] }} · {{ user['designation'] }}</span>
+      {% if user['role'] in ('admin', 'instructor') %}
+      <button class="signout" style="background:#1F5FA9;border-color:#1F5FA9;color:#fff" onclick="window.location.href='/admin'">← Back to Admin</button>
+      {% endif %}
       <button class="signout" onclick="doSignOut()">Sign out</button>
     </div>
   </div></div>
