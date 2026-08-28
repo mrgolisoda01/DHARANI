@@ -585,6 +585,16 @@ def portal_page():
     return render_template("portal.html", user=current_user())
 
 
+@app.route("/my-training")
+@login_required
+def my_training_page():
+    # The learner training experience (assessments, modules, certificates),
+    # reachable by instructors/admins too so they can complete training on the
+    # same account. Learners just use /portal; this is the door for staff who
+    # normally live in the admin portal.
+    return render_template("portal.html", user=current_user())
+
+
 @app.route("/admin")
 @view_admin_required
 def admin_page():
@@ -1583,6 +1593,12 @@ def _user_role_label(u):
 
 def _assessment_allowed_for(assessment, u):
     """Check if this user may take this assessment based on roles field."""
+    # Instructors and admins are learning the whole system — show them everything.
+    try:
+        if u and u["role"] in ("admin", "instructor"):
+            return True
+    except Exception:
+        pass
     roles = (assessment["roles"] or "all").strip().lower()
     if roles in ("", "all"):
         return True
@@ -3079,6 +3095,12 @@ def _can_manage_content():
 
 
 def _content_visible_for(item, u):
+    # Instructors and admins are learning the whole system — show them everything.
+    try:
+        if u and u["role"] in ("admin", "instructor"):
+            return True
+    except Exception:
+        pass
     roles = (item["roles"] or "all").strip().lower()
     if roles in ("", "all"):
         return True
