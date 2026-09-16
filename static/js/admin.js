@@ -115,11 +115,17 @@ function renderTable(){
 
     let actions = "";
     if(window.IS_ADMIN === false){
-      // instructors: can REQUEST a delete (goes for admin approval), but not
-      // approve/edit/reset — those stay with admins
-      actions = (e.status === "pending" || e.role === "admin")
-        ? '<span style="font-size:11px;color:#9aa6ae">view only</span>'
-        : `<button class="act del" title="Request delete (needs admin approval)" onclick="del('${e.emp_id}')">🗑</button>`;
+      // instructors: can REQUEST a delete or a resignation (both go for admin
+      // approval), but not approve/edit/reset/reactivate — those stay with admins
+      if(e.status === "pending" || e.role === "admin"){
+        actions = '<span style="font-size:11px;color:#9aa6ae">view only</span>';
+      } else if(e.status === "resigned"){
+        actions = '<span style="font-size:11px;color:#9aa6ae">resigned</span>';
+      } else {
+        actions =
+          `<button class="act" title="Request resignation (needs admin approval)" onclick="resignEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`+
+          `<button class="act del" title="Request delete (needs admin approval)" onclick="del('${e.emp_id}')">🗑</button>`;
+      }
     } else if(e.status === "pending"){
       actions =
         `<button class="act ok" title="Approve" onclick="approve('${e.emp_id}')">✔</button>`+
@@ -167,9 +173,13 @@ async function reject(emp_id){
 }
 
 async function resignEmp(emp_id, name){
-  if(!confirm("Mark " + (name||"this employee") + " as resigned?\n\nThey will no longer be able to log in, but all their training history and certificates are kept. You can reactivate them later if they rejoin.")) return;
+  const isReq = (window.IS_ADMIN === false);
+  const msg = isReq
+    ? "Send a request to mark " + (name||"this employee") + " as resigned?\n\nAn admin will need to approve it. Their training history and certificates are kept."
+    : "Mark " + (name||"this employee") + " as resigned?\n\nThey will no longer be able to log in, but all their training history and certificates are kept. You can reactivate them later if they rejoin.";
+  if(!confirm(msg)) return;
   const r = await api("/api/admin/set-employment-status", { emp_id, action: "resign" });
-  if(r.ok){ toast(r.msg||"Marked as resigned."); loadDashboard(); } else toast(r.msg||"Failed.");
+  if(r.ok){ toast(r.msg||"Done."); loadDashboard(); } else toast(r.msg||"Failed.");
 }
 async function reactivateEmp(emp_id){
   if(!confirm("Reactivate this employee so they can log in again?")) return;
