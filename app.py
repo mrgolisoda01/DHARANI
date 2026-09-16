@@ -653,6 +653,8 @@ def api_login():
         return jsonify(ok=False, msg="Employee ID or password is incorrect."), 401
     if u["status"] == "pending":
         return jsonify(ok=False, msg="Your account is awaiting admin approval."), 403
+    if u["status"] == "resigned":
+        return jsonify(ok=False, msg="This account is no longer active. Please contact your administrator."), 403
 
     session.permanent = True
     session["emp_id"] = u["emp_id"]
@@ -1274,6 +1276,43 @@ def api_admin_reset_password():
                (generate_password_hash(new_pw), emp_id))
     db.commit()
     return jsonify(ok=True, msg="Password reset. Share the temporary password with the employee.")
+
+
+@app.route("/api/admin/set-employment-status", methods=["POST"])
+@admin_required
+def api_admin_set_employment_status():
+    """Mark an employee as resigned (blocks login, keeps all history and
+    certificates) or reactivate them back to approved if they rejoin."""
+    d = request.get_json(force=True)
+    emp_id = (d.get("emp_id") or "").strip()
+    action = (d.get("action") or "").strip().lower()   # "resign" or "reactivate"
+    if not emp_id or action not in ("resign", "reactivate"):
+        return jsonify(ok=False, msg="Missing employee ID or action."), 400
+
+    db = get_db()
+    target = db.execute("SELECT emp_id, name, role, status FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
+    if target is None:
+        return jsonify(ok=False, msg="Employee not found."), 404
+
+    me = current_user()
+    if action == "resign":
+        # Don't let an admin resign their own account, or the last active admin.
+        if target["emp_id"] == me["emp_id"]:
+            return jsonify(ok=False, msg="You can't mark your own account as resigned."), 400
+        if target["role"] == "admin":
+            other_admins = db.execute(
+                "SELECT COUNT(*) AS n FROM users WHERE role='admin' AND status='approved' AND emp_id<>?",
+                (emp_id,)
+            ).fetchone()["n"]
+            if other_admins == 0:
+                return jsonify(ok=False, msg="This is the last active admin — reassign admin rights first."), 400
+        db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (emp_id,))
+        db.commit()
+        return jsonify(ok=True, msg=f"{target['name']} marked as resigned. Their history and certificates are kept.")
+    else:
+        db.execute("UPDATE users SET status='approved' WHERE emp_id=?", (emp_id,))
+        db.commit()
+        return jsonify(ok=True, msg=f"{target['name']} reactivated — they can log in again.")
 
 
 def _queue_delete_request(target_type, target_id, target_label):
