@@ -1078,7 +1078,7 @@ def api_admin_all_approvals():
     # 3) delete requests + edit requests (from pending_actions)
     try:
         del_rows = db.execute(
-            "SELECT * FROM pending_actions WHERE status='pending' AND action_type='delete' ORDER BY created_at DESC"
+            "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign') ORDER BY created_at DESC"
         ).fetchall()
         deletes = [dict(r) for r in del_rows]
     except Exception:
@@ -1105,7 +1105,7 @@ def api_admin_pending_actions():
     """All pending action requests (currently: instructor delete requests)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' AND action_type='delete' ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign') ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -1131,6 +1131,15 @@ def api_admin_resolve_action():
 
     if decision != "approve":
         return jsonify(ok=False, msg="Invalid decision."), 400
+
+    # A resign request just changes the user's status (keeps all their history).
+    if act["action_type"] == "resign":
+        tgt = db.execute("SELECT role FROM users WHERE emp_id=?", (act["target_id"],)).fetchone()
+        if tgt and tgt["role"] != "admin":
+            db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (act["target_id"],))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+        db.commit()
+        return jsonify(ok=True, msg="Approved — the employee is now marked resigned.")
 
     # perform the delete that was requested
     tt = act["target_type"]
@@ -1279,10 +1288,11 @@ def api_admin_reset_password():
 
 
 @app.route("/api/admin/set-employment-status", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_set_employment_status():
     """Mark an employee as resigned (blocks login, keeps all history and
-    certificates) or reactivate them back to approved if they rejoin."""
+    certificates) or reactivate them back to approved if they rejoin.
+    Instructors can REQUEST a resign — it goes pending until an admin approves."""
     d = request.get_json(force=True)
     emp_id = (d.get("emp_id") or "").strip()
     action = (d.get("action") or "").strip().lower()   # "resign" or "reactivate"
@@ -1295,6 +1305,28 @@ def api_admin_set_employment_status():
         return jsonify(ok=False, msg="Employee not found."), 404
 
     me = current_user()
+
+    # Instructors can't act directly — they raise a request for admin approval.
+    # (Reactivate is an admin-only action; instructors only request resignations.)
+    if me["role"] == "instructor":
+        if action != "resign":
+            return jsonify(ok=False, msg="Only an admin can reactivate an employee."), 403
+        if target["role"] == "admin":
+            return jsonify(ok=False, msg="Admin accounts can't be marked resigned."), 400
+        dup = db.execute(
+            "SELECT 1 FROM pending_actions WHERE action_type='resign' AND target_type='user' "
+            "AND target_id=? AND status='pending'", (emp_id,)
+        ).fetchone()
+        if not dup:
+            db.execute(
+                "INSERT INTO pending_actions (action_type,target_type,target_id,target_label,"
+                "requested_by,requested_by_name,status,created_at) "
+                "VALUES ('resign','user',?,?,?,?,'pending',?)",
+                (emp_id, target["name"], me["emp_id"], me["name"], datetime.utcnow().isoformat())
+            )
+            db.commit()
+        return jsonify(ok=True, msg="Resignation request sent for admin approval.")
+
     if action == "resign":
         # Don't let an admin resign their own account, or the last active admin.
         if target["emp_id"] == me["emp_id"]:
