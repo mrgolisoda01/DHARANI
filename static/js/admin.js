@@ -87,8 +87,12 @@ async function loadDashboard(){
 
 function renderTable(){
   const q = ($("searchBox").value || "").toLowerCase().trim();
+  const statusFilter = ($("empStatusFilter") && $("empStatusFilter").value) || "active";
   const body = $("empBody");
   const list = EMPLOYEES.filter(e=>{
+    // status filter: active = everyone except resigned; resigned = only resigned; all = everyone
+    if(statusFilter === "active" && e.status === "resigned") return false;
+    if(statusFilter === "resigned" && e.status !== "resigned") return false;
     if(!q) return true;
     return (e.name||"").toLowerCase().includes(q)
         || (e.emp_id||"").toLowerCase().includes(q)
@@ -105,7 +109,9 @@ function renderTable(){
     const isAdmin = e.role === "admin";
     const statusPill = e.status === "approved"
       ? '<span class="pill p-approved">Approved</span>'
-      : '<span class="pill p-pending">Pending</span>';
+      : (e.status === "resigned"
+          ? '<span class="pill" style="background:#f3e0e0;color:#a33">Resigned</span>'
+          : '<span class="pill p-pending">Pending</span>');
 
     let actions = "";
     if(window.IS_ADMIN === false){
@@ -118,10 +124,17 @@ function renderTable(){
       actions =
         `<button class="act ok" title="Approve" onclick="approve('${e.emp_id}')">✔</button>`+
         `<button class="act no" title="Reject" onclick="reject('${e.emp_id}')">✖</button>`;
+    } else if(e.status === "resigned"){
+      // resigned people: offer reactivate, keep edit, allow delete (non-admin)
+      actions =
+        `<button class="act" title="Reactivate (allow login again)" onclick="reactivateEmp('${e.emp_id}')">♻</button>`+
+        `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
+        (isAdmin ? "" : `<button class="act del" title="Delete" onclick="del('${e.emp_id}')">🗑</button>`);
     } else {
       actions =
         `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
         `<button class="act" title="Reset password" onclick="openReset('${e.emp_id}')">⟳</button>`+
+        (isAdmin ? "" : `<button class="act" title="Mark as resigned (block login, keep history)" onclick="resignEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`)+
         (isAdmin ? "" : `<button class="act del" title="Delete" onclick="del('${e.emp_id}')">🗑</button>`);
     }
 
@@ -151,6 +164,17 @@ async function reject(emp_id){
   if(!confirm("Reject and remove this signup request?")) return;
   const r = await api("/api/reject", { emp_id });
   if(r.ok){ toast("Removed."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+async function resignEmp(emp_id, name){
+  if(!confirm("Mark " + (name||"this employee") + " as resigned?\n\nThey will no longer be able to log in, but all their training history and certificates are kept. You can reactivate them later if they rejoin.")) return;
+  const r = await api("/api/admin/set-employment-status", { emp_id, action: "resign" });
+  if(r.ok){ toast(r.msg||"Marked as resigned."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+async function reactivateEmp(emp_id){
+  if(!confirm("Reactivate this employee so they can log in again?")) return;
+  const r = await api("/api/admin/set-employment-status", { emp_id, action: "reactivate" });
+  if(r.ok){ toast(r.msg||"Reactivated."); loadDashboard(); } else toast(r.msg||"Failed.");
 }
 
 /* ---- edit ---- */
