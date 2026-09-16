@@ -870,16 +870,20 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         html += card('✏️ Edit requests ('+d.edits.length+')', '#1f5fa9', rows);
       }
 
-      // Delete requests
+      // Delete + resign requests (both come through d.deletes)
       if(d.deletes.length){
         const typeLabel = { user:'Employee', assessment:'Assessment', module:'Module', video:'Video' };
         const rows = d.deletes.map(a=>{
-          const left = `<b>Delete ${typeLabel[a.target_type]||a.target_type}:</b> ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>`;
-          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#e24b4a" onclick="apprResolveDelete(${a.id},'approve')">Approve delete</button>`
+          const isResign = a.action_type === 'resign';
+          const verb = isResign ? 'Mark resigned' : 'Delete';
+          const left = `<b>${verb} ${typeLabel[a.target_type]||a.target_type}:</b> ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>`;
+          const approveLabel = isResign ? 'Approve resign' : 'Approve delete';
+          const approveColor = isResign ? '#c9a227' : '#e24b4a';
+          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:${approveColor}" onclick="apprResolveDelete(${a.id},'approve')">${approveLabel}</button>`
                      + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('🗑 Delete requests ('+d.deletes.length+')', '#e24b4a', rows);
+        html += card('🗑 Delete / resign requests ('+d.deletes.length+')', '#e24b4a', rows);
       }
 
       box.innerHTML = html;
