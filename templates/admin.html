@@ -158,6 +158,11 @@
       <h2>Employee management</h2>
       <div class="btns">
         <input class="search" id="searchBox" placeholder="Search name, ID, designation…" oninput="renderTable()" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" name="emp-search-nofill" />
+        <select id="empStatusFilter" onchange="renderTable()" style="padding:8px 10px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px">
+          <option value="active">Active employees</option>
+          <option value="resigned">Resigned only</option>
+          <option value="all">All (incl. resigned)</option>
+        </select>
         <button class="btn admin-only" onclick="openBulk()">＋ Bulk add (CSV)</button>
         <button class="btn" onclick="window.location.href='/api/admin/enrolment-report.xlsx'">⬇ Enrolment report</button>
       </div>
