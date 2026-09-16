@@ -1199,13 +1199,23 @@ def api_admin_dashboard():
     pending = db.execute("SELECT COUNT(*) c FROM users WHERE status='pending'").fetchone()["c"]
     approved = db.execute("SELECT COUNT(*) c FROM users WHERE status='approved' AND role != 'admin'").fetchone()["c"]
 
-    # learners who have passed at least one assessment / total approved learners
+    # learners who have passed at least one assessment / total active learners.
+    # Count the SAME population on both sides: only currently-active, non-admin
+    # learners. Otherwise passes by admins, instructors, or resigned staff would
+    # be counted in the numerator but not the denominator, pushing this over 100%.
     passed_any = db.execute(
-        "SELECT COUNT(DISTINCT emp_id) c FROM assessment_results WHERE passed = 1"
+        "SELECT COUNT(DISTINCT r.emp_id) c FROM assessment_results r "
+        "JOIN users u ON u.emp_id = r.emp_id "
+        "WHERE r.passed = 1 AND u.status = 'approved' AND u.role != 'admin'"
     ).fetchone()["c"]
-    completion = round((passed_any / approved) * 100) if approved else 0
+    completion = min(100, round((passed_any / approved) * 100)) if approved else 0
 
-    avg_row = db.execute("SELECT AVG(percent) a FROM assessment_results").fetchone()
+    # average score across active non-admin learners only (consistent population)
+    avg_row = db.execute(
+        "SELECT AVG(r.percent) a FROM assessment_results r "
+        "JOIN users u ON u.emp_id = r.emp_id "
+        "WHERE u.status = 'approved' AND u.role != 'admin'"
+    ).fetchone()
     avg_score = round(avg_row["a"]) if avg_row["a"] is not None else 0
 
     # full employee list (include admins too, marked, so all accounts are visible)
