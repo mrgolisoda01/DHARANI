@@ -134,6 +134,7 @@
     <button class="tabbtn" id="tabVidBtn" onclick="switchTab('vid')">🎥 Videos</button>
     <button class="tabbtn" id="tabCrtBtn" onclick="switchTab('crt')">📜 Certificates</button>
     <button class="tabbtn" id="tabProgBtn" onclick="switchTab('prog')">📊 Progress</button>
+    <button class="tabbtn" id="tabOjtBtn" onclick="switchTab('ojt')">🧭 OJT</button>
     <button class="tabbtn" id="tabApprBtn" onclick="switchTab('appr')">✅ <span id="apprTabLabel">Approvals</span> <span id="apprBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
     <button class="tabbtn" id="tabSetBtn" onclick="switchTab('set')">⚙️ Settings</button>
   </div>
@@ -449,6 +450,12 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
     <div id="progBody" style="display:none"><div class="empty">Loading…</div></div>
     <div id="progCertBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
+
+  <!-- ============ OJT TAB (ojt-admin.js) ============ -->
+  <div class="wrap tabpane" id="tabOjt" style="display:none">
+    <div id="ojtRoot"><div class="empty">Loading…</div></div>
+  </div>
+  <div class="ov" id="ojtOv"><div class="modal"><div id="ojtModalBody"></div></div></div>
 
   <div class="wrap tabpane" id="tabAppr" style="display:none">
     <div class="sec-head"><h2 id="apprHeading">Approvals</h2></div>
@@ -1543,5 +1550,6 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       }, true);  // capture phase, so we can block before the onclick runs
     })();
   </script>
+  <script src="{{ url_for('static', filename='js/ojt-admin.js') }}"></script>
 </body>
 </html>

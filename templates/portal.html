@@ -115,6 +115,7 @@
     <button class="pt-tab" data-tab="assess" onclick="showTab('assess')">📝 Assessments</button>
     <button class="pt-tab" data-tab="videos" onclick="showTab('videos')">🎥 Videos</button>
     <button class="pt-tab" data-tab="certs" onclick="showTab('certs')">📜 Certificates</button>
+    <button class="pt-tab" data-tab="ojt" onclick="showTab('ojt')" style="display:none">🧭 My OJT</button>
   </div></div>
 
   <div class="wrap">
@@ -196,6 +197,9 @@
     </div>
 
     <!-- ============ CERTIFICATES ============ -->
+    <!-- ============ MY OJT (ojt-portal.js) ============ -->
+    <div id="tab-ojt" class="tabpane"><div id="myOjt"></div></div>
+
     <div id="tab-certs" class="tabpane">
       <div class="sectiontitle">Your certificates</div>
       <div id="certListBox"><div class="empty">Loading…</div></div>
@@ -273,5 +277,6 @@
     if(card){ card.querySelector('.cert-inner').style.setProperty('--cert-bg', 'url('+BRAND.cert_bg+')'); }
   })();
 </script>
+<script src="{{ url_for('static', filename='js/ojt-portal.js') }}"></script>
 </body>
 </html>
