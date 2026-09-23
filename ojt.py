@@ -170,6 +170,30 @@ def _ensure_tables():
         db.execute("ALTER TABLE ojt_holidays ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'leave'")
     except Exception:
         pass
+    # Trainee's own task claims ("I've done this"). Separate from the trainer's
+    # official sign-off in ojt_signoffs — the trainer still confirms.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_selfmarks (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            task_id       INTEGER NOT NULL,
+            day_no        INTEGER,
+            marked_at     TEXT,
+            UNIQUE (enrollment_id, task_id)
+        )
+    """)
+    # Trainee's daily notes — problems faced and work done, one row per day.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_daynotes (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            day_no        INTEGER NOT NULL,
+            problems      TEXT,
+            work_done     TEXT,
+            updated_at    TEXT,
+            UNIQUE (enrollment_id, day_no)
+        )
+    """)
     db.commit()
     _ready = True
 
@@ -506,6 +530,12 @@ def _timeline(enr):
 
     signed = {s["task_id"]: s for s in db.execute(
         "SELECT task_id, signed_by, signed_at FROM ojt_signoffs WHERE enrollment_id=?", (enr["id"],)).fetchall()}
+    selfmarks = {s["task_id"] for s in db.execute(
+        "SELECT task_id FROM ojt_selfmarks WHERE enrollment_id=?", (enr["id"],)).fetchall()}
+    daynotes = {}
+    for r in db.execute(
+        "SELECT day_no, problems, work_done FROM ojt_daynotes WHERE enrollment_id=?", (enr["id"],)).fetchall():
+        daynotes[r["day_no"]] = {"problems": r["problems"] or "", "work_done": r["work_done"] or ""}
     tasks = _tasks_by_day(enr["role"])
 
     days, total, done, due, due_done = [], 0, 0, 0, 0
@@ -539,7 +569,8 @@ def _timeline(enr):
             for t in tasks.get(n, []):
                 s = signed.get(t["id"])
                 tl.append({"id": t["id"], "title": t["title"], "description": t["description"],
-                           "done": bool(s), "signed_at": s["signed_at"] if s else None})
+                           "done": bool(s), "signed_at": s["signed_at"] if s else None,
+                           "self_done": t["id"] in selfmarks})
                 total += 1
                 if s:
                     done += 1
@@ -547,10 +578,12 @@ def _timeline(enr):
                     due += 1
                     if s:
                         due_done += 1
+            nt = daynotes.get(n, {"problems": "", "work_done": ""})
             days.append({"day": n, "date": ds, "weekday": cur.strftime("%a"),
                          "kind": ("review" if is_review else "work"),
                          "is_today": cur == today, "past": cur < today,
-                         "can_edit": True, "override": ov, "tasks": tl})
+                         "can_edit": True, "override": ov, "tasks": tl,
+                         "problems": nt["problems"], "work_done": nt["work_done"]})
             end_date = cur
         else:
             # non-working calendar day (sunday / leave / weekoff) — shown, no task, no count
@@ -852,6 +885,73 @@ def api_my():
         "role": e["role"], "start_date": e["start_date"], "status": e["status"],
         "trainer": e["trainer_name"] or "—", "day_label": _day_label(tl["day_no"], e["status"]),
     }, timeline=tl)
+
+
+def _my_active_enrollment():
+    """The logged-in trainee's own active enrollment, or (None, error)."""
+    u = _current_user()
+    db = _get_db()
+    e = db.execute("SELECT * FROM ojt_enrollments WHERE emp_id=? ORDER BY (status='active') DESC, start_date DESC LIMIT 1",
+                   (u["emp_id"],)).fetchone()
+    if not e:
+        return None, (jsonify(ok=False, msg="You have no OJT."), 404)
+    if e["status"] != "active":
+        return None, (jsonify(ok=False, msg="Your OJT isn't active."), 400)
+    return e, None
+
+
+@ojt_bp.route("/api/ojt/my-selfmark", methods=["POST"])
+@_login_only
+def api_my_selfmark():
+    """Trainee marks their OWN task as done / not done. This is the trainee's
+    claim — the trainer still gives the official sign-off separately."""
+    e, err = _my_active_enrollment()
+    if err:
+        return err
+    d = request.get_json(force=True)
+    task_id = d.get("task_id")
+    on = bool(d.get("on"))
+    if not task_id:
+        return jsonify(ok=False, msg="Missing task."), 400
+    # confirm the task belongs to this trainee's role
+    db = _get_db()
+    t = db.execute("SELECT day_no FROM ojt_tasks WHERE id=? AND role=?", (task_id, e["role"])).fetchone()
+    if not t:
+        return jsonify(ok=False, msg="Task not found for your role."), 404
+    if on:
+        if not db.execute("SELECT 1 FROM ojt_selfmarks WHERE enrollment_id=? AND task_id=?",
+                          (e["id"], task_id)).fetchone():
+            db.execute("INSERT INTO ojt_selfmarks (enrollment_id, task_id, day_no, marked_at) VALUES (?,?,?,?)",
+                       (e["id"], task_id, t["day_no"], _now()))
+    else:
+        db.execute("DELETE FROM ojt_selfmarks WHERE enrollment_id=? AND task_id=?", (e["id"], task_id))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/my-daynote", methods=["POST"])
+@_login_only
+def api_my_daynote():
+    """Trainee saves their daily notes — problems faced and work done."""
+    e, err = _my_active_enrollment()
+    if err:
+        return err
+    d = request.get_json(force=True)
+    try:
+        day_no = int(d.get("day_no"))
+    except Exception:
+        return jsonify(ok=False, msg="Missing day."), 400
+    problems = (d.get("problems") or "").strip()[:2000]
+    work_done = (d.get("work_done") or "").strip()[:2000]
+    db = _get_db()
+    if db.execute("SELECT 1 FROM ojt_daynotes WHERE enrollment_id=? AND day_no=?", (e["id"], day_no)).fetchone():
+        db.execute("UPDATE ojt_daynotes SET problems=?, work_done=?, updated_at=? WHERE enrollment_id=? AND day_no=?",
+                   (problems, work_done, _now(), e["id"], day_no))
+    else:
+        db.execute("INSERT INTO ojt_daynotes (enrollment_id, day_no, problems, work_done, updated_at) VALUES (?,?,?,?,?)",
+                   (e["id"], day_no, problems, work_done, _now()))
+    db.commit()
+    return jsonify(ok=True)
 
 
 # ---------------------------------------------------------------
