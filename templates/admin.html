@@ -48,6 +48,10 @@
     .ad-who .pic{width:30px;height:30px;border-radius:50%;background:var(--mg-blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
     .ad-who b{color:var(--mg-ink)}
     .wrap{max-width:1100px;margin:0 auto;padding:20px 22px 60px}
+    /* Hide tab panes by default at parse time so late-loading tabs (OJT, whose
+       styles/JS load after the HTML) don't flash before JS runs. The active tab
+       carries an inline display:block; switchTab() toggles inline display. */
+    .tabpane{display:none}
     .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
     @media(max-width:680px){.cards{grid-template-columns:repeat(2,1fr)}}
     .card{background:var(--mg-card);border:1px solid var(--mg-line);border-radius:12px;padding:16px}
@@ -140,7 +144,7 @@
   </div>
 
   <!-- ============ EMPLOYEES TAB ============ -->
-  <div class="wrap tabpane" id="tabEmp">
+  <div class="wrap tabpane" id="tabEmp" style="display:block">
 
     <div class="cards">
       <div class="card"><div class="lbl">Total employees</div><div class="val" style="color:var(--mg-blue)" id="cTotal">—</div></div>
