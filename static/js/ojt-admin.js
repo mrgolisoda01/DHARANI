@@ -97,7 +97,7 @@
     }).join("");
     root.innerHTML =
       '<div class="sec-head"><h2>🧭 OJT — On-the-Job Training</h2></div>' +
-      '<div class="note">30 calendar days from the audit-passed date. Sundays are the fixed week off; leave is marked as holiday (both count inside the 30 days). Days 29–30 are the final review. Only the trainer signs off tasks.</div>' +
+      '<div class="note">30 <b>working</b> days from the audit-passed date. Sundays are the fixed week off and don\'t count — the finish date extends past them. Leave also extends the OJT by a day. If a trainee works a Sunday, mark it <b>Worked</b> so it counts (finish comes earlier). Days 29–30 are the final review. Only the trainer signs off tasks.</div>' +
       '<div class="ojt-roles">' + roles + "</div>" +
       '<div class="ojt-views">' + views + "</div>" +
       '<div id="ojtBody"><div class="empty">Loading…</div></div>';
@@ -201,21 +201,45 @@
     S.current = d;
     var e = d.enrollment, tl = d.timeline, active = e.status === "active";
     var daysHtml = tl.days.map(function(day){
-      var badge = day.kind === "sunday" ? '<span class="ojt-k k-sunday">Week off</span>'
-        : day.kind === "holiday" ? '<span class="ojt-k k-holiday">Holiday</span>'
+      var isWork = (day.kind === "work" || day.kind === "review");
+      var badge = day.kind === "sunday" ? '<span class="ojt-k k-sunday">Week off (Sun)</span>'
+        : day.kind === "weekoff" ? '<span class="ojt-k k-sunday">Week off</span>'
+        : day.kind === "leave" ? '<span class="ojt-k k-holiday">Leave</span>'
         : day.kind === "review" ? '<span class="ojt-k k-review">Final review</span>' : "";
       if(day.is_today) badge += ' <span class="ojt-k k-today">Today</span>';
-      var holBtn = (active && (day.kind === "work" || day.kind === "review" || day.kind === "holiday"))
-        ? '<button class="ojt-link" data-act="holiday" data-date="' + day.date + '" data-on="' + (day.kind === "holiday" ? "0" : "1") + '">' +
-          (day.kind === "holiday" ? "Remove holiday" : "Mark holiday") + "</button>" : "";
+
+      // per-day edit controls (trainer/admin), only while active
+      var editBtns = "";
+      if(active){
+        var b = [];
+        if(day.weekday === "Sun" && day.override !== "worked"){
+          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="worked">Mark worked</button>');
+        }
+        if(day.override === "worked"){
+          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="clear">Back to week off</button>');
+        }
+        if(isWork && day.weekday !== "Sun"){
+          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="leave">Mark leave</button>');
+          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="weekoff">Mark week off</button>');
+        }
+        if(day.kind === "leave" || day.kind === "weekoff"){
+          if(day.override){ b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="clear">Undo</button>'); }
+        }
+        editBtns = b.join(' ');
+      }
+
       var tasks = day.tasks.length ? day.tasks.map(function(t){
         return '<label class="ojt-task"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
           (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" +
           (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") + "</span></label>";
       }).join("") : '<div class="muted">No tasks set for this day.</div>';
-      return '<div class="ojt-tl-day' + (day.is_today ? " today" : "") + (day.kind === "sunday" || day.kind === "holiday" ? " off" : "") + '">' +
-        '<div class="ojt-tl-h"><span><b>Day ' + day.day + "</b> · " + day.weekday + ", " + fmtD(day.date) + " " + badge + "</span>" + holBtn + "</div>" +
-        (day.kind === "sunday" && !day.tasks.length ? "" : tasks) + "</div>";
+
+      var dayLabel = (day.day !== null && day.day !== undefined)
+        ? ("<b>Day " + day.day + "</b> · ")
+        : '<b class="muted">—</b> · ';
+      return '<div class="ojt-tl-day' + (day.is_today ? " today" : "") + (isWork ? "" : " off") + '">' +
+        '<div class="ojt-tl-h"><span>' + dayLabel + day.weekday + ", " + fmtD(day.date) + " " + badge + "</span>" + editBtns + "</div>" +
+        (isWork ? tasks : "") + "</div>";
     }).join("");
 
     var closeBox = active
@@ -231,7 +255,7 @@
       "<h3>" + esc(e.name) + ' <span class="muted">(' + esc(e.emp_id) + ")</span></h3>" +
       '<p class="sub">' + esc(e.role) + " · " + esc(e.day_label) + " · Trainer: " + esc(e.trainer) +
       "<br>" + fmtD(e.start_date) + " → " + fmtD(tl.end_date) + " · " + tl.done + "/" + tl.total + " tasks signed off · " +
-      tl.sundays + " week-offs · " + tl.holidays + " holidays</p>" +
+      tl.sundays + " week-offs · " + tl.holidays + " leave days</p>" +
       daysHtml + closeBox, 760
     );
   }
@@ -414,8 +438,8 @@
         var rs = await postJ("/api/ojt/signoff", { enrollment_id: cur.id, task_id: el.dataset.task, done: el.checked });
         if(!rs.ok){ note(rs.msg || "Could not save."); el.checked = !el.checked; }
       }
-      else if(act === "holiday"){
-        var rh = await postJ("/api/ojt/holiday", { enrollment_id: S.current.enrollment.id, date: el.dataset.date, on: el.dataset.on === "1" });
+      else if(act === "dayset"){
+        var rh = await postJ("/api/ojt/holiday", { enrollment_id: S.current.enrollment.id, date: el.dataset.date, kind: el.dataset.kind });
         if(!rh.ok) note(rh.msg || "Could not save."); else openTrainee(S.current.enrollment.id);
       }
       else if(act === "close"){

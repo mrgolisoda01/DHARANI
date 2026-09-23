@@ -48,18 +48,21 @@
       (tl.overdue ? " · <b style=\"color:var(--mg-red)\">" + tl.overdue + " due tasks not yet signed off</b>" : "") + "</div></div>";
 
     var days = tl.days.map(function(day){
-      var badge = day.kind === "sunday" ? '<span class="k k-sunday">Week off</span>'
-        : day.kind === "holiday" ? '<span class="k k-holiday">Holiday</span>'
+      var isWork = (day.kind === "work" || day.kind === "review");
+      var badge = day.kind === "sunday" ? '<span class="k k-sunday">Week off (Sun)</span>'
+        : day.kind === "weekoff" ? '<span class="k k-sunday">Week off</span>'
+        : day.kind === "leave" ? '<span class="k k-holiday">Leave</span>'
         : day.kind === "review" ? '<span class="k k-review">Final review</span>' : "";
       if(day.is_today) badge += '<span class="k k-today">Today</span>';
       var tasks = day.tasks.map(function(t){
         return '<div class="t"><span>' + (t.done ? "✅" : "⬜") + "</span><span><b>" + esc(t.title) + "</b>" +
           (t.description ? '<br><span class="m">' + esc(t.description) + "</span>" : "") + "</span></div>";
       }).join("");
-      return '<div class="od' + (day.is_today ? " today" : "") + (day.kind === "sunday" || day.kind === "holiday" ? " off" : "") + '"' +
+      var dayLabel = (day.day !== null && day.day !== undefined) ? ("Day " + day.day) : "—";
+      return '<div class="od' + (day.is_today ? " today" : "") + (isWork ? "" : " off") + '"' +
         (day.is_today ? ' id="myOjtToday"' : "") + ">" +
-        "<b>Day " + day.day + '</b> <span class="m">· ' + day.weekday + ", " + fmtD(day.date) + "</span>" + badge +
-        (tasks || (day.kind === "sunday" ? "" : '<div class="m">No tasks for this day.</div>')) + "</div>";
+        "<b>" + dayLabel + '</b> <span class="m">· ' + day.weekday + ", " + fmtD(day.date) + "</span>" + badge +
+        (isWork ? (tasks || '<div class="m">No tasks for this day.</div>') : "") + "</div>";
     }).join("");
     box.innerHTML = head + days;
     if(today){ var t = $("myOjtToday"); if(t) setTimeout(function(){ t.scrollIntoView({ block:"center" }); }, 50); }
