@@ -159,11 +159,17 @@ def _ensure_tables():
             id            SERIAL PRIMARY KEY,
             enrollment_id INTEGER NOT NULL,
             on_date       TEXT NOT NULL,
+            kind          TEXT NOT NULL DEFAULT 'leave',  -- 'leave' | 'weekoff' | 'worked'
             marked_by     TEXT,
             marked_at     TEXT,
             UNIQUE (enrollment_id, on_date)
         )
     """)
+    # Older databases may have ojt_holidays without the 'kind' column — add it.
+    try:
+        db.execute("ALTER TABLE ojt_holidays ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'leave'")
+    except Exception:
+        pass
     db.commit()
     _ready = True
 
@@ -477,52 +483,99 @@ def _parse_date(s):
 
 
 def _timeline(enr):
-    """Build the 30-day view for one enrollment."""
+    """Build the OJT view for one enrollment.
+
+    OJT is 30 WORKING days. We walk real calendar dates from the start and
+    place the 30 task-sets in order onto working days only. Sundays are a fixed
+    week-off (no task, don't count) unless a trainer/admin marked that Sunday
+    as 'worked'. Any working day marked 'leave' or 'weekoff' is skipped and
+    doesn't count — so the finish date extends. A worked Sunday counts and
+    pulls the finish date earlier. Task-set N always lands on the Nth working
+    day, whatever calendar date that turns out to be.
+    """
     db = _get_db()
     start = _parse_date(enr["start_date"])
     today = _today_ist()
-    holidays = {h["on_date"] for h in db.execute(
-        "SELECT on_date FROM ojt_holidays WHERE enrollment_id=?", (enr["id"],)).fetchall()}
+
+    # per-date overrides set by trainer/admin: date -> kind ('leave'|'weekoff'|'worked')
+    overrides = {}
+    for h in db.execute(
+        "SELECT on_date, kind FROM ojt_holidays WHERE enrollment_id=?", (enr["id"],)
+    ).fetchall():
+        overrides[h["on_date"]] = (h["kind"] if ("kind" in h.keys() and h["kind"]) else "leave")
+
     signed = {s["task_id"]: s for s in db.execute(
         "SELECT task_id, signed_by, signed_at FROM ojt_signoffs WHERE enrollment_id=?", (enr["id"],)).fetchall()}
     tasks = _tasks_by_day(enr["role"])
 
     days, total, done, due, due_done = [], 0, 0, 0, 0
-    for n in range(1, OJT_DAYS + 1):
-        dt = start + timedelta(days=n - 1)
-        ds = dt.isoformat()
-        if dt.weekday() == 6:
-            kind = "sunday"
-        elif ds in holidays:
-            kind = "holiday"
-        elif n in REVIEW_DAYS:
-            kind = "review"
+    work_no = 0          # how many working days placed so far (1..30)
+    cur = start
+    guard = 0            # safety stop (never loop forever)
+    end_date = start
+
+    # keep walking calendar days until all 30 working days are placed
+    while work_no < OJT_DAYS and guard < 400:
+        guard += 1
+        ds = cur.isoformat()
+        ov = overrides.get(ds)
+        is_sunday = (cur.weekday() == 6)
+
+        # decide what this calendar day is
+        if ov == "worked":
+            kind = "work"
+        elif ov in ("leave", "weekoff"):
+            kind = ov
+        elif is_sunday:
+            kind = "sunday"          # fixed week off
         else:
             kind = "work"
-        tl = []
-        for t in tasks[n]:
-            s = signed.get(t["id"])
-            tl.append({"id": t["id"], "title": t["title"], "description": t["description"],
-                       "done": bool(s), "signed_at": s["signed_at"] if s else None})
-            total += 1
-            if s:
-                done += 1
-            if dt <= today:
-                due += 1
-                if s:
-                    due_done += 1
-        days.append({"day": n, "date": ds, "weekday": dt.strftime("%a"),
-                     "kind": kind, "is_today": dt == today, "past": dt < today, "tasks": tl})
 
-    day_no = (today - start).days + 1
+        if kind == "work":
+            work_no += 1
+            n = work_no
+            is_review = n in REVIEW_DAYS
+            tl = []
+            for t in tasks.get(n, []):
+                s = signed.get(t["id"])
+                tl.append({"id": t["id"], "title": t["title"], "description": t["description"],
+                           "done": bool(s), "signed_at": s["signed_at"] if s else None})
+                total += 1
+                if s:
+                    done += 1
+                if cur <= today:
+                    due += 1
+                    if s:
+                        due_done += 1
+            days.append({"day": n, "date": ds, "weekday": cur.strftime("%a"),
+                         "kind": ("review" if is_review else "work"),
+                         "is_today": cur == today, "past": cur < today,
+                         "can_edit": True, "override": ov, "tasks": tl})
+            end_date = cur
+        else:
+            # non-working calendar day (sunday / leave / weekoff) — shown, no task, no count
+            days.append({"day": None, "date": ds, "weekday": cur.strftime("%a"),
+                         "kind": kind, "is_today": cur == today, "past": cur < today,
+                         "can_edit": True, "override": ov, "tasks": []})
+        cur = cur + timedelta(days=1)
+
+    # which working-day number is "today"?
+    day_no = 0
+    for d in days:
+        if d["day"] is not None and d["date"] <= today.isoformat():
+            day_no = d["day"]
+    if day_no == 0 and today >= start:
+        day_no = 1   # started, first working day pending
+
     return {
         "days": days,
         "day_no": day_no,
         "total": total, "done": done,
         "overdue": due - due_done,
-        "end_date": (start + timedelta(days=OJT_DAYS - 1)).isoformat(),
+        "end_date": end_date.isoformat(),
         "sundays": sum(1 for d in days if d["kind"] == "sunday"),
-        "holidays": sum(1 for d in days if d["kind"] == "holiday"),
+        "holidays": sum(1 for d in days if d["kind"] in ("leave", "weekoff")),
+        "worked_sundays": sum(1 for d in days if d["kind"] == "work" and d["weekday"] == "Sun"),
     }
 
 
@@ -700,25 +753,50 @@ def api_signoff():
 @ojt_bp.route("/api/ojt/holiday", methods=["POST"])
 @_staff_required
 def api_holiday():
-    """Mark / unmark a working day as holiday (leave). It still counts in the 30 days."""
+    """Set a per-day override for one enrollment date.
+    kind: 'leave' | 'weekoff' | 'worked' | 'clear'
+      - leave/weekoff : a normal working day becomes non-working (extends the OJT)
+      - worked        : a Sunday becomes a working day (pulls the finish earlier)
+      - clear         : remove any override (back to default: Sunday=weekoff, else work)
+    Trainer or admin only.
+    """
     d = request.get_json(force=True)
     e, err = _get_enr_for_edit(d.get("enrollment_id"))
     if err:
         return err
     on = _parse_date(d.get("date"))
     start = _parse_date(e["start_date"])
-    if not on or not (start <= on <= start + timedelta(days=OJT_DAYS - 1)):
+    # allow any date from the start through a generous window (OJT can extend well
+    # past 30 calendar days once week-offs/leave are counted out)
+    if not on or on < start or on > start + timedelta(days=120):
         return jsonify(ok=False, msg="Date is outside this OJT."), 400
-    if on.weekday() == 6:
-        return jsonify(ok=False, msg="Sunday is already the fixed week off."), 400
+
+    # accept either the new 'kind' or the old on/off shape (back-compat)
+    kind = (d.get("kind") or "").strip().lower()
+    if not kind:
+        kind = "leave" if d.get("on") else "clear"
+
+    is_sunday = (on.weekday() == 6)
+    if kind == "worked" and not is_sunday:
+        return jsonify(ok=False, msg="Only a Sunday can be marked as worked."), 400
+    if kind in ("leave", "weekoff") and is_sunday:
+        return jsonify(ok=False, msg="Sunday is already a week off. To make a trainee work a Sunday, mark it 'Worked'."), 400
+    if kind not in ("leave", "weekoff", "worked", "clear"):
+        return jsonify(ok=False, msg="Unknown day status."), 400
+
     db = _get_db()
-    if d.get("on"):
-        if not db.execute("SELECT 1 FROM ojt_holidays WHERE enrollment_id=? AND on_date=?",
-                          (e["id"], on.isoformat())).fetchone():
-            db.execute("INSERT INTO ojt_holidays (enrollment_id, on_date, marked_by, marked_at) VALUES (?,?,?,?)",
-                       (e["id"], on.isoformat(), _current_user()["emp_id"], _now()))
+    ds = on.isoformat()
+    if kind == "clear":
+        db.execute("DELETE FROM ojt_holidays WHERE enrollment_id=? AND on_date=?", (e["id"], ds))
     else:
-        db.execute("DELETE FROM ojt_holidays WHERE enrollment_id=? AND on_date=?", (e["id"], on.isoformat()))
+        row = db.execute("SELECT 1 FROM ojt_holidays WHERE enrollment_id=? AND on_date=?",
+                         (e["id"], ds)).fetchone()
+        if row:
+            db.execute("UPDATE ojt_holidays SET kind=?, marked_by=?, marked_at=? WHERE enrollment_id=? AND on_date=?",
+                       (kind, _current_user()["emp_id"], _now(), e["id"], ds))
+        else:
+            db.execute("INSERT INTO ojt_holidays (enrollment_id, on_date, kind, marked_by, marked_at) VALUES (?,?,?,?,?)",
+                       (e["id"], ds, kind, _current_user()["emp_id"], _now()))
     db.commit()
     return jsonify(ok=True)
 
