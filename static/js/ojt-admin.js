@@ -229,17 +229,29 @@
       }
 
       var tasks = day.tasks.length ? day.tasks.map(function(t){
+        var claim = t.self_done
+          ? ' <span class="ojt-claim" style="font-size:11px;color:#c98a00;font-weight:600;white-space:nowrap">🟡 Trainee marked done</span>'
+          : '';
         return '<label class="ojt-task"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
-          (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" +
+          (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim +
           (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") + "</span></label>";
       }).join("") : '<div class="muted">No tasks set for this day.</div>';
+
+      // trainee's daily notes (read-only for trainer/admin)
+      var noteBlock = "";
+      if((day.work_done && day.work_done.trim()) || (day.problems && day.problems.trim())){
+        noteBlock = '<div class="ojt-daynote" style="margin-top:6px;padding:8px 10px;background:#f7f9fa;border-radius:8px;font-size:12.5px">' +
+          (day.work_done ? '<div><b>Work done:</b> ' + esc(day.work_done) + '</div>' : '') +
+          (day.problems ? '<div style="margin-top:3px"><b>Problems faced:</b> ' + esc(day.problems) + '</div>' : '') +
+          '</div>';
+      }
 
       var dayLabel = (day.day !== null && day.day !== undefined)
         ? ("<b>Day " + day.day + "</b> · ")
         : '<b class="muted">—</b> · ';
       return '<div class="ojt-tl-day' + (day.is_today ? " today" : "") + (isWork ? "" : " off") + '">' +
         '<div class="ojt-tl-h"><span>' + dayLabel + day.weekday + ", " + fmtD(day.date) + " " + badge + "</span>" + editBtns + "</div>" +
-        (isWork ? tasks : "") + "</div>";
+        (isWork ? (tasks + noteBlock) : "") + "</div>";
     }).join("");
 
     var closeBox = active
