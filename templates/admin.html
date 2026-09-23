@@ -134,7 +134,6 @@
     <button class="tabbtn" id="tabVidBtn" onclick="switchTab('vid')">🎥 Videos</button>
     <button class="tabbtn" id="tabCrtBtn" onclick="switchTab('crt')">📜 Certificates</button>
     <button class="tabbtn" id="tabProgBtn" onclick="switchTab('prog')">📊 Progress</button>
-    <button class="tabbtn" id="tabOjtBtn" onclick="switchTab('ojt')">🧭 OJT</button>
     <button class="tabbtn" id="tabApprBtn" onclick="switchTab('appr')">✅ <span id="apprTabLabel">Approvals</span> <span id="apprBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
     <button class="tabbtn" id="tabSetBtn" onclick="switchTab('set')">⚙️ Settings</button>
   </div>
@@ -451,16 +450,17 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
     <div id="progCertBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
 
-  <!-- ============ OJT TAB (ojt-admin.js) ============ -->
-  <div class="wrap tabpane" id="tabOjt" style="display:none">
-    <div id="ojtRoot"><div class="empty">Loading…</div></div>
-  </div>
-  <div class="ov" id="ojtOv"><div class="modal"><div id="ojtModalBody"></div></div></div>
-
   <div class="wrap tabpane" id="tabAppr" style="display:none">
     <div class="sec-head"><h2 id="apprHeading">Approvals</h2></div>
     <p id="apprIntro" style="margin:0 0 16px;font-size:13px;color:var(--mg-muted)">Everything waiting for your approval in one place — new employees, content instructors created, and delete requests. Approve to make it live, or reject to cancel.</p>
     <div id="apprBody"><div class="empty">Loading…</div></div>
+
+    <div class="sec-head" style="margin-top:28px"><h2>Activity history</h2></div>
+    <p style="margin:0 0 12px;font-size:13px;color:var(--mg-muted)">A record of who changed what and when — approvals, resignations, deletes, edits and more. History is recorded from when this feature went live (plus earlier approval records).</p>
+    <div style="margin-bottom:10px">
+      <input class="search" id="histSearch" placeholder="Search history (name, action)…" oninput="renderHistory()" style="max-width:360px" autocomplete="off" />
+    </div>
+    <div id="histBody"><div class="empty">Loading…</div></div>
     <div id="mySubBody" style="display:none"><div class="empty">Loading…</div></div>
   </div>
 
@@ -751,7 +751,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       }
       if(which === 'crt') loadTracks();
       if(which === 'prog'){ loadPersonProgress(); }
-      if(which === 'appr'){ if(window.IS_ADMIN) loadApprovals(); else loadMySubmissions(); }
+      if(which === 'appr'){ if(window.IS_ADMIN) loadApprovals(); else loadMySubmissions(); loadHistory(); }
       if(which === 'set'){ loadSettings(); loadDesignations(); }
     }
 
@@ -797,6 +797,55 @@ Priya S,MG087,9876500000,State Head,"></textarea>
           else { b.style.display = 'none'; }
         }
       }catch(e){}
+    }
+
+    // ---- Activity history (who changed what, when) ----
+    let HISTORY = [];
+    async function loadHistory(){
+      const box = document.getElementById('histBody');
+      if(!box) return;
+      box.innerHTML = '<div class="empty">Loading…</div>';
+      try{
+        const d = await (await fetch('/api/admin/activity-history')).json();
+        HISTORY = (d && d.ok && d.items) ? d.items : [];
+      }catch(e){ HISTORY = []; }
+      renderHistory();
+    }
+    function fmtHistWhen(iso){
+      if(!iso) return "";
+      try{
+        const dt = new Date(iso + (iso.endsWith("Z")?"":"Z"));
+        return dt.toLocaleString(undefined,{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'});
+      }catch(e){ return iso; }
+    }
+    function renderHistory(){
+      const box = document.getElementById('histBody');
+      if(!box) return;
+      const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const q = ((document.getElementById('histSearch')||{}).value || '').toLowerCase().trim();
+      const list = HISTORY.filter(h=>{
+        if(!q) return true;
+        return (h.who||'').toLowerCase().includes(q)
+            || (h.action||'').toLowerCase().includes(q)
+            || (h.target||'').toLowerCase().includes(q);
+      });
+      if(!list.length){ box.innerHTML = '<div class="empty">No history yet.</div>'; return; }
+      let rows = list.map(h=>{
+        const roleTag = h.role ? ` <span style="font-size:10px;color:var(--mg-muted)">(${esc(h.role)})</span>` : '';
+        return `<tr>
+          <td style="padding:8px 10px;font-size:12.5px;white-space:nowrap;border-bottom:1px solid var(--mg-line);color:var(--mg-muted)">${esc(fmtHistWhen(h.when))}</td>
+          <td style="padding:8px 10px;font-size:12.5px;border-bottom:1px solid var(--mg-line)"><b>${esc(h.who)}</b>${roleTag}</td>
+          <td style="padding:8px 10px;font-size:12.5px;border-bottom:1px solid var(--mg-line)">${esc(h.action)}</td>
+          <td style="padding:8px 10px;font-size:12.5px;border-bottom:1px solid var(--mg-line)">${esc(h.target)}</td>
+        </tr>`;
+      }).join('');
+      box.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="text-align:left">
+          <th style="padding:8px 10px;font-size:11px;color:var(--mg-muted);border-bottom:2px solid var(--mg-line)">When</th>
+          <th style="padding:8px 10px;font-size:11px;color:var(--mg-muted);border-bottom:2px solid var(--mg-line)">Who</th>
+          <th style="padding:8px 10px;font-size:11px;color:var(--mg-muted);border-bottom:2px solid var(--mg-line)">Action</th>
+          <th style="padding:8px 10px;font-size:11px;color:var(--mg-muted);border-bottom:2px solid var(--mg-line)">Affected</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>`;
     }
 
     async function loadApprovals(){
@@ -1550,6 +1599,5 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       }, true);  // capture phase, so we can block before the onclick runs
     })();
   </script>
-  <script src="{{ url_for('static', filename='js/ojt-admin.js') }}"></script>
 </body>
 </html>
