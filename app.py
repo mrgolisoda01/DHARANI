@@ -456,6 +456,21 @@ def init_db():
             created_at    TEXT
         )
     """)
+    # Activity/audit log — records who did what, to whom, and when. Populated
+    # from the moment this feature is live; earlier actions were never recorded.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id            SERIAL PRIMARY KEY,
+            actor_id      TEXT,                 -- emp_id of who did it
+            actor_name    TEXT,                 -- their name at the time
+            actor_role    TEXT,                 -- admin | instructor
+            action        TEXT NOT NULL,        -- short verb, e.g. 'resigned', 'created assessment'
+            target_type   TEXT,                 -- user | assessment | module | video | certificate
+            target_label  TEXT,                 -- human name of the thing/person affected
+            details       TEXT,                 -- optional extra note
+            created_at    TEXT
+        )
+    """)
     # seed the defaults the first time only
     seeded = db.execute("SELECT COUNT(*) c FROM designations").fetchone()["c"]
     if not seeded:
@@ -503,6 +518,28 @@ def current_user():
     db = get_db()
     return db.execute("SELECT * FROM users WHERE emp_id = ?",
                       (session["emp_id"],)).fetchone()
+
+
+def log_activity(action, target_type=None, target_label=None, details=None, actor=None):
+    """Record an action in the activity log. Best-effort: never let a logging
+    failure break the actual operation. `actor` defaults to the current user."""
+    try:
+        u = actor if actor is not None else current_user()
+        db = get_db()
+        db.execute(
+            "INSERT INTO activity_log (actor_id,actor_name,actor_role,action,"
+            "target_type,target_label,details,created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                (u["emp_id"] if u else None),
+                (u["name"] if u else None),
+                (u["role"] if u else None),
+                action, target_type, target_label, details,
+                datetime.utcnow().isoformat(),
+            )
+        )
+        db.commit()
+    except Exception:
+        pass
 
 
 def login_required(view):
@@ -1111,6 +1148,51 @@ def api_admin_pending_actions():
     return jsonify(ok=True, actions=out, count=len(out))
 
 
+@app.route("/api/admin/activity-history")
+@view_admin_required
+def api_admin_activity_history():
+    """Activity/audit history — who did what, to whom, when. Visible to admins
+    and instructors. Combines the activity_log (from when logging went live)
+    with resolved requests already recorded in pending_actions (older data)."""
+    db = get_db()
+    items = []
+    try:
+        for r in db.execute(
+            "SELECT actor_name, actor_role, action, target_type, target_label, details, created_at "
+            "FROM activity_log ORDER BY id DESC LIMIT 500"
+        ).fetchall():
+            items.append({
+                "who": r["actor_name"] or "—",
+                "role": r["actor_role"] or "",
+                "action": r["action"] or "",
+                "target": r["target_label"] or "",
+                "details": r["details"] or "",
+                "when": r["created_at"] or "",
+            })
+    except Exception:
+        pass
+    # Fold in older resolved requests that predate the activity_log
+    try:
+        for r in db.execute(
+            "SELECT action_type, target_type, target_label, requested_by_name, status, created_at "
+            "FROM pending_actions WHERE status IN ('approved','rejected') ORDER BY id DESC LIMIT 300"
+        ).fetchall():
+            verb = {"delete": "delete", "resign": "resignation", "edit": "edit"}.get(r["action_type"], r["action_type"])
+            items.append({
+                "who": r["requested_by_name"] or "—",
+                "role": "",
+                "action": f"{r['status']} {verb} request",
+                "target": r["target_label"] or "",
+                "details": "(from approval records)",
+                "when": r["created_at"] or "",
+            })
+    except Exception:
+        pass
+    # newest first by timestamp
+    items.sort(key=lambda x: x["when"] or "", reverse=True)
+    return jsonify(ok=True, items=items[:600], count=len(items))
+
+
 @app.route("/api/admin/resolve-action", methods=["POST"])
 @admin_required
 def api_admin_resolve_action():
@@ -1127,6 +1209,8 @@ def api_admin_resolve_action():
     if decision == "reject":
         db.execute("UPDATE pending_actions SET status='rejected' WHERE id=?", (aid,))
         db.commit()
+        log_activity("rejected request", act["target_type"],
+                     f"{act['action_type']}: {act['target_label'] or act['target_id']}")
         return jsonify(ok=True, msg="Request rejected.")
 
     if decision != "approve":
@@ -1139,6 +1223,8 @@ def api_admin_resolve_action():
             db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (act["target_id"],))
         db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
         db.commit()
+        log_activity("approved resignation", "user", act["target_label"] or act["target_id"],
+                     details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
         return jsonify(ok=True, msg="Approved — the employee is now marked resigned.")
 
     # perform the delete that was requested
@@ -1160,6 +1246,8 @@ def api_admin_resolve_action():
 
     db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
     db.commit()
+    log_activity("approved delete", act["target_type"], act["target_label"] or act["target_id"],
+                 details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
     return jsonify(ok=True, msg="Approved — the item has been deleted.")
 
 
@@ -1169,8 +1257,10 @@ def api_approve():
     d = request.get_json(force=True)
     emp_id = (d.get("emp_id") or "").strip()
     db = get_db()
+    tgt = db.execute("SELECT name FROM users WHERE emp_id=?", (emp_id,)).fetchone()
     db.execute("UPDATE users SET status='approved' WHERE emp_id = ?", (emp_id,))
     db.commit()
+    log_activity("approved employee", "user", (tgt["name"] if tgt else emp_id))
     return jsonify(ok=True)
 
 
@@ -1180,8 +1270,10 @@ def api_reject():
     d = request.get_json(force=True)
     emp_id = (d.get("emp_id") or "").strip()
     db = get_db()
+    tgt = db.execute("SELECT name FROM users WHERE emp_id=?", (emp_id,)).fetchone()
     db.execute("DELETE FROM users WHERE emp_id = ? AND role != 'admin'", (emp_id,))
     db.commit()
+    log_activity("rejected signup", "user", (tgt["name"] if tgt else emp_id))
     return jsonify(ok=True)
 
 
@@ -1287,13 +1379,14 @@ def api_admin_reset_password():
         return jsonify(ok=False, msg="Temporary password must be at least 6 characters."), 400
 
     db = get_db()
-    target = db.execute("SELECT 1 FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
+    target = db.execute("SELECT name FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
     if target is None:
         return jsonify(ok=False, msg="Employee not found."), 404
 
     db.execute("UPDATE users SET password_hash=?, must_reset=1 WHERE emp_id=?",
                (generate_password_hash(new_pw), emp_id))
     db.commit()
+    log_activity("reset password", "user", target["name"])
     return jsonify(ok=True, msg="Password reset. Share the temporary password with the employee.")
 
 
@@ -1335,6 +1428,7 @@ def api_admin_set_employment_status():
                 (emp_id, target["name"], me["emp_id"], me["name"], datetime.utcnow().isoformat())
             )
             db.commit()
+        log_activity("requested resignation", "user", target["name"])
         return jsonify(ok=True, msg="Resignation request sent for admin approval.")
 
     if action == "resign":
@@ -1350,10 +1444,12 @@ def api_admin_set_employment_status():
                 return jsonify(ok=False, msg="This is the last active admin — reassign admin rights first."), 400
         db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (emp_id,))
         db.commit()
+        log_activity("marked resigned", "user", target["name"])
         return jsonify(ok=True, msg=f"{target['name']} marked as resigned. Their history and certificates are kept.")
     else:
         db.execute("UPDATE users SET status='approved' WHERE emp_id=?", (emp_id,))
         db.commit()
+        log_activity("reactivated employee", "user", target["name"])
         return jsonify(ok=True, msg=f"{target['name']} reactivated — they can log in again.")
 
 
@@ -1400,11 +1496,13 @@ def api_admin_delete_user():
     # instructor -> queue for approval instead of deleting
     if u["role"] == "instructor":
         _queue_delete_request("user", emp_id, target["name"])
+        log_activity("requested delete", "user", target["name"])
         return jsonify(ok=True, msg="Delete request sent for admin approval.")
 
     db.execute("DELETE FROM users WHERE emp_id = ?", (emp_id,))
     db.execute("DELETE FROM scores WHERE emp_id = ?", (emp_id,))
     db.commit()
+    log_activity("deleted employee", "user", target["name"])
     return jsonify(ok=True, msg="Employee deleted.")
 
 
@@ -1477,7 +1575,9 @@ def api_admin_quick_add_user():
     )
     db.commit()
     if is_instructor:
+        log_activity("added employee (pending)", "user", name)
         return jsonify(ok=True, msg=f"{name} added — pending admin approval.")
+    log_activity("added employee", "user", f"{name} ({role})")
     return jsonify(ok=True, msg=f"{name} added as {role}.")
 
 
@@ -2351,6 +2451,8 @@ def api_admin_create_assessment():
             (aid, q, a, b, cc, dd, correct, cat)
         )
     db.commit()
+    log_activity(("created assessment (pending)" if u["role"]=="instructor" else "created assessment"),
+                 "assessment", title)
     if u["role"] == "instructor":
         return jsonify(ok=True, id=aid, loaded=len(parsed), errors=errors,
                        msg=f"Assessment created with {len(parsed)} questions — pending admin approval.")
@@ -3842,12 +3944,6 @@ def api_admin_delete_cert_track():
     db.commit()
     return jsonify(ok=True, msg="Track deleted.")
 
-
-# ---------------------------------------------------------------
-#  OJT module (lives in ojt.py)
-# ---------------------------------------------------------------
-from ojt import init_ojt
-init_ojt(app, get_db, current_user)
 
 # ---------------------------------------------------------------
 #  Start
