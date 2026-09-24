@@ -641,9 +641,9 @@ def _timeline(enr, light=False):
         # call attempts grouped by day
         calls_by_day = {}
         for r in db.execute(
-            "SELECT day_no, outcome, note, called_at FROM ojt_calls WHERE enrollment_id=? ORDER BY id", (enr["id"],)).fetchall():
+            "SELECT id, day_no, outcome, note, called_at FROM ojt_calls WHERE enrollment_id=? ORDER BY id", (enr["id"],)).fetchall():
             calls_by_day.setdefault(r["day_no"], []).append(
-                {"outcome": r["outcome"], "note": r["note"] or "", "called_at": r["called_at"] or ""})
+                {"id": r["id"], "outcome": r["outcome"], "note": r["note"] or "", "called_at": r["called_at"] or ""})
     tasks = _tasks_by_day(enr["role"])
 
     days, total, done, due, due_done = [], 0, 0, 0, 0
