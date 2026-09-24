@@ -338,7 +338,7 @@
             ['no_answer','busy','spoke_done','spoke_not_done'].map(function(o){
               return '<option value="' + o + '"' + (o===c.outcome?' selected':'') + '>' + OC[o] + '</option>';
             }).join('') + '</select>' +
-            ' <button class="ojt-calldel ojt-link" data-id="' + c.id + '" style="color:var(--mg-red);font-size:12px" title="Undo this call">✕</button>') : '';
+            ' <button class="ojt-calldel" data-id="' + c.id + '" style="color:#fff;background:var(--mg-red,#d64545);border:none;border-radius:5px;font-size:11px;padding:2px 9px;cursor:pointer" title="Undo this call">Delete call</button>') : '';
           return '<div style="font-size:12px;padding:2px 0;color:' + col + '">📞 Call ' + (idx+1) + ": " + esc(OC[c.outcome]||c.outcome) + ' <span class="muted">· ' + esc(t2) + '</span>' +
             (c.note ? ' — ' + esc(c.note) : "") + editSel + "</div>";
         }).join("");
