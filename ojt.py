@@ -194,6 +194,85 @@ def _ensure_tables():
             UNIQUE (enrollment_id, day_no)
         )
     """)
+    # Reusable tags the trainer taps (admin-managed). type: 'problem' | 'positive'
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_tags (
+            id         SERIAL PRIMARY KEY,
+            label      TEXT NOT NULL,
+            kind       TEXT NOT NULL DEFAULT 'problem',  -- 'problem' | 'positive'
+            active     INTEGER NOT NULL DEFAULT 1,
+            sort_no    INTEGER DEFAULT 0,
+            created_at TEXT,
+            UNIQUE (label)
+        )
+    """)
+    # Trainer's remark + tags on a single TASK for a trainee.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_task_remarks (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            task_id       INTEGER NOT NULL,
+            day_no        INTEGER,
+            remark        TEXT,
+            not_done_reason TEXT,
+            tag_ids       TEXT,            -- comma-separated ojt_tags ids
+            marked_by     TEXT,
+            updated_at    TEXT,
+            UNIQUE (enrollment_id, task_id)
+        )
+    """)
+    # Trainer's overall remark + tags for a whole DAY for a trainee.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_day_remarks (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            day_no        INTEGER NOT NULL,
+            remark        TEXT,
+            tag_ids       TEXT,
+            marked_by     TEXT,
+            updated_at    TEXT,
+            UNIQUE (enrollment_id, day_no)
+        )
+    """)
+    # Call attempts the trainer logs for a trainee on a given day.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_calls (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            day_no        INTEGER,
+            outcome       TEXT NOT NULL,   -- 'no_answer' | 'busy' | 'spoke_done' | 'spoke_not_done'
+            note          TEXT,
+            called_by     TEXT,
+            called_at     TEXT
+        )
+    """)
+    # Seed a starter set of tags the first time (admin can edit/add/remove later).
+    if not db.execute("SELECT 1 FROM ojt_tags LIMIT 1").fetchone():
+        seed = [
+            # problems (red)
+            ("Vehicle not taken on time", "problem"),
+            ("Reached outlet late", "problem"),
+            ("Not picking calls", "problem"),
+            ("Daily update not filled", "problem"),
+            ("Report not submitted", "problem"),
+            ("Low outlet coverage", "problem"),
+            ("No orders booked", "problem"),
+            ("Attitude / discipline issue", "problem"),
+            ("Left field early", "problem"),
+            ("Not following route plan", "problem"),
+            # positives (green)
+            ("Good outlet coverage", "positive"),
+            ("Proactive & responsive", "positive"),
+            ("Booked good orders", "positive"),
+            ("Punctual", "positive"),
+            ("Followed route plan", "positive"),
+            ("Handled objections well", "positive"),
+        ]
+        i = 0
+        for lab, kind in seed:
+            i += 1
+            db.execute("INSERT INTO ojt_tags (label, kind, active, sort_no, created_at) VALUES (?,?,?,?,?)",
+                       (lab, kind, 1, i, _now()))
     db.commit()
     _ready = True
 
@@ -536,6 +615,27 @@ def _timeline(enr):
     for r in db.execute(
         "SELECT day_no, problems, work_done FROM ojt_daynotes WHERE enrollment_id=?", (enr["id"],)).fetchall():
         daynotes[r["day_no"]] = {"problems": r["problems"] or "", "work_done": r["work_done"] or ""}
+    # trainer task-level remarks + tags
+    task_remarks = {}
+    for r in db.execute(
+        "SELECT task_id, remark, not_done_reason, tag_ids FROM ojt_task_remarks WHERE enrollment_id=?",
+        (enr["id"],)).fetchall():
+        task_remarks[r["task_id"]] = {
+            "remark": r["remark"] or "", "not_done_reason": r["not_done_reason"] or "",
+            "tag_ids": [int(x) for x in (r["tag_ids"] or "").split(",") if x.strip().isdigit()]}
+    # trainer day-level remarks + tags
+    day_remarks = {}
+    for r in db.execute(
+        "SELECT day_no, remark, tag_ids FROM ojt_day_remarks WHERE enrollment_id=?", (enr["id"],)).fetchall():
+        day_remarks[r["day_no"]] = {
+            "remark": r["remark"] or "",
+            "tag_ids": [int(x) for x in (r["tag_ids"] or "").split(",") if x.strip().isdigit()]}
+    # call attempts grouped by day
+    calls_by_day = {}
+    for r in db.execute(
+        "SELECT day_no, outcome, note, called_at FROM ojt_calls WHERE enrollment_id=? ORDER BY id", (enr["id"],)).fetchall():
+        calls_by_day.setdefault(r["day_no"], []).append(
+            {"outcome": r["outcome"], "note": r["note"] or "", "called_at": r["called_at"] or ""})
     tasks = _tasks_by_day(enr["role"])
 
     days, total, done, due, due_done = [], 0, 0, 0, 0
@@ -568,9 +668,12 @@ def _timeline(enr):
             tl = []
             for t in tasks.get(n, []):
                 s = signed.get(t["id"])
+                tr = task_remarks.get(t["id"], {"remark": "", "not_done_reason": "", "tag_ids": []})
                 tl.append({"id": t["id"], "title": t["title"], "description": t["description"],
                            "done": bool(s), "signed_at": s["signed_at"] if s else None,
-                           "self_done": t["id"] in selfmarks})
+                           "self_done": t["id"] in selfmarks,
+                           "remark": tr["remark"], "not_done_reason": tr["not_done_reason"],
+                           "tag_ids": tr["tag_ids"]})
                 total += 1
                 if s:
                     done += 1
@@ -579,11 +682,14 @@ def _timeline(enr):
                     if s:
                         due_done += 1
             nt = daynotes.get(n, {"problems": "", "work_done": ""})
+            dr = day_remarks.get(n, {"remark": "", "tag_ids": []})
             days.append({"day": n, "date": ds, "weekday": cur.strftime("%a"),
                          "kind": ("review" if is_review else "work"),
                          "is_today": cur == today, "past": cur < today,
                          "can_edit": True, "override": ov, "tasks": tl,
-                         "problems": nt["problems"], "work_done": nt["work_done"]})
+                         "problems": nt["problems"], "work_done": nt["work_done"],
+                         "day_remark": dr["remark"], "day_tag_ids": dr["tag_ids"],
+                         "calls": calls_by_day.get(n, [])})
             end_date = cur
         else:
             # non-working calendar day (sunday / leave / weekoff) — shown, no task, no count
@@ -950,6 +1056,165 @@ def api_my_daynote():
     else:
         db.execute("INSERT INTO ojt_daynotes (enrollment_id, day_no, problems, work_done, updated_at) VALUES (?,?,?,?,?)",
                    (e["id"], day_no, problems, work_done, _now()))
+    db.commit()
+    return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------
+#  Tags (admin-managed) + trainer remarks + call log
+# ---------------------------------------------------------------
+def _tags_payload(include_inactive=False):
+    db = _get_db()
+    q = "SELECT id, label, kind, active FROM ojt_tags"
+    if not include_inactive:
+        q += " WHERE active=1"
+    q += " ORDER BY kind DESC, sort_no, label"
+    return [dict(r) for r in db.execute(q).fetchall()]
+
+
+@ojt_bp.route("/api/ojt/tags")
+@_login_only
+def api_ojt_tags():
+    """List tags. Admin/instructor/trainer all need these to render the pickers.
+    Admins can request inactive ones too (for the manager screen)."""
+    u = _current_user()
+    inc = bool(request.args.get("all")) and u and u["role"] == "admin"
+    return jsonify(ok=True, tags=_tags_payload(include_inactive=inc))
+
+
+@ojt_bp.route("/api/ojt/tag-save", methods=["POST"])
+@_staff_required
+def api_ojt_tag_save():
+    """Admin only: add or edit a tag."""
+    u = _current_user()
+    if u["role"] != "admin":
+        return jsonify(ok=False, msg="Only an admin can manage tags."), 403
+    d = request.get_json(force=True)
+    label = (d.get("label") or "").strip()[:80]
+    kind = (d.get("kind") or "problem").strip().lower()
+    if kind not in ("problem", "positive"):
+        kind = "problem"
+    if not label:
+        return jsonify(ok=False, msg="Tag name is required."), 400
+    db = _get_db()
+    tid = d.get("id")
+    if tid:
+        db.execute("UPDATE ojt_tags SET label=?, kind=? WHERE id=?", (label, kind, tid))
+    else:
+        if db.execute("SELECT 1 FROM ojt_tags WHERE lower(label)=lower(?)", (label,)).fetchone():
+            return jsonify(ok=False, msg="A tag with that name already exists."), 400
+        n = db.execute("SELECT COALESCE(MAX(sort_no),0)+1 AS s FROM ojt_tags").fetchone()["s"]
+        db.execute("INSERT INTO ojt_tags (label, kind, active, sort_no, created_at) VALUES (?,?,1,?,?)",
+                   (label, kind, n, _now()))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/tag-delete", methods=["POST"])
+@_staff_required
+def api_ojt_tag_delete():
+    """Admin only: deactivate a tag (kept for old records, hidden from pickers)."""
+    u = _current_user()
+    if u["role"] != "admin":
+        return jsonify(ok=False, msg="Only an admin can manage tags."), 403
+    d = request.get_json(force=True)
+    db = _get_db()
+    db.execute("UPDATE ojt_tags SET active=0 WHERE id=?", (d.get("id"),))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/task-remark", methods=["POST"])
+@_staff_required
+def api_ojt_task_remark():
+    """Trainer/admin: save a remark, tags and (if not done) a reason on one task."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    db = _get_db()
+    t = db.execute("SELECT id, day_no, role FROM ojt_tasks WHERE id=?", (d.get("task_id"),)).fetchone()
+    if not t or t["role"] != e["role"]:
+        return jsonify(ok=False, msg="Task not found."), 404
+    remark = (d.get("remark") or "").strip()[:2000]
+    reason = (d.get("not_done_reason") or "").strip()[:2000]
+    tag_ids = ",".join(str(int(x)) for x in (d.get("tag_ids") or []) if str(x).isdigit())
+    # required reason when the task is NOT signed off
+    is_signed = db.execute("SELECT 1 FROM ojt_signoffs WHERE enrollment_id=? AND task_id=?",
+                           (e["id"], t["id"])).fetchone()
+    if not is_signed and not reason and not remark:
+        return jsonify(ok=False, msg="Add a reason why this task isn't done."), 400
+    if db.execute("SELECT 1 FROM ojt_task_remarks WHERE enrollment_id=? AND task_id=?",
+                  (e["id"], t["id"])).fetchone():
+        db.execute("UPDATE ojt_task_remarks SET remark=?, not_done_reason=?, tag_ids=?, marked_by=?, updated_at=? "
+                   "WHERE enrollment_id=? AND task_id=?",
+                   (remark, reason, tag_ids, _current_user()["emp_id"], _now(), e["id"], t["id"]))
+    else:
+        db.execute("INSERT INTO ojt_task_remarks (enrollment_id, task_id, day_no, remark, not_done_reason, tag_ids, marked_by, updated_at) "
+                   "VALUES (?,?,?,?,?,?,?,?)",
+                   (e["id"], t["id"], t["day_no"], remark, reason, tag_ids, _current_user()["emp_id"], _now()))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/day-remark", methods=["POST"])
+@_staff_required
+def api_ojt_day_remark():
+    """Trainer/admin: save an overall remark + tags for a whole day."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    try:
+        day_no = int(d.get("day_no"))
+    except Exception:
+        return jsonify(ok=False, msg="Missing day."), 400
+    remark = (d.get("remark") or "").strip()[:2000]
+    tag_ids = ",".join(str(int(x)) for x in (d.get("tag_ids") or []) if str(x).isdigit())
+    db = _get_db()
+    if db.execute("SELECT 1 FROM ojt_day_remarks WHERE enrollment_id=? AND day_no=?", (e["id"], day_no)).fetchone():
+        db.execute("UPDATE ojt_day_remarks SET remark=?, tag_ids=?, marked_by=?, updated_at=? WHERE enrollment_id=? AND day_no=?",
+                   (remark, tag_ids, _current_user()["emp_id"], _now(), e["id"], day_no))
+    else:
+        db.execute("INSERT INTO ojt_day_remarks (enrollment_id, day_no, remark, tag_ids, marked_by, updated_at) VALUES (?,?,?,?,?,?)",
+                   (e["id"], day_no, remark, tag_ids, _current_user()["emp_id"], _now()))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/log-call", methods=["POST"])
+@_staff_required
+def api_ojt_log_call():
+    """Trainer/admin: log one call attempt for a trainee on a day."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    outcome = (d.get("outcome") or "").strip().lower()
+    if outcome not in ("no_answer", "busy", "spoke_done", "spoke_not_done"):
+        return jsonify(ok=False, msg="Pick a call outcome."), 400
+    try:
+        day_no = int(d.get("day_no"))
+    except Exception:
+        day_no = None
+    note_txt = (d.get("note") or "").strip()[:500]
+    db = _get_db()
+    db.execute("INSERT INTO ojt_calls (enrollment_id, day_no, outcome, note, called_by, called_at) VALUES (?,?,?,?,?,?)",
+               (e["id"], day_no, outcome, note_txt, _current_user()["emp_id"], _now()))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/delete-call", methods=["POST"])
+@_staff_required
+def api_ojt_delete_call():
+    """Trainer/admin: remove a mistaken call-log entry."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    db = _get_db()
+    db.execute("DELETE FROM ojt_calls WHERE id=? AND enrollment_id=?", (d.get("id"), e["id"]))
     db.commit()
     return jsonify(ok=True)
 
