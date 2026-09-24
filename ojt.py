@@ -585,7 +585,7 @@ def _parse_date(s):
         return None
 
 
-def _timeline(enr):
+def _timeline(enr, light=False):
     """Build the OJT view for one enrollment.
 
     OJT is 30 WORKING days. We walk real calendar dates from the start and
@@ -595,6 +595,11 @@ def _timeline(enr):
     doesn't count — so the finish date extends. A worked Sunday counts and
     pulls the finish date earlier. Task-set N always lands on the Nth working
     day, whatever calendar date that turns out to be.
+
+    light=True is for the trainees LIST: it loads only what's needed for the
+    progress summary (holidays, signoff count, task count) and skips the six
+    detail queries (selfmarks, daynotes, remarks, calls) — far fewer database
+    round-trips when listing many trainees.
     """
     db = _get_db()
     start = _parse_date(enr["start_date"])
@@ -609,33 +614,36 @@ def _timeline(enr):
 
     signed = {s["task_id"]: s for s in db.execute(
         "SELECT task_id, signed_by, signed_at FROM ojt_signoffs WHERE enrollment_id=?", (enr["id"],)).fetchall()}
-    selfmarks = {s["task_id"] for s in db.execute(
-        "SELECT task_id FROM ojt_selfmarks WHERE enrollment_id=?", (enr["id"],)).fetchall()}
-    daynotes = {}
-    for r in db.execute(
-        "SELECT day_no, problems, work_done FROM ojt_daynotes WHERE enrollment_id=?", (enr["id"],)).fetchall():
-        daynotes[r["day_no"]] = {"problems": r["problems"] or "", "work_done": r["work_done"] or ""}
-    # trainer task-level remarks + tags
-    task_remarks = {}
-    for r in db.execute(
-        "SELECT task_id, remark, not_done_reason, tag_ids FROM ojt_task_remarks WHERE enrollment_id=?",
-        (enr["id"],)).fetchall():
-        task_remarks[r["task_id"]] = {
-            "remark": r["remark"] or "", "not_done_reason": r["not_done_reason"] or "",
-            "tag_ids": [int(x) for x in (r["tag_ids"] or "").split(",") if x.strip().isdigit()]}
-    # trainer day-level remarks + tags
-    day_remarks = {}
-    for r in db.execute(
-        "SELECT day_no, remark, tag_ids FROM ojt_day_remarks WHERE enrollment_id=?", (enr["id"],)).fetchall():
-        day_remarks[r["day_no"]] = {
-            "remark": r["remark"] or "",
-            "tag_ids": [int(x) for x in (r["tag_ids"] or "").split(",") if x.strip().isdigit()]}
-    # call attempts grouped by day
-    calls_by_day = {}
-    for r in db.execute(
-        "SELECT day_no, outcome, note, called_at FROM ojt_calls WHERE enrollment_id=? ORDER BY id", (enr["id"],)).fetchall():
-        calls_by_day.setdefault(r["day_no"], []).append(
-            {"outcome": r["outcome"], "note": r["note"] or "", "called_at": r["called_at"] or ""})
+    if light:
+        selfmarks = set(); daynotes = {}; task_remarks = {}; day_remarks = {}; calls_by_day = {}
+    else:
+        selfmarks = {s["task_id"] for s in db.execute(
+            "SELECT task_id FROM ojt_selfmarks WHERE enrollment_id=?", (enr["id"],)).fetchall()}
+        daynotes = {}
+        for r in db.execute(
+            "SELECT day_no, problems, work_done FROM ojt_daynotes WHERE enrollment_id=?", (enr["id"],)).fetchall():
+            daynotes[r["day_no"]] = {"problems": r["problems"] or "", "work_done": r["work_done"] or ""}
+        # trainer task-level remarks + tags
+        task_remarks = {}
+        for r in db.execute(
+            "SELECT task_id, remark, not_done_reason, tag_ids FROM ojt_task_remarks WHERE enrollment_id=?",
+            (enr["id"],)).fetchall():
+            task_remarks[r["task_id"]] = {
+                "remark": r["remark"] or "", "not_done_reason": r["not_done_reason"] or "",
+                "tag_ids": [int(x) for x in (r["tag_ids"] or "").split(",") if x.strip().isdigit()]}
+        # trainer day-level remarks + tags
+        day_remarks = {}
+        for r in db.execute(
+            "SELECT day_no, remark, tag_ids FROM ojt_day_remarks WHERE enrollment_id=?", (enr["id"],)).fetchall():
+            day_remarks[r["day_no"]] = {
+                "remark": r["remark"] or "",
+                "tag_ids": [int(x) for x in (r["tag_ids"] or "").split(",") if x.strip().isdigit()]}
+        # call attempts grouped by day
+        calls_by_day = {}
+        for r in db.execute(
+            "SELECT day_no, outcome, note, called_at FROM ojt_calls WHERE enrollment_id=? ORDER BY id", (enr["id"],)).fetchall():
+            calls_by_day.setdefault(r["day_no"], []).append(
+                {"outcome": r["outcome"], "note": r["note"] or "", "called_at": r["called_at"] or ""})
     tasks = _tasks_by_day(enr["role"])
 
     days, total, done, due, due_done = [], 0, 0, 0, 0
@@ -760,7 +768,7 @@ def api_trainees():
 
     out = []
     for e in rows:
-        tl = _timeline(e)
+        tl = _timeline(e, light=True)
         out.append({
             "id": e["id"], "emp_id": e["emp_id"], "name": e["name"] or e["emp_id"],
             "designation": e["designation"] or "", "role": e["role"],
@@ -1213,8 +1221,12 @@ def api_ojt_delete_call():
     e, err = _get_enr_for_edit(d.get("enrollment_id"))
     if err:
         return err
+    try:
+        call_id = int(d.get("id"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Invalid call id."), 400
     db = _get_db()
-    db.execute("DELETE FROM ojt_calls WHERE id=? AND enrollment_id=?", (d.get("id"), e["id"]))
+    db.execute("DELETE FROM ojt_calls WHERE id=? AND enrollment_id=?", (call_id, e["id"]))
     db.commit()
     return jsonify(ok=True)
 
@@ -1231,8 +1243,12 @@ def api_ojt_edit_call():
     outcome = (d.get("outcome") or "").strip().lower()
     if outcome not in ("no_answer", "busy", "spoke_done", "spoke_not_done"):
         return jsonify(ok=False, msg="Pick a call outcome."), 400
+    try:
+        call_id = int(d.get("id"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Invalid call id."), 400
     db = _get_db()
-    db.execute("UPDATE ojt_calls SET outcome=? WHERE id=? AND enrollment_id=?", (outcome, d.get("id"), e["id"]))
+    db.execute("UPDATE ojt_calls SET outcome=? WHERE id=? AND enrollment_id=?", (outcome, call_id, e["id"]))
     db.commit()
     return jsonify(ok=True)
 
