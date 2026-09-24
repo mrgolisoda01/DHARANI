@@ -92,7 +92,9 @@
       ["trainees", "👥 Trainees"], ["tasks", "📋 Day-wise tasks"],
       ["appr", "✅ " + (S.isAdmin ? "Approvals" : "My requests") +
         (S.isAdmin && S.pendingCount ? '<span class="badge">' + S.pendingCount + "</span>" : "")]
-    ].map(function(v){
+    ];
+    if(S.isAdmin) views.push(["tags", "🏷 Manage tags"]);
+    views = views.map(function(v){
       return '<button class="ojt-view' + (S.view === v[0] ? " on" : "") + '" data-act="view" data-v="' + v[0] + '">' + v[1] + "</button>";
     }).join("");
     root.innerHTML =
@@ -117,7 +119,38 @@
     shell();
     if(S.view === "trainees") loadTrainees();
     else if(S.view === "tasks") loadTasks();
+    else if(S.view === "tags") loadTagManager();
     else loadApprovals();
+  }
+
+  async function loadTagManager(){
+    var body = $("ojtBody");
+    body.innerHTML = '<div class="empty">Loading…</div>';
+    var d = await getJ("/api/ojt/tags?all=1");
+    S.tags = null;  // force reload of picker tags next time a trainee opens
+    var tags = (d && d.ok) ? d.tags : [];
+    var rowsFor = function(kind){
+      var list = tags.filter(function(t){ return t.kind === kind && t.active; });
+      if(!list.length) return '<div class="muted" style="font-size:12.5px">None yet.</div>';
+      return list.map(function(t){
+        return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #f0f0f0">' +
+          '<span style="flex:1;font-size:13px">' + esc(t.label) + '</span>' +
+          '<button class="ojt-link ojt-tagedit" data-id="' + t.id + '" data-label="' + esc(t.label) + '" data-kind="' + t.kind + '">✎ edit</button>' +
+          '<button class="ojt-link ojt-tagdel" data-id="' + t.id + '" style="color:var(--mg-red)">remove</button>' +
+          '</div>';
+      }).join("");
+    };
+    body.innerHTML =
+      '<div class="card" style="margin-bottom:12px"><b>Add a tag</b>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">' +
+        '<input id="newTagLabel" placeholder="Tag name (e.g. Vehicle not taken on time)" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px">' +
+        '<select id="newTagKind" style="padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px"><option value="problem">Problem (red)</option><option value="positive">Positive (green)</option></select>' +
+        '<button class="btn primary" id="addTagBtn">Add tag</button>' +
+      '</div></div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+        '<div class="card"><b style="color:#9e2b2b">🚩 Problem tags</b><div style="margin-top:8px">' + rowsFor("problem") + '</div></div>' +
+        '<div class="card"><b style="color:#0f6b45">✅ Positive tags</b><div style="margin-top:8px">' + rowsFor("positive") + '</div></div>' +
+      '</div>';
   }
 
   /* ================= TRAINEES ================= */
@@ -199,7 +232,33 @@
     var d = await getJ("/api/ojt/trainee?id=" + id);
     if(!d.ok){ note(d.msg || "Could not load."); return; }
     S.current = d;
+    // load the tag list once (for the pickers)
+    if(!S.tags){
+      var tg = await getJ("/api/ojt/tags");
+      S.tags = (tg && tg.ok) ? tg.tags : [];
+    }
     var e = d.enrollment, tl = d.timeline, active = e.status === "active";
+    var TAGMAP = {}; (S.tags || []).forEach(function(t){ TAGMAP[t.id] = t; });
+    function tagChips(ids){
+      if(!ids || !ids.length) return "";
+      return ids.map(function(id){
+        var t = TAGMAP[id]; if(!t) return "";
+        var col = t.kind === "positive" ? "background:#eaf7f0;color:#0f6b45;border:1px solid #b7e3ca"
+                                         : "background:#fdeaea;color:#9e2b2b;border:1px solid #f3c0c0";
+        return '<span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;margin:2px 3px 0 0;' + col + '">' + esc(t.label) + "</span>";
+      }).join("");
+    }
+    function tagPicker(selectedIds, kindFilter){
+      // returns clickable tag buttons for the editor; selectedIds is an array
+      return (S.tags || []).filter(function(t){ return !kindFilter || t.kind === kindFilter; }).map(function(t){
+        var on = selectedIds.indexOf(t.id) >= 0;
+        var base = t.kind === "positive"
+          ? (on ? "background:#1d9e75;color:#fff;border:1px solid #1d9e75" : "background:#eaf7f0;color:#0f6b45;border:1px solid #b7e3ca")
+          : (on ? "background:#d64545;color:#fff;border:1px solid #d64545" : "background:#fdeaea;color:#9e2b2b;border:1px solid #f3c0c0");
+        return '<button type="button" class="ojt-tagpick" data-tag="' + t.id + '"' +
+          ' style="padding:3px 10px;border-radius:20px;font-size:11.5px;margin:2px;cursor:pointer;' + base + '">' + esc(t.label) + "</button>";
+      }).join("");
+    }
     var daysHtml = tl.days.map(function(day){
       var isWork = (day.kind === "work" || day.kind === "review");
       var badge = day.kind === "sunday" ? '<span class="ojt-k k-sunday">Week off (Sun)</span>'
@@ -232,18 +291,61 @@
         var claim = t.self_done
           ? ' <span class="ojt-claim" style="font-size:11px;color:#c98a00;font-weight:600;white-space:nowrap">🟡 Trainee marked done</span>'
           : '';
-        return '<label class="ojt-task"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
-          (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim +
-          (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") + "</span></label>";
+        var chips = tagChips(t.tag_ids);
+        var savedRemark = t.remark ? '<div style="font-size:12px;color:#555;margin-top:2px">📝 ' + esc(t.remark) + '</div>' : '';
+        var savedReason = (!t.done && t.not_done_reason) ? '<div style="font-size:12px;color:#9e2b2b;margin-top:2px">⚠ Not done: ' + esc(t.not_done_reason) + '</div>' : '';
+        var editor = active ? (
+          '<div class="ojt-trow-edit" data-task="' + t.id + '" style="display:none;margin-top:6px;padding:8px;background:#f7f9fa;border-radius:8px">' +
+            (t.done ? '' : '<input type="text" class="ojt-reason" placeholder="Reason not done (required if not ticked)" value="' + esc(t.not_done_reason) + '" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;margin-bottom:5px">') +
+            '<textarea class="ojt-remark" placeholder="Trainer remark — what was discussed" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(t.remark) + '</textarea>' +
+            '<div class="ojt-tagbox" data-sel="' + (t.tag_ids || []).join(",") + '" style="margin:5px 0">' + tagPicker(t.tag_ids || []) + '</div>' +
+            '<div style="text-align:right"><button class="ojt-savetr" data-task="' + t.id + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark</button></div>' +
+          '</div>') : '';
+        var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark/tags</button>' : '';
+        return '<div class="ojt-task-wrap" style="border-bottom:1px solid #f0f0f0;padding:6px 0">' +
+          '<label class="ojt-task" style="align-items:flex-start"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
+          (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim + editLink +
+          (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") +
+          (chips ? '<div style="margin-top:3px">' + chips + '</div>' : '') + savedRemark + savedReason +
+          "</span></label>" + editor + "</div>";
       }).join("") : '<div class="muted">No tasks set for this day.</div>';
 
-      // trainee's daily notes (read-only for trainer/admin)
+      // trainee's own daily notes (read-only)
       var noteBlock = "";
       if((day.work_done && day.work_done.trim()) || (day.problems && day.problems.trim())){
         noteBlock = '<div class="ojt-daynote" style="margin-top:6px;padding:8px 10px;background:#f7f9fa;border-radius:8px;font-size:12.5px">' +
-          (day.work_done ? '<div><b>Work done:</b> ' + esc(day.work_done) + '</div>' : '') +
-          (day.problems ? '<div style="margin-top:3px"><b>Problems faced:</b> ' + esc(day.problems) + '</div>' : '') +
+          (day.work_done ? '<div><b>Trainee — work done:</b> ' + esc(day.work_done) + '</div>' : '') +
+          (day.problems ? '<div style="margin-top:3px"><b>Trainee — problems:</b> ' + esc(day.problems) + '</div>' : '') +
           '</div>';
+      }
+
+      // call log + day remark (trainer/admin) — only on working days
+      var callBlock = "";
+      if(isWork){
+        var OC = { no_answer:"No answer", busy:"Busy", spoke_done:"Spoke – done", spoke_not_done:"Spoke – not done" };
+        var callList = (day.calls || []).map(function(c, idx){
+          var t2 = c.called_at ? new Date(c.called_at + (c.called_at.slice(-1)==="Z"?"":"Z")).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"numeric",minute:"2-digit"}) : "";
+          var col = (c.outcome === "spoke_done") ? "#0f6b45" : (c.outcome.indexOf("spoke")===0 ? "#0c447c" : "#9e2b2b");
+          return '<div style="font-size:12px;padding:2px 0;color:' + col + '">📞 Call ' + (idx+1) + ": " + esc(OC[c.outcome]||c.outcome) + ' <span class="muted">· ' + esc(t2) + '</span>' +
+            (c.note ? ' — ' + esc(c.note) : "") + "</div>";
+        }).join("");
+        var callBtns = active ? (
+          '<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:5px">' +
+          '<button class="ojt-call" data-day="' + day.day + '" data-oc="no_answer" style="font-size:11.5px;padding:4px 10px;border:1px solid #f3c0c0;background:#fdeaea;color:#9e2b2b;border-radius:6px;cursor:pointer">＋ No answer</button>' +
+          '<button class="ojt-call" data-day="' + day.day + '" data-oc="busy" style="font-size:11.5px;padding:4px 10px;border:1px solid #f0d9b0;background:#faf1de;color:#845a0b;border-radius:6px;cursor:pointer">＋ Busy</button>' +
+          '<button class="ojt-call" data-day="' + day.day + '" data-oc="spoke_done" style="font-size:11.5px;padding:4px 10px;border:1px solid #b7e3ca;background:#eaf7f0;color:#0f6b45;border-radius:6px;cursor:pointer">＋ Spoke – done</button>' +
+          '<button class="ojt-call" data-day="' + day.day + '" data-oc="spoke_not_done" style="font-size:11.5px;padding:4px 10px;border:1px solid #cddff0;background:#eef5fc;color:#0c447c;border-radius:6px;cursor:pointer">＋ Spoke – not done</button>' +
+          '</div>') : "";
+        var dayRemarkChips = tagChips(day.day_tag_ids);
+        var dayRemarkEditor = active ? (
+          '<div style="margin-top:6px">' +
+          '<textarea class="ojt-dayremark" data-day="' + day.day + '" placeholder="Overall remark for the day (what was discussed)" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(day.day_remark || "") + '</textarea>' +
+          '<div class="ojt-tagbox" data-day="' + day.day + '" data-sel="' + (day.day_tag_ids || []).join(",") + '" style="margin:5px 0">' + tagPicker(day.day_tag_ids || []) + '</div>' +
+          '<div style="text-align:right"><button class="ojt-savedayr" data-day="' + day.day + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save day remark</button></div>' +
+          '</div>') : (day.day_remark ? '<div style="font-size:12px;color:#555;margin-top:4px">📝 ' + esc(day.day_remark) + '</div>' + (dayRemarkChips ? '<div>' + dayRemarkChips + '</div>' : '') : '');
+        callBlock = '<div style="margin-top:8px;padding:9px 11px;border:1px dashed var(--mg-line);border-radius:8px">' +
+          '<div style="font-size:12px;font-weight:600;margin-bottom:4px">Trainer call log & remark</div>' +
+          (callList || '<div class="muted" style="font-size:12px">No calls logged.</div>') + callBtns + dayRemarkEditor + "</div>";
       }
 
       var dayLabel = (day.day !== null && day.day !== undefined)
@@ -251,7 +353,7 @@
         : '<b class="muted">—</b> · ';
       return '<div class="ojt-tl-day' + (day.is_today ? " today" : "") + (isWork ? "" : " off") + '">' +
         '<div class="ojt-tl-h"><span>' + dayLabel + day.weekday + ", " + fmtD(day.date) + " " + badge + "</span>" + editBtns + "</div>" +
-        (isWork ? (tasks + noteBlock) : "") + "</div>";
+        (isWork ? (tasks + noteBlock + callBlock) : "") + "</div>";
     }).join("");
 
     var closeBox = active
@@ -449,6 +551,12 @@
         var cur = S.current.enrollment;
         var rs = await postJ("/api/ojt/signoff", { enrollment_id: cur.id, task_id: el.dataset.task, done: el.checked });
         if(!rs.ok){ note(rs.msg || "Could not save."); el.checked = !el.checked; }
+        else if(!el.checked){
+          // unticked → nudge the trainer to record why it's not done
+          var box = document.querySelector('.ojt-trow-edit[data-task="' + el.dataset.task + '"]');
+          if(box){ box.style.display = "block"; var r0 = box.querySelector(".ojt-reason"); if(r0) r0.focus(); }
+          note("Please add a reason why this task isn't done.");
+        }
       }
       else if(act === "dayset"){
         var rh = await postJ("/api/ojt/holiday", { enrollment_id: S.current.enrollment.id, date: el.dataset.date, kind: el.dataset.kind });
@@ -466,6 +574,96 @@
         note(rr.msg || "Done."); if(rr.ok){ closeOjtModal(); load(); }
       }
     }catch(err){ note("Something went wrong. Please try again."); }
+  });
+
+  // ---- remark / tags / call-log controls (class-based, inside the trainee view) ----
+  document.addEventListener("click", async function(e){
+    // ---- tag manager (admin) ----
+    var addT = e.target.closest("#addTagBtn");
+    if(addT){
+      var lab = ($("newTagLabel") || {}).value || "";
+      var kind = ($("newTagKind") || {}).value || "problem";
+      if(!lab.trim()){ note("Enter a tag name."); return; }
+      var ra = await postJ("/api/ojt/tag-save", { label: lab, kind: kind });
+      if(!ra.ok){ note(ra.msg || "Could not add."); } else { note("Tag added."); loadTagManager(); }
+      return;
+    }
+    var edT = e.target.closest(".ojt-tagedit");
+    if(edT){
+      var nl = prompt("Edit tag name:", edT.dataset.label);
+      if(nl === null) return;
+      var re = await postJ("/api/ojt/tag-save", { id: edT.dataset.id, label: nl, kind: edT.dataset.kind });
+      if(!re.ok){ note(re.msg || "Could not save."); } else { note("Tag updated."); loadTagManager(); }
+      return;
+    }
+    var dlT = e.target.closest(".ojt-tagdel");
+    if(dlT){
+      if(!confirm("Remove this tag? Existing records keep it; it just won't show for new remarks.")) return;
+      var rd = await postJ("/api/ojt/tag-delete", { id: dlT.dataset.id });
+      if(!rd.ok){ note(rd.msg || "Could not remove."); } else { note("Tag removed."); loadTagManager(); }
+      return;
+    }
+
+    if(!S.current || !S.current.enrollment) return;
+    var enrId = S.current.enrollment.id;
+
+    // toggle a task's remark editor open/closed
+    var er = e.target.closest(".ojt-editrow");
+    if(er){ var box = document.querySelector('.ojt-trow-edit[data-task="' + er.dataset.task + '"]');
+      if(box) box.style.display = (box.style.display === "none" || !box.style.display) ? "block" : "none"; return; }
+
+    // toggle a tag pill in any picker
+    var tp = e.target.closest(".ojt-tagpick");
+    if(tp){
+      var boxT = tp.closest(".ojt-tagbox");
+      var sel = (boxT.dataset.sel || "").split(",").filter(Boolean);
+      var id = tp.dataset.tag; var i = sel.indexOf(id);
+      if(i >= 0) sel.splice(i, 1); else sel.push(id);
+      boxT.dataset.sel = sel.join(",");
+      // repaint just this picker's on/off styles
+      Array.prototype.forEach.call(boxT.querySelectorAll(".ojt-tagpick"), function(btn){
+        var on = sel.indexOf(btn.dataset.tag) >= 0;
+        btn.style.opacity = "1";
+        if(on){ btn.style.filter = "none"; btn.style.fontWeight = "700"; btn.style.outline = "2px solid rgba(0,0,0,.15)"; }
+        else { btn.style.fontWeight = "400"; btn.style.outline = "none"; }
+      });
+      return;
+    }
+
+    // save a task remark
+    var st = e.target.closest(".ojt-savetr");
+    if(st){
+      var wrap = st.closest(".ojt-trow-edit");
+      var remarkEl = wrap.querySelector(".ojt-remark");
+      var reasonEl = wrap.querySelector(".ojt-reason");
+      var selEl = wrap.querySelector(".ojt-tagbox");
+      var ids = (selEl.dataset.sel || "").split(",").filter(Boolean).map(Number);
+      var r = await postJ("/api/ojt/task-remark", { enrollment_id: enrId, task_id: st.dataset.task,
+        remark: remarkEl ? remarkEl.value : "", not_done_reason: reasonEl ? reasonEl.value : "", tag_ids: ids });
+      if(!r.ok){ note(r.msg || "Could not save."); } else { note("Remark saved."); openTrainee(enrId); }
+      return;
+    }
+
+    // log a call attempt
+    var cl = e.target.closest(".ojt-call");
+    if(cl){
+      var r2 = await postJ("/api/ojt/log-call", { enrollment_id: enrId, day_no: cl.dataset.day, outcome: cl.dataset.oc });
+      if(!r2.ok){ note(r2.msg || "Could not save."); } else { openTrainee(enrId); }
+      return;
+    }
+
+    // save a day remark
+    var sd = e.target.closest(".ojt-savedayr");
+    if(sd){
+      var dayNo = sd.dataset.day;
+      var ta = document.querySelector('.ojt-dayremark[data-day="' + dayNo + '"]');
+      var tb = document.querySelector('.ojt-tagbox[data-day="' + dayNo + '"]');
+      var ids2 = tb ? (tb.dataset.sel || "").split(",").filter(Boolean).map(Number) : [];
+      var r3 = await postJ("/api/ojt/day-remark", { enrollment_id: enrId, day_no: dayNo,
+        remark: ta ? ta.value : "", tag_ids: ids2 });
+      if(!r3.ok){ note(r3.msg || "Could not save."); } else { note("Day remark saved."); openTrainee(enrId); }
+      return;
+    }
   });
 
   document.addEventListener("change", function(e){
