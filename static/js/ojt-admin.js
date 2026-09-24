@@ -107,16 +107,24 @@
 
   async function load(){
     shell();
-    // counts + pending badge in the background
-    try{
-      var c = await getJ("/api/ojt/trainees?show=none");
-      if(c.ok){ S.counts = c.counts; S.isAdmin = c.is_admin; }
-      if(S.isAdmin){
-        var p = await getJ("/api/ojt/pending");
-        if(p.ok) S.pendingCount = p.items.length;
-      }
-    }catch(e){}
-    shell();
+    // render the chosen view straight away — don't wait on counts/pending
+    renderView();
+    // counts + pending badge load in the background, then refresh header + view
+    (async function(){
+      try{
+        var c = await getJ("/api/ojt/trainees?show=none");
+        var changed = false;
+        if(c.ok){ S.counts = c.counts; S.isAdmin = c.is_admin; changed = true; }
+        if(S.isAdmin){
+          var p = await getJ("/api/ojt/pending");
+          if(p.ok){ S.pendingCount = p.items.length; changed = true; }
+        }
+        if(changed){ shell(); renderView(); }  // repaint header badges + view once
+      }catch(e){}
+    })();
+  }
+
+  function renderView(){
     if(S.view === "trainees") loadTrainees();
     else if(S.view === "tasks") loadTasks();
     else if(S.view === "tags") loadTagManager();
@@ -166,6 +174,7 @@
       '<div class="sec-head"><div class="btns">' +
         '<button class="btn primary" data-act="start-open">＋ Audit passed — start OJT</button>' +
       '</div><div class="btns">' +
+        '<a class="btn" href="/api/ojt/export-all.xlsx?role=' + encodeURIComponent(S.role) + '&show=' + encodeURIComponent(S.show) + '">⬇ Export all (Excel)</a>' +
         '<select class="search" data-act="show" style="min-width:140px">' +
           '<option value="active"' + (S.show === "active" ? " selected" : "") + '>Active OJT</option>' +
           '<option value="closed"' + (S.show === "closed" ? " selected" : "") + '>Completed / failed</option>' +
@@ -291,22 +300,20 @@
         var claim = t.self_done
           ? ' <span class="ojt-claim" style="font-size:11px;color:#c98a00;font-weight:600;white-space:nowrap">🟡 Trainee marked done</span>'
           : '';
-        var chips = tagChips(t.tag_ids);
         var savedRemark = t.remark ? '<div style="font-size:12px;color:#555;margin-top:2px">📝 ' + esc(t.remark) + '</div>' : '';
         var savedReason = (!t.done && t.not_done_reason) ? '<div style="font-size:12px;color:#9e2b2b;margin-top:2px">⚠ Not done: ' + esc(t.not_done_reason) + '</div>' : '';
         var editor = active ? (
           '<div class="ojt-trow-edit" data-task="' + t.id + '" style="display:none;margin-top:6px;padding:8px;background:#f7f9fa;border-radius:8px">' +
             (t.done ? '' : '<input type="text" class="ojt-reason" placeholder="Reason not done (required if not ticked)" value="' + esc(t.not_done_reason) + '" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;margin-bottom:5px">') +
-            '<textarea class="ojt-remark" placeholder="Trainer remark — what was discussed" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(t.remark) + '</textarea>' +
-            '<div class="ojt-tagbox" data-sel="' + (t.tag_ids || []).join(",") + '" style="margin:5px 0">' + tagPicker(t.tag_ids || []) + '</div>' +
-            '<div style="text-align:right"><button class="ojt-savetr" data-task="' + t.id + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark</button></div>' +
+            '<textarea class="ojt-remark" placeholder="Trainer remark for this task" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(t.remark) + '</textarea>' +
+            '<div style="text-align:right;margin-top:5px"><button class="ojt-savetr" data-task="' + t.id + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark</button></div>' +
           '</div>') : '';
-        var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark/tags</button>' : '';
+        var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark</button>' : '';
         return '<div class="ojt-task-wrap" style="border-bottom:1px solid #f0f0f0;padding:6px 0">' +
           '<label class="ojt-task" style="align-items:flex-start"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
           (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim + editLink +
           (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") +
-          (chips ? '<div style="margin-top:3px">' + chips + '</div>' : '') + savedRemark + savedReason +
+          savedRemark + savedReason +
           "</span></label>" + editor + "</div>";
       }).join("") : '<div class="muted">No tasks set for this day.</div>';
 
@@ -326,8 +333,14 @@
         var callList = (day.calls || []).map(function(c, idx){
           var t2 = c.called_at ? new Date(c.called_at + (c.called_at.slice(-1)==="Z"?"":"Z")).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"numeric",minute:"2-digit"}) : "";
           var col = (c.outcome === "spoke_done") ? "#0f6b45" : (c.outcome.indexOf("spoke")===0 ? "#0c447c" : "#9e2b2b");
+          var editSel = active ? (
+            ' <select class="ojt-calledit" data-id="' + c.id + '" style="font-size:11px;padding:1px 4px;border:1px solid var(--mg-line);border-radius:5px">' +
+            ['no_answer','busy','spoke_done','spoke_not_done'].map(function(o){
+              return '<option value="' + o + '"' + (o===c.outcome?' selected':'') + '>' + OC[o] + '</option>';
+            }).join('') + '</select>' +
+            ' <button class="ojt-calldel ojt-link" data-id="' + c.id + '" style="color:var(--mg-red);font-size:12px" title="Undo this call">✕</button>') : '';
           return '<div style="font-size:12px;padding:2px 0;color:' + col + '">📞 Call ' + (idx+1) + ": " + esc(OC[c.outcome]||c.outcome) + ' <span class="muted">· ' + esc(t2) + '</span>' +
-            (c.note ? ' — ' + esc(c.note) : "") + "</div>";
+            (c.note ? ' — ' + esc(c.note) : "") + editSel + "</div>";
         }).join("");
         var callBtns = active ? (
           '<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:5px">' +
@@ -366,7 +379,9 @@
       : '<div class="note"><b>Status:</b> ' + esc(e.status) + (e.final_note ? " — " + esc(e.final_note) : "") + "</div>";
 
     modal(
-      "<h3>" + esc(e.name) + ' <span class="muted">(' + esc(e.emp_id) + ")</span></h3>" +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">' +
+      "<h3 style=\"margin:0\">" + esc(e.name) + ' <span class="muted">(' + esc(e.emp_id) + ")</span></h3>" +
+      '<a class="btn" href="/api/ojt/export-trainee.xlsx?id=' + e.id + '" style="font-size:12px">⬇ Download Excel</a></div>' +
       '<p class="sub">' + esc(e.role) + " · " + esc(e.day_label) + " · Trainer: " + esc(e.trainer) +
       "<br>" + fmtD(e.start_date) + " → " + fmtD(tl.end_date) + " · " + tl.done + "/" + tl.total + " tasks signed off · " +
       tl.sundays + " week-offs · " + tl.holidays + " leave days</p>" +
@@ -636,10 +651,8 @@
       var wrap = st.closest(".ojt-trow-edit");
       var remarkEl = wrap.querySelector(".ojt-remark");
       var reasonEl = wrap.querySelector(".ojt-reason");
-      var selEl = wrap.querySelector(".ojt-tagbox");
-      var ids = (selEl.dataset.sel || "").split(",").filter(Boolean).map(Number);
       var r = await postJ("/api/ojt/task-remark", { enrollment_id: enrId, task_id: st.dataset.task,
-        remark: remarkEl ? remarkEl.value : "", not_done_reason: reasonEl ? reasonEl.value : "", tag_ids: ids });
+        remark: remarkEl ? remarkEl.value : "", not_done_reason: reasonEl ? reasonEl.value : "", tag_ids: [] });
       if(!r.ok){ note(r.msg || "Could not save."); } else { note("Remark saved."); openTrainee(enrId); }
       return;
     }
@@ -649,6 +662,15 @@
     if(cl){
       var r2 = await postJ("/api/ojt/log-call", { enrollment_id: enrId, day_no: cl.dataset.day, outcome: cl.dataset.oc });
       if(!r2.ok){ note(r2.msg || "Could not save."); } else { openTrainee(enrId); }
+      return;
+    }
+
+    // undo/delete a call
+    var cd = e.target.closest(".ojt-calldel");
+    if(cd){
+      if(!confirm("Undo this call entry?")) return;
+      var rcd = await postJ("/api/ojt/delete-call", { enrollment_id: enrId, id: cd.dataset.id });
+      if(!rcd.ok){ note(rcd.msg || "Could not undo."); } else { note("Call removed."); openTrainee(enrId); }
       return;
     }
 
@@ -666,8 +688,14 @@
     }
   });
 
-  document.addEventListener("change", function(e){
+  document.addEventListener("change", async function(e){
     var el = e.target;
     if(el.dataset && el.dataset.act === "show" && el.closest("#tabOjt")){ S.show = el.value; loadTrainees(); }
+    // edit a call's outcome
+    var ce = el.closest ? el.closest(".ojt-calledit") : null;
+    if(ce && S.current && S.current.enrollment){
+      var r = await postJ("/api/ojt/edit-call", { enrollment_id: S.current.enrollment.id, id: ce.dataset.id, outcome: ce.value });
+      if(!r.ok){ note(r.msg || "Could not update."); } else { note("Call updated."); openTrainee(S.current.enrollment.id); }
+    }
   });
 })();
