@@ -1219,6 +1219,152 @@ def api_ojt_delete_call():
     return jsonify(ok=True)
 
 
+@ojt_bp.route("/api/ojt/edit-call", methods=["POST"])
+@_staff_required
+def api_ojt_edit_call():
+    """Trainer/admin: change a logged call's outcome (e.g. mistakenly logged
+    'no answer' but they picked up)."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    outcome = (d.get("outcome") or "").strip().lower()
+    if outcome not in ("no_answer", "busy", "spoke_done", "spoke_not_done"):
+        return jsonify(ok=False, msg="Pick a call outcome."), 400
+    db = _get_db()
+    db.execute("UPDATE ojt_calls SET outcome=? WHERE id=? AND enrollment_id=?", (outcome, d.get("id"), e["id"]))
+    db.commit()
+    return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------
+#  Excel export — per trainee and all trainees
+# ---------------------------------------------------------------
+_CALL_LABEL = {"no_answer": "No answer", "busy": "Busy",
+               "spoke_done": "Spoke – done", "spoke_not_done": "Spoke – not done"}
+
+
+def _emp_name(emp_id):
+    r = _get_db().execute("SELECT name FROM users WHERE emp_id=?", (emp_id,)).fetchone()
+    return (r["name"] if r else emp_id)
+
+
+def _export_rows_for(enr):
+    """Flatten one trainee's OJT into day-wise rows for Excel."""
+    tl = _timeline(enr)
+    db = _get_db()
+    tagmap = {t["id"]: t["label"] for t in db.execute("SELECT id, label FROM ojt_tags").fetchall()}
+    name = _emp_name(enr["emp_id"])
+    rows = []
+    for day in tl["days"]:
+        if day["day"] is None:
+            continue  # skip week-off / leave rows
+        tasks_done = sum(1 for t in day["tasks"] if t["done"])
+        tasks_total = len(day["tasks"])
+        # task remarks / reasons rolled into one cell
+        tremarks = []
+        for t in day["tasks"]:
+            bits = []
+            if t["remark"]:
+                bits.append("📝 " + t["remark"])
+            if (not t["done"]) and t["not_done_reason"]:
+                bits.append("⚠ " + t["not_done_reason"])
+            if bits:
+                tremarks.append(t["title"] + ": " + " | ".join(bits))
+        calls = day.get("calls", [])
+        call_summary = "; ".join(
+            (_CALL_LABEL.get(c["outcome"], c["outcome"])) for c in calls)
+        day_tags = ", ".join(tagmap.get(i, "") for i in day.get("day_tag_ids", []) if tagmap.get(i))
+        rows.append({
+            "name": name, "emp_id": enr["emp_id"], "role": enr["role"],
+            "day": day["day"], "date": day["date"], "weekday": day["weekday"],
+            "tasks": f"{tasks_done}/{tasks_total}",
+            "trainee_work": day.get("work_done", ""), "trainee_problems": day.get("problems", ""),
+            "task_remarks": "\n".join(tremarks),
+            "calls_count": len(calls), "call_outcomes": call_summary,
+            "day_remark": day.get("day_remark", ""), "day_tags": day_tags,
+        })
+    return rows
+
+
+def _build_ojt_workbook(enrollments, title):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "OJT Report"
+    ws.append([title])
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.append([f"Generated {datetime.utcnow().strftime('%d %b %Y')}"])
+    ws.append([])
+    header = ["Name", "Emp ID", "Role", "Day", "Date", "Weekday", "Tasks done",
+              "Trainee — work done", "Trainee — problems", "Task remarks / reasons",
+              "Calls", "Call outcomes", "Day remark", "Day tags"]
+    ws.append(header)
+    blue = PatternFill("solid", fgColor="12284B")
+    boldw = Font(bold=True, color="FFFFFF")
+    for c in ws[4]:
+        c.font = boldw
+        c.fill = blue
+        c.alignment = Alignment(vertical="center", wrap_text=True)
+    for enr in enrollments:
+        for r in _export_rows_for(enr):
+            ws.append([r["name"], r["emp_id"], r["role"], r["day"], r["date"], r["weekday"],
+                       r["tasks"], r["trainee_work"], r["trainee_problems"], r["task_remarks"],
+                       r["calls_count"], r["call_outcomes"], r["day_remark"], r["day_tags"]])
+    widths = [20, 12, 14, 6, 12, 9, 10, 26, 26, 34, 7, 26, 30, 22]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + i) if i <= 26 else "A"].width = w
+    for row in ws.iter_rows(min_row=5):
+        for c in row:
+            c.alignment = Alignment(vertical="top", wrap_text=True)
+    import io as _io
+    bio = _io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
+
+@ojt_bp.route("/api/ojt/export-trainee.xlsx")
+@_staff_required
+def api_ojt_export_trainee():
+    """Download one trainee's full OJT (tasks, remarks, calls, tags) as Excel."""
+    e, err = _get_enr_for_edit(request.args.get("id"))
+    if err:
+        return err
+    data = _build_ojt_workbook([e], f"OJT Report — {_emp_name(e['emp_id'])} ({e['role']})")
+    fname = f"OJT_{_emp_name(e['emp_id']).replace(' ', '_')}_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    return Response(data, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@ojt_bp.route("/api/ojt/export-all.xlsx")
+@_staff_required
+def api_ojt_export_all():
+    """Download all trainees' OJT data as one Excel. Optional ?role= and ?show=."""
+    db = _get_db()
+    role = request.args.get("role")
+    show = request.args.get("show", "all")   # all | active | closed
+    q = "SELECT * FROM ojt_enrollments"
+    conds, params = [], []
+    if role:
+        conds.append("role=?")
+        params.append(role)
+    if show == "active":
+        conds.append("status='active'")
+    elif show == "closed":
+        conds.append("status IN ('completed','failed')")
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY role, start_date"
+    enrs = db.execute(q, tuple(params)).fetchall()
+    title = "OJT Report — All trainees" + (f" ({role})" if role else "")
+    data = _build_ojt_workbook(enrs, title)
+    fname = f"OJT_All_Trainees_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    return Response(data, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 # ---------------------------------------------------------------
 #  Hook-up (called from app.py)
 # ---------------------------------------------------------------
