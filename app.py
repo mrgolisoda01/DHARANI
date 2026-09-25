@@ -3951,6 +3951,12 @@ def api_admin_delete_cert_track():
 from ojt import init_ojt
 init_ojt(app, get_db, current_user)
 
+# ---------------------------------------------------------------
+#  Daily Route Audit module (lives in audit.py)
+# ---------------------------------------------------------------
+from audit import init_audit
+init_audit(app, get_db, current_user)
+
 
 # ---------------------------------------------------------------
 #  Start
