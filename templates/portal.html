@@ -116,6 +116,7 @@
     <button class="pt-tab" data-tab="videos" onclick="showTab('videos')">🎥 Videos</button>
     <button class="pt-tab" data-tab="certs" onclick="showTab('certs')">📜 Certificates</button>
     <button class="pt-tab" data-tab="ojt" onclick="showTab('ojt')" style="display:none">🧭 My OJT</button>
+    <button class="pt-tab" id="tab-audit-btn" data-tab="audit" onclick="showTab('audit')" style="display:none">📋 Route Audit</button>
   </div></div>
 
   <div class="wrap">
@@ -199,6 +200,9 @@
     <!-- ============ MY OJT (ojt-portal.js) ============ -->
     <div id="tab-ojt" class="tabpane"><div id="myOjt"></div></div>
 
+    <!-- ============ ROUTE AUDIT (audit-portal.js) ============ -->
+    <div id="tab-audit" class="tabpane"><div id="myAudit"></div></div>
+
     <!-- ============ CERTIFICATES ============ -->
     <div id="tab-certs" class="tabpane">
       <div class="sectiontitle">Your certificates</div>
@@ -278,5 +282,6 @@
   })();
 </script>
 <script src="{{ url_for('static', filename='js/ojt-portal.js') }}"></script>
+<script src="{{ url_for('static', filename='js/audit-portal.js') }}"></script>
 </body>
 </html>
