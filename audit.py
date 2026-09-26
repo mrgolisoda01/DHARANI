@@ -27,6 +27,14 @@ DEFAULT_SETTINGS = {
     "pet_sell": 20.0, "pet_cost": 12.91,
     "trays_divisor": 13.6, "routes": 6, "outlet_buffer": 1.5,
     "flavours": DEFAULT_FLAVOURS,
+    # per-location selling prices (admin-managed). glass_sell/pet_sell above are
+    # the fallback default when no location is chosen. BDE picks a location per
+    # outlet to pre-fill its price, and may still override it.
+    "locations": [
+        {"name": "Chennai", "glass": 15.0, "pet": 20.0},
+        {"name": "Hyderabad", "glass": 16.0, "pet": 22.0},
+        {"name": "Andhra Pradesh", "glass": 14.0, "pet": 18.0},
+    ],
 }
 
 CHECK_ITEMS = [
@@ -176,8 +184,12 @@ def _outlet_totals(outlet, s):
     for name, row in fl.items():
         gp += _num(row.get("gp")); pp += _num(row.get("pp"))
         gs += _num(row.get("gs")); ps += _num(row.get("ps"))
-    rev = gs * s["glass_sell"] + ps * s["pet_sell"]
-    cost = gp * s["glass_cost"] + pp * s["pet_cost"]
+    # selling price: use the outlet's own price (BDE entered / location default)
+    # when given, otherwise fall back to the global default price.
+    gsell = _num(outlet.get("glass_sell"), s["glass_sell"]) or s["glass_sell"]
+    psell = _num(outlet.get("pet_sell"), s["pet_sell"]) or s["pet_sell"]
+    rev = gs * gsell + ps * psell
+    cost = gp * s["glass_cost"] + pp * s["pet_cost"]   # factory cost — fixed
     gross = rev - cost
     fixed = _num(outlet.get("fixed_expenses"))
     variable = _num(outlet.get("variable_expenses"))
@@ -185,7 +197,8 @@ def _outlet_totals(outlet, s):
     return {"gp": gp, "pp": pp, "gs": gs, "ps": ps,
             "produced": gp + pp, "sold": gs + ps,
             "revenue": rev, "cost": cost, "gross": gross,
-            "fixed": fixed, "variable": variable, "net": net}
+            "fixed": fixed, "variable": variable, "net": net,
+            "glass_sell": gsell, "pet_sell": psell}
 
 
 def _compute(payload, s):
@@ -280,6 +293,15 @@ def api_audit_save_settings():
         fl = [str(x).strip() for x in d["flavours"] if str(x).strip()]
         if fl:
             s["flavours"] = fl
+    if "locations" in d and isinstance(d["locations"], list):
+        locs = []
+        for L in d["locations"]:
+            nm = str((L or {}).get("name", "")).strip()
+            if nm:
+                locs.append({"name": nm[:60],
+                             "glass": _num((L or {}).get("glass"), 0),
+                             "pet": _num((L or {}).get("pet"), 0)})
+        s["locations"] = locs
     db = _get_db()
     if db.execute("SELECT 1 FROM audit_settings WHERE id=1").fetchone():
         db.execute("UPDATE audit_settings SET data=?, updated_at=? WHERE id=1", (json.dumps(s), _now()))
