@@ -100,9 +100,20 @@ def _login_only(view):
 
 def _ensure_tables():
     global _ready
-    if _ready:
-        return
     db = _get_db()
+    # audit_access is newer than the other tables — always make sure it exists,
+    # even if _ready was set True by an earlier build before this table existed.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS audit_access (
+            emp_id      TEXT PRIMARY KEY,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            enabled_by  TEXT,
+            enabled_at  TEXT
+        )
+    """)
+    if _ready:
+        db.commit()
+        return
     db.execute("""
         CREATE TABLE IF NOT EXISTS audit_settings (
             id INTEGER PRIMARY KEY, data TEXT, updated_at TEXT
@@ -123,14 +134,6 @@ def _ensure_tables():
             verified_by   TEXT,
             verified_at   TEXT,
             created_at    TEXT
-        )
-    """)
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS audit_access (
-            emp_id      TEXT PRIMARY KEY,
-            enabled     INTEGER NOT NULL DEFAULT 1,
-            enabled_by  TEXT,
-            enabled_at  TEXT
         )
     """)
     db.commit()
@@ -322,7 +325,7 @@ def api_audit_set_access():
                    (1 if on else 0, u["emp_id"], _now(), emp_id))
     else:
         db.execute("INSERT INTO audit_access (emp_id, enabled, enabled_by, enabled_at) VALUES (?,?,?,?)",
-                   (1 if on else 0, u["emp_id"], _now(), emp_id))
+                   (emp_id, 1 if on else 0, u["emp_id"], _now()))
     db.commit()
     return jsonify(ok=True)
 
