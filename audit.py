@@ -1,38 +1,34 @@
 # ===============================================================
-#  Daily Route Audit module (lives in audit.py)
-#  A phone-friendly version of MrGolisoda_Daily_Route_Audit.xlsx
-#  - trained BDE/BDM/State Head (and others) fill it in the field
-#  - live auto-math (targets, totals, P&L), auto WhatsApp summary
-#  - multiple audits per person, trainer verifies each
-#  - Excel export (per-audit and all-audits) in the same layout
-#  - prices & flavours are admin-editable
+#  Daily Route Audit module — v2 (audit.py)
+#  - Admin/instructor ENABLES a person before they can fill audits
+#  - One day/route header (trays + targets) with MANY outlet entries
+#  - Auto grand-total across all outlets + combined WhatsApp summary
+#  - fill -> admin/instructor VERIFIES
+#  - sample + help note (served to admin/instructor and learners)
+#  - Excel export (per-audit shows header + all outlets + total; export-all)
+#  - prices & flavours admin-editable
 # ===============================================================
 import io
 import json
+import math
 from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import Blueprint, request, jsonify, Response
 
 audit_bp = Blueprint("audit", __name__)
-
-# filled in by init_audit() from app.py
 _get_db = None
 _current_user = None
 _ready = False
 
-# defaults (admin can change prices & flavours later)
 DEFAULT_FLAVOURS = ["Lemon", "Blueberry", "Orange", "Pineapple", "Greenapple", "Panner", "Jeera"]
 DEFAULT_SETTINGS = {
     "glass_sell": 15.0, "glass_cost": 4.54,
     "pet_sell": 20.0, "pet_cost": 12.91,
-    "trays_divisor": 13.6,     # Factory Trays ÷ 13.6 = max cases/day
-    "routes": 6,               # weekly max ÷ routes
-    "outlet_buffer": 1.5,      # daily target × 1.5
+    "trays_divisor": 13.6, "routes": 6, "outlet_buffer": 1.5,
     "flavours": DEFAULT_FLAVOURS,
 }
 
-# 12 store/route checks (Yes/No/NA)
 CHECK_ITEMS = [
     "Mr. Golisoda stock present in the shop",
     "Cooler / fridge working and visible",
@@ -48,13 +44,20 @@ CHECK_ITEMS = [
     "Outlet matches PJP walking order",
 ]
 
-# daily-numbers rows
 NUMBER_ITEMS = [
-    ("stores_visited", "Stores visited today"),
-    ("orders_taken", "Orders taken"),
-    ("new_outlets", "New outlets opened"),
-    ("payment_collected", "Payment collected (₹)"),
+    ("orders_taken", "Orders taken at this outlet"),
+    ("new_outlets", "New outlet? (1 = yes, 0 = no)"),
+    ("payment_collected", "Payment collected here (₹)"),
     ("issues_found", "Issues found (count)"),
+]
+
+HELP_STEPS = [
+    "Fill the day header once: route, franchise, who you went with, date, and factory trays.",
+    "For EACH shop you visit, tap 'Add outlet' and fill that shop's details.",
+    "In each outlet: enter Glass/PET made & sold per flavour, empties, the store checks (Yes/No/N.A.), orders, payment and any issues.",
+    "The totals at the bottom add up automatically across all outlets.",
+    "Tap 'Copy summary' to get the WhatsApp text for the group.",
+    "Tap Submit. Your trainer/admin will then verify it.",
 ]
 
 
@@ -102,9 +105,7 @@ def _ensure_tables():
     db = _get_db()
     db.execute("""
         CREATE TABLE IF NOT EXISTS audit_settings (
-            id         INTEGER PRIMARY KEY,
-            data       TEXT,
-            updated_at TEXT
+            id INTEGER PRIMARY KEY, data TEXT, updated_at TEXT
         )
     """)
     db.execute("""
@@ -117,11 +118,19 @@ def _ensure_tables():
             franchise     TEXT,
             went_with     TEXT,
             audit_date    TEXT,
-            payload       TEXT,           -- full JSON of the form
-            status        TEXT NOT NULL DEFAULT 'submitted',  -- submitted | verified
+            payload       TEXT,
+            status        TEXT NOT NULL DEFAULT 'submitted',
             verified_by   TEXT,
             verified_at   TEXT,
             created_at    TEXT
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS audit_access (
+            emp_id      TEXT PRIMARY KEY,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            enabled_by  TEXT,
+            enabled_at  TEXT
         )
     """)
     db.commit()
@@ -134,13 +143,11 @@ def _get_settings():
     row = db.execute("SELECT data FROM audit_settings WHERE id=1").fetchone()
     if row and row["data"]:
         try:
-            s = json.loads(row["data"])
-            # backfill any missing keys from defaults
-            out = dict(DEFAULT_SETTINGS)
-            out.update(s)
-            if not out.get("flavours"):
-                out["flavours"] = list(DEFAULT_FLAVOURS)
-            return out
+            s = dict(DEFAULT_SETTINGS)
+            s.update(json.loads(row["data"]))
+            if not s.get("flavours"):
+                s["flavours"] = list(DEFAULT_FLAVOURS)
+            return s
         except Exception:
             pass
     return dict(DEFAULT_SETTINGS)
@@ -153,52 +160,109 @@ def _num(v, d=0.0):
         return d
 
 
-def _compute(payload, s):
-    """Server-side recompute of the totals & P&L (never trust the client math)."""
-    fl = payload.get("flavours", {})   # {name: {gp,pp,gs,ps}}
-    tot_gp = tot_pp = tot_gs = tot_ps = 0.0
+def _is_enabled(emp_id):
+    _ensure_tables()
+    db = _get_db()
+    r = db.execute("SELECT enabled FROM audit_access WHERE emp_id=?", (emp_id,)).fetchone()
+    return bool(r and r["enabled"])
+
+
+def _outlet_totals(outlet, s):
+    fl = outlet.get("flavours", {})
+    gp = pp = gs = ps = 0.0
     for name, row in fl.items():
-        tot_gp += _num(row.get("gp"))
-        tot_pp += _num(row.get("pp"))
-        tot_gs += _num(row.get("gs"))
-        tot_ps += _num(row.get("ps"))
-    total_produced = tot_gp + tot_pp
-    total_sold = tot_gs + tot_ps
-    revenue = tot_gs * s["glass_sell"] + tot_ps * s["pet_sell"]
-    prod_cost = tot_gp * s["glass_cost"] + tot_pp * s["pet_cost"]
-    gross = revenue - prod_cost
-    fixed = _num(payload.get("fixed_expenses"))
-    variable = _num(payload.get("variable_expenses"))
+        gp += _num(row.get("gp")); pp += _num(row.get("pp"))
+        gs += _num(row.get("gs")); ps += _num(row.get("ps"))
+    rev = gs * s["glass_sell"] + ps * s["pet_sell"]
+    cost = gp * s["glass_cost"] + pp * s["pet_cost"]
+    gross = rev - cost
+    fixed = _num(outlet.get("fixed_expenses"))
+    variable = _num(outlet.get("variable_expenses"))
     net = gross - fixed - variable
-    # targets
-    trays = _num(payload.get("factory_trays"))
+    return {"gp": gp, "pp": pp, "gs": gs, "ps": ps,
+            "produced": gp + pp, "sold": gs + ps,
+            "revenue": rev, "cost": cost, "gross": gross,
+            "fixed": fixed, "variable": variable, "net": net}
+
+
+def _compute(payload, s):
+    header = payload.get("header", {})
+    outlets = payload.get("outlets", []) or []
+    g = {"produced": 0.0, "sold": 0.0, "gs": 0.0, "ps": 0.0, "gp": 0.0, "pp": 0.0,
+         "revenue": 0.0, "cost": 0.0, "gross": 0.0, "fixed": 0.0, "variable": 0.0, "net": 0.0,
+         "empties": 0.0, "orders": 0.0, "new_outlets": 0.0, "payment": 0.0, "issues": 0.0,
+         "outlet_count": len(outlets)}
+    per_outlet = []
+    for o in outlets:
+        ot = _outlet_totals(o, s)
+        per_outlet.append(ot)
+        for k in ("produced", "sold", "gs", "ps", "gp", "pp", "revenue", "cost", "gross", "fixed", "variable", "net"):
+            g[k] += ot[k]
+        g["empties"] += _num(o.get("empties"))
+        n = o.get("numbers", {})
+        g["orders"] += _num(n.get("orders_taken"))
+        g["new_outlets"] += _num(n.get("new_outlets"))
+        g["payment"] += _num(n.get("payment_collected"))
+        g["issues"] += _num(n.get("issues_found"))
+    trays = _num(header.get("factory_trays"))
     max_cases = int(trays // s["trays_divisor"]) if s["trays_divisor"] else 0
     weekly_max = max_cases * s["routes"]
     daily_target = int(weekly_max // s["routes"]) if s["routes"] else 0
-    import math
     outlet_need = int(math.ceil(daily_target * s["outlet_buffer"]))
+    g.update({"max_cases": max_cases, "weekly_max": weekly_max,
+              "daily_target": daily_target, "outlet_need": outlet_need,
+              "trays": trays, "per_outlet": per_outlet})
+    return g
+
+
+def _sample_payload():
     return {
-        "tot_gp": tot_gp, "tot_pp": tot_pp, "tot_gs": tot_gs, "tot_ps": tot_ps,
-        "total_produced": total_produced, "total_sold": total_sold,
-        "revenue": revenue, "prod_cost": prod_cost, "gross": gross,
-        "fixed": fixed, "variable": variable, "net": net,
-        "max_cases": max_cases, "weekly_max": weekly_max,
-        "daily_target": daily_target, "outlet_need": outlet_need,
+        "header": {"route": "Route 1 – Chennai North", "franchise": "Thiruvallur Franchise",
+                   "went_with": "Senior BDE Ravi", "audit_date": _today_ist().isoformat(),
+                   "factory_trays": 1500},
+        "outlets": [
+            {"outlet_name": "Sri Balaji Stores",
+             "flavours": {"Lemon": {"gp": 40, "pp": 20, "gs": 35, "ps": 15},
+                          "Orange": {"gp": 20, "pp": 10, "gs": 18, "ps": 8}},
+             "empties": 12,
+             "checks": {"0": "Yes", "1": "Yes", "2": "No", "4": "Yes"},
+             "check_remarks": {"2": "Placed at side, asked owner to move to front"},
+             "numbers": {"orders_taken": 6, "new_outlets": 0, "payment_collected": 1800, "issues_found": 1},
+             "fixed_expenses": 0, "variable_expenses": 0, "notes": "Owner cooperative, good stock"},
+            {"outlet_name": "New Star Shop",
+             "flavours": {"Lemon": {"gp": 0, "pp": 0, "gs": 10, "ps": 6}},
+             "empties": 4,
+             "checks": {"0": "Yes", "1": "No", "4": "Yes"},
+             "check_remarks": {"1": "Cooler not working — informed franchise"},
+             "numbers": {"orders_taken": 2, "new_outlets": 1, "payment_collected": 600, "issues_found": 1},
+             "fixed_expenses": 0, "variable_expenses": 0, "notes": "New outlet opened today"}
+        ]
     }
 
 
 # ---------------------------------------------------------------
-#  Config for the form (settings + fixed lists)
+#  Config + sample
 # ---------------------------------------------------------------
 @audit_bp.route("/api/audit/config")
 @_login_only
 def api_audit_config():
     s = _get_settings()
     u = _current_user()
+    is_staff = u["role"] in ("admin", "instructor")
     return jsonify(ok=True, settings=s, checks=CHECK_ITEMS, numbers=NUMBER_ITEMS,
-                   is_staff=(u["role"] in ("admin", "instructor")),
-                   is_admin=(u["role"] == "admin"),
+                   is_staff=is_staff, is_admin=(u["role"] == "admin"),
+                   enabled=(is_staff or _is_enabled(u["emp_id"])),
+                   help_steps=HELP_STEPS,
                    me={"name": u["name"], "emp_id": u["emp_id"], "designation": u["designation"] or ""})
+
+
+@audit_bp.route("/api/audit/sample")
+@_login_only
+def api_audit_sample():
+    s = _get_settings()
+    p = _sample_payload()
+    return jsonify(ok=True, payload=p, computed=_compute(p, s), settings=s,
+                   checks=CHECK_ITEMS, numbers=NUMBER_ITEMS, help_steps=HELP_STEPS)
 
 
 @audit_bp.route("/api/audit/save-settings", methods=["POST"])
@@ -223,24 +287,68 @@ def api_audit_save_settings():
 
 
 # ---------------------------------------------------------------
-#  Submit / list / open / verify
+#  Access control (enable per person)
+# ---------------------------------------------------------------
+@audit_bp.route("/api/audit/access-list")
+@_staff_required
+def api_audit_access_list():
+    _ensure_tables()
+    db = _get_db()
+    roles = ("BDE", "BDM", "State Head", "Territory Launch Executive")
+    ph = ",".join("?" for _ in roles)
+    people = db.execute(
+        "SELECT emp_id, name, designation FROM users "
+        "WHERE status='approved' AND designation IN (" + ph + ") ORDER BY name",
+        roles).fetchall()
+    enabled = {r["emp_id"] for r in db.execute("SELECT emp_id FROM audit_access WHERE enabled=1").fetchall()}
+    out = [{"emp_id": p["emp_id"], "name": p["name"], "designation": p["designation"],
+            "enabled": p["emp_id"] in enabled} for p in people]
+    return jsonify(ok=True, people=out)
+
+
+@audit_bp.route("/api/audit/set-access", methods=["POST"])
+@_staff_required
+def api_audit_set_access():
+    _ensure_tables()
+    d = request.get_json(force=True)
+    emp_id = (d.get("emp_id") or "").strip()
+    on = bool(d.get("enabled"))
+    if not emp_id:
+        return jsonify(ok=False, msg="Missing employee."), 400
+    db = _get_db()
+    u = _current_user()
+    if db.execute("SELECT 1 FROM audit_access WHERE emp_id=?", (emp_id,)).fetchone():
+        db.execute("UPDATE audit_access SET enabled=?, enabled_by=?, enabled_at=? WHERE emp_id=?",
+                   (1 if on else 0, u["emp_id"], _now(), emp_id))
+    else:
+        db.execute("INSERT INTO audit_access (emp_id, enabled, enabled_by, enabled_at) VALUES (?,?,?,?)",
+                   (1 if on else 0, u["emp_id"], _now(), emp_id))
+    db.commit()
+    return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------
+#  Submit / list / open / verify / delete
 # ---------------------------------------------------------------
 @audit_bp.route("/api/audit/submit", methods=["POST"])
 @_login_only
 def api_audit_submit():
     _ensure_tables()
     u = _current_user()
+    is_staff = u["role"] in ("admin", "instructor")
+    if not is_staff and not _is_enabled(u["emp_id"]):
+        return jsonify(ok=False, msg="Audit is not enabled for you yet. Please ask your admin/trainer."), 403
     d = request.get_json(force=True)
     payload = d.get("payload") or {}
-    route = (payload.get("route") or "").strip()[:120]
-    franchise = (payload.get("franchise") or "").strip()[:120]
-    went_with = (payload.get("went_with") or "").strip()[:120]
-    audit_date = (payload.get("audit_date") or _today_ist().isoformat())[:20]
-    role = (u["designation"] or "").strip() or (payload.get("role") or "")
+    header = payload.get("header", {})
+    route = (header.get("route") or "").strip()[:120]
+    franchise = (header.get("franchise") or "").strip()[:120]
+    went_with = (header.get("went_with") or "").strip()[:120]
+    audit_date = (header.get("audit_date") or _today_ist().isoformat())[:20]
+    role = (u["designation"] or "").strip() or (header.get("role") or "")
     db = _get_db()
-    rid = d.get("id")   # editing an existing draft/submission
+    rid = d.get("id")
     if rid:
-        # only the owner can edit their own, and only while still 'submitted'
         row = db.execute("SELECT emp_id, status FROM audit_reports WHERE id=?", (rid,)).fetchone()
         if not row or row["emp_id"] != u["emp_id"]:
             return jsonify(ok=False, msg="Not found."), 404
@@ -262,37 +370,51 @@ def api_audit_submit():
 @audit_bp.route("/api/audit/my")
 @_login_only
 def api_audit_my():
-    """The logged-in person's own submitted audits (list)."""
     _ensure_tables()
     u = _current_user()
     db = _get_db()
     rows = db.execute(
-        "SELECT id, route, franchise, audit_date, status, created_at FROM audit_reports "
+        "SELECT id, route, franchise, audit_date, status, payload FROM audit_reports "
         "WHERE emp_id=? ORDER BY id DESC", (u["emp_id"],)).fetchall()
-    return jsonify(ok=True, audits=[dict(r) for r in rows])
+    out = []
+    for r in rows:
+        oc = 0
+        try:
+            oc = len((json.loads(r["payload"] or "{}")).get("outlets", []))
+        except Exception:
+            pass
+        out.append({"id": r["id"], "route": r["route"], "franchise": r["franchise"],
+                    "audit_date": r["audit_date"], "status": r["status"], "outlet_count": oc})
+    return jsonify(ok=True, audits=out,
+                   enabled=(u["role"] in ("admin", "instructor") or _is_enabled(u["emp_id"])))
 
 
 @audit_bp.route("/api/audit/list")
 @_staff_required
 def api_audit_list():
-    """Admin/trainer: all submitted audits, newest first. Optional ?status= & ?emp_id=."""
     _ensure_tables()
     db = _get_db()
     q = ("SELECT id, emp_id, emp_name, role, route, franchise, audit_date, status, "
-         "verified_by, verified_at, created_at FROM audit_reports")
+         "verified_by, verified_at, payload FROM audit_reports")
     conds, params = [], []
     st = request.args.get("status")
     if st in ("submitted", "verified"):
         conds.append("status=?"); params.append(st)
-    emp = request.args.get("emp_id")
-    if emp:
-        conds.append("emp_id=?"); params.append(emp)
     if conds:
         q += " WHERE " + " AND ".join(conds)
     q += " ORDER BY id DESC LIMIT 500"
     rows = db.execute(q, tuple(params)).fetchall()
+    out = []
+    for r in rows:
+        oc = 0
+        try:
+            oc = len((json.loads(r["payload"] or "{}")).get("outlets", []))
+        except Exception:
+            pass
+        d = dict(r); d.pop("payload", None); d["outlet_count"] = oc
+        out.append(d)
     pending = db.execute("SELECT COUNT(*) c FROM audit_reports WHERE status='submitted'").fetchone()["c"]
-    return jsonify(ok=True, audits=[dict(r) for r in rows], pending=pending)
+    return jsonify(ok=True, audits=out, pending=pending)
 
 
 @audit_bp.route("/api/audit/get")
@@ -307,11 +429,10 @@ def api_audit_get():
     is_staff = u["role"] in ("admin", "instructor")
     if not is_staff and row["emp_id"] != u["emp_id"]:
         return jsonify(ok=False, msg="Not authorised."), 403
-    payload = {}
     try:
         payload = json.loads(row["payload"] or "{}")
     except Exception:
-        pass
+        payload = {}
     s = _get_settings()
     return jsonify(ok=True, audit={
         "id": row["id"], "emp_id": row["emp_id"], "emp_name": row["emp_name"], "role": row["role"],
@@ -341,7 +462,6 @@ def api_audit_verify():
 @audit_bp.route("/api/audit/delete", methods=["POST"])
 @_login_only
 def api_audit_delete():
-    """Owner can delete their own un-verified audit; admin can delete any."""
     _ensure_tables()
     u = _current_user()
     d = request.get_json(force=True)
@@ -358,44 +478,33 @@ def api_audit_delete():
 
 
 # ---------------------------------------------------------------
-#  WhatsApp summary (server builds the exact text)
+#  WhatsApp summary (combined across outlets)
 # ---------------------------------------------------------------
-def _whatsapp(row_or_payload, s, meta):
-    p = row_or_payload
-    c = _compute(p, s)
-    fl = p.get("flavours", {})
-    lines = []
-    lines.append("*MR. GOLISODA — DAILY SUMMARY*")
-    lines.append("==============")
-    lines.append(f"BDE: {meta.get('emp_name','')}   ID: {meta.get('emp_id','')}")
-    lines.append(f"Route: {p.get('route','')}  ({p.get('went_with','')})")
-    lines.append(f"Date: {p.get('audit_date','')}")
-    lines.append("==============")
-    lines.append("*PRODUCTION (made / sold):*")
-    for name in s.get("flavours", DEFAULT_FLAVOURS):
-        r = fl.get(name, {})
-        made = _num(r.get("gp")) + _num(r.get("pp"))
-        sold = _num(r.get("gs")) + _num(r.get("ps"))
-        lines.append(f"• {name}: {int(made)} made / {int(sold)} sold")
-    lines.append(f"Total Produced: {int(c['total_produced'])} bottles")
-    lines.append(f"Total Sold: {int(c['total_sold'])} bottles")
-    lines.append(f"(Glass sold {int(c['tot_gs'])} / PET sold {int(c['tot_ps'])})")
-    lines.append(f"Empties collected: {int(_num(p.get('empties')))}")
-    lines.append("==============")
-    lines.append("*ROUTE NUMBERS:*")
-    nums = p.get("numbers", {})
-    lines.append(f"• Stores visited: {int(_num(nums.get('stores_visited')))}")
-    lines.append(f"• Orders: {int(_num(nums.get('orders_taken')))}   New outlets: {int(_num(nums.get('new_outlets')))}")
-    lines.append(f"• Payment: ₹{int(_num(nums.get('payment_collected')))}   Issues: {int(_num(nums.get('issues_found')))}")
-    lines.append("==============")
-    lines.append("*P&L (today):*")
-    lines.append(f"• Revenue: ₹{int(c['revenue'])}")
-    lines.append(f"• Prod. Cost: ₹{int(c['prod_cost'])}")
-    lines.append(f"• Gross Profit: ₹{int(c['gross'])}")
-    lines.append(f"• Net Profit: ₹{int(c['net'])}")
-    lines.append("==============")
-    lines.append(f"Submitted by: {meta.get('emp_name','')}")
-    return "\n".join(lines)
+def _whatsapp(payload, s, meta):
+    c = _compute(payload, s)
+    h = payload.get("header", {})
+    outlets = payload.get("outlets", []) or []
+    L = []
+    L.append("*MR. GOLISODA — DAILY SUMMARY*")
+    L.append("==============")
+    L.append("BDE: " + str(meta.get("emp_name", "")) + "   ID: " + str(meta.get("emp_id", "")))
+    L.append("Route: " + str(h.get("route", "")) + "  (" + str(h.get("went_with", "")) + ")")
+    L.append("Date: " + str(h.get("audit_date", "")) + "   Outlets: " + str(len(outlets)))
+    L.append("==============")
+    L.append("*PER OUTLET:*")
+    for i, o in enumerate(outlets, 1):
+        ot = _outlet_totals(o, s)
+        nm = o.get("outlet_name") or ("Outlet " + str(i))
+        L.append(str(i) + ". " + str(nm) + ": sold " + str(int(ot["sold"])) + ", Rs." + str(int(ot["revenue"])))
+    L.append("==============")
+    L.append("*DAY TOTAL:*")
+    L.append("Total Produced: " + str(int(c["produced"])) + " · Total Sold: " + str(int(c["sold"])))
+    L.append("Orders: " + str(int(c["orders"])) + " · New outlets: " + str(int(c["new_outlets"])))
+    L.append("Empties: " + str(int(c["empties"])) + " · Payment: Rs." + str(int(c["payment"])))
+    L.append("Revenue: Rs." + str(int(c["revenue"])) + " · Net: Rs." + str(int(c["net"])))
+    L.append("==============")
+    L.append("Submitted by: " + str(meta.get("emp_name", "")))
+    return "\n".join(L)
 
 
 @audit_bp.route("/api/audit/whatsapp")
@@ -409,98 +518,72 @@ def api_audit_whatsapp():
         return jsonify(ok=False, msg="Not found."), 404
     if u["role"] not in ("admin", "instructor") and row["emp_id"] != u["emp_id"]:
         return jsonify(ok=False, msg="Not authorised."), 403
-    p = {}
-    try:
-        p = json.loads(row["payload"] or "{}")
-    except Exception:
-        pass
-    txt = _whatsapp(p, _get_settings(), {"emp_name": row["emp_name"], "emp_id": row["emp_id"]})
-    return jsonify(ok=True, text=txt)
-
-
-# ---------------------------------------------------------------
-#  Excel export — per audit and all audits (same layout as the file)
-# ---------------------------------------------------------------
-def _write_audit_sheet(ws, row, s):
-    from openpyxl.styles import Font, PatternFill, Alignment
     try:
         p = json.loads(row["payload"] or "{}")
     except Exception:
         p = {}
+    return jsonify(ok=True, text=_whatsapp(p, _get_settings(), {"emp_name": row["emp_name"], "emp_id": row["emp_id"]}))
+
+
+# ---------------------------------------------------------------
+#  Excel export
+# ---------------------------------------------------------------
+def _write_audit_sheet(ws, row, s):
+    from openpyxl.styles import Font, PatternFill
+    try:
+        p = json.loads(row["payload"] or "{}")
+    except Exception:
+        p = {}
+    outlets = p.get("outlets", []) or []
     c = _compute(p, s)
-    navy = PatternFill("solid", fgColor="12284B")
-    boldw = Font(bold=True, color="FFFFFF")
-    boldd = Font(bold=True)
+    navy = PatternFill("solid", fgColor="12284B"); boldw = Font(bold=True, color="FFFFFF"); boldd = Font(bold=True)
 
-    def hdr(txt):
-        ws.append([txt]); ws.cell(ws.max_row, 1).font = boldd
+    def hdr(t):
+        ws.append([t]); ws.cell(ws.max_row, 1).font = boldd
 
-    ws.append(["MR. GOLISODA — DAILY ROUTE AUDIT & PRODUCTION SUMMARY"])
+    ws.append(["MR. GOLISODA — DAILY ROUTE AUDIT"])
     ws.cell(ws.max_row, 1).font = Font(bold=True, size=14)
     ws.append([])
-    hdr("AUDIT DETAILS")
+    hdr("DAY / ROUTE HEADER")
     ws.append(["BDE Name", row["emp_name"], "", "Employee ID", row["emp_id"]])
-    ws.append(["Route Audited", row["route"], "", "Franchise / City", row["franchise"]])
-    ws.append(["Went With", row["went_with"], "", "Audit Date", row["audit_date"]])
-    ws.append(["Status", row["status"], "", "Verified by", row["verified_by"] or ""])
+    ws.append(["Route", row["route"], "", "Franchise", row["franchise"]])
+    ws.append(["Went With", row["went_with"], "", "Date", row["audit_date"]])
+    ws.append(["Factory Trays", c["trays"], "", "Status", row["status"]])
+    ws.append(["Max cases/day", c["max_cases"], "Weekly max", c["weekly_max"],
+               "Daily target", c["daily_target"], "Outlets needed", c["outlet_need"]])
     ws.append([])
 
-    hdr("TARGET CALCULATION CHECK")
-    ws.append(["Factory Trays available", _num(p.get("factory_trays"))])
-    ws.append(["Max Cases Per Day", c["max_cases"]])
-    ws.append(["Weekly Maximum Sales", c["weekly_max"]])
-    ws.append(["Daily Target Per Route", c["daily_target"]])
-    ws.append(["Outlet Potential Needed / Route", c["outlet_need"]])
-    ws.append([])
+    for i, o in enumerate(outlets, 1):
+        ot = _outlet_totals(o, s)
+        hdr("OUTLET " + str(i) + ": " + str(o.get("outlet_name", "")))
+        ws.append(["Flavour", "Glass made", "PET made", "Glass sold", "PET sold"])
+        for cc in ws[ws.max_row]:
+            cc.font = boldw; cc.fill = navy
+        for name in s.get("flavours", DEFAULT_FLAVOURS):
+            r = (o.get("flavours", {})).get(name, {})
+            ws.append([name, _num(r.get("gp")), _num(r.get("pp")), _num(r.get("gs")), _num(r.get("ps"))])
+        ws.append(["Empties", _num(o.get("empties")), "Revenue Rs.", round(ot["revenue"]), "Net Rs.", round(ot["net"])])
+        checks = o.get("checks", {}); rems = o.get("check_remarks", {})
+        ws.append(["Check", "Result", "Remarks"])
+        for cc in ws[ws.max_row]:
+            cc.font = boldw; cc.fill = navy
+        for j, item in enumerate(CHECK_ITEMS):
+            ws.append([item, checks.get(str(j), checks.get(j, "")), rems.get(str(j), rems.get(j, ""))])
+        n = o.get("numbers", {})
+        ws.append(["Orders", _num(n.get("orders_taken")), "New outlet", _num(n.get("new_outlets")),
+                   "Payment Rs.", _num(n.get("payment_collected")), "Issues", _num(n.get("issues_found"))])
+        if o.get("notes"):
+            ws.append(["Notes", o.get("notes")])
+        ws.append([])
 
-    hdr("PRODUCTION & SALES BY FLAVOUR")
-    ws.append(["Flavour", "Glass Prod.", "PET Prod.", "Total Prod.", "Glass Sold", "PET Sold", "Total Sold"])
-    for cc in ws[ws.max_row]:
-        cc.font = boldw; cc.fill = navy
-    fl = p.get("flavours", {})
-    for name in s.get("flavours", DEFAULT_FLAVOURS):
-        r = fl.get(name, {})
-        gp, pp, gs, ps = _num(r.get("gp")), _num(r.get("pp")), _num(r.get("gs")), _num(r.get("ps"))
-        ws.append([name, gp, pp, gp + pp, gs, ps, gs + ps])
-    ws.append(["TOTAL", c["tot_gp"], c["tot_pp"], c["total_produced"], c["tot_gs"], c["tot_ps"], c["total_sold"]])
-    for cc in ws[ws.max_row]:
-        cc.font = boldd
-    ws.append([])
-
-    ws.append(["Empty bottles collected today", _num(p.get("empties"))])
-    ws.cell(ws.max_row, 1).font = boldd
-    ws.append([])
-
-    hdr("STORE / ROUTE CHECKS")
-    ws.append(["Check Item", "Result", "Remarks"])
-    for cc in ws[ws.max_row]:
-        cc.font = boldw; cc.fill = navy
-    checks = p.get("checks", {})
-    remarks = p.get("check_remarks", {})
-    for i, item in enumerate(CHECK_ITEMS):
-        ws.append([item, checks.get(str(i), checks.get(i, "")), remarks.get(str(i), remarks.get(i, ""))])
-    ws.append([])
-
-    hdr("DAILY NUMBERS")
-    nums = p.get("numbers", {})
-    for key, label in NUMBER_ITEMS:
-        ws.append([label, _num(nums.get(key))])
-    ws.append([])
-
-    hdr("FULL P&L (₹)")
-    ws.append(["Revenue (from Sold)", c["revenue"]])
-    ws.append(["Production Cost (from Produced)", c["prod_cost"]])
-    ws.append(["Gross Profit", c["gross"]])
-    ws.append(["Fixed Expenses", c["fixed"]])
-    ws.append(["Variable Expenses", c["variable"]])
-    ws.append(["NET PROFIT", c["net"]])
-    ws.cell(ws.max_row, 1).font = boldd
-    ws.append([])
-
-    hdr("NOTES / ISSUES")
-    ws.append([p.get("notes", "")])
+    hdr("DAY GRAND TOTAL (all outlets)")
+    ws.append(["Outlets", c["outlet_count"], "Total produced", int(c["produced"]), "Total sold", int(c["sold"])])
+    ws.append(["Revenue Rs.", round(c["revenue"]), "Prod cost Rs.", round(c["cost"]), "Gross Rs.", round(c["gross"])])
+    ws.append(["Fixed Rs.", round(c["fixed"]), "Variable Rs.", round(c["variable"]), "NET Rs.", round(c["net"])])
+    ws.append(["Orders", int(c["orders"]), "New outlets", int(c["new_outlets"]),
+               "Payment Rs.", int(c["payment"]), "Empties", int(c["empties"])])
     for i in range(1, 9):
-        ws.column_dimensions[chr(64 + i)].width = [30, 14, 14, 14, 14, 14, 14, 14][i - 1]
+        ws.column_dimensions[chr(64 + i)].width = [28, 14, 14, 14, 14, 14, 14, 14][i - 1]
 
 
 @audit_bp.route("/api/audit/export.xlsx")
@@ -512,22 +595,18 @@ def api_audit_export_one():
     row = db.execute("SELECT * FROM audit_reports WHERE id=?", (request.args.get("id"),)).fetchone()
     if not row:
         return jsonify(ok=False, msg="Not found."), 404
-    s = _get_settings()
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Daily Route Audit"
-    _write_audit_sheet(ws, row, s)
+    wb = Workbook(); ws = wb.active; ws.title = "Route Audit"
+    _write_audit_sheet(ws, row, _get_settings())
     bio = io.BytesIO(); wb.save(bio); bio.seek(0)
-    fname = f"Audit_{(row['emp_name'] or row['emp_id']).replace(' ', '_')}_{row['audit_date']}.xlsx"
+    fname = "Audit_" + (row["emp_name"] or row["emp_id"]).replace(" ", "_") + "_" + str(row["audit_date"]) + ".xlsx"
     return Response(bio.getvalue(),
                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+                    headers={"Content-Disposition": 'attachment; filename="' + fname + '"'})
 
 
 @audit_bp.route("/api/audit/export-all.xlsx")
 @_staff_required
 def api_audit_export_all():
-    """One summary sheet across all audits (one row each) + optional filters."""
     _ensure_tables()
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -542,17 +621,14 @@ def api_audit_export_all():
     q += " ORDER BY id DESC"
     rows = db.execute(q, tuple(params)).fetchall()
     s = _get_settings()
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "All Audits"
-    ws.append(["MR. GOLISODA — Route Audits (all)"])
+    wb = Workbook(); ws = wb.active; ws.title = "All Audits"
+    ws.append(["MR. GOLISODA — Route Audits (all, day totals)"])
     ws.cell(1, 1).font = Font(bold=True, size=14)
-    ws.append([f"Generated {datetime.utcnow().strftime('%d %b %Y')} · {len(rows)} audits"])
+    ws.append(["Generated " + datetime.utcnow().strftime("%d %b %Y") + " · " + str(len(rows)) + " audits"])
     ws.append([])
-    header = ["Date", "BDE Name", "Emp ID", "Role", "Route", "Franchise", "Went with",
-              "Total Produced", "Total Sold", "Revenue ₹", "Net Profit ₹",
-              "Stores visited", "Orders", "New outlets", "Payment ₹", "Issues",
-              "Status", "Verified by"]
+    header = ["Date", "BDE Name", "Emp ID", "Role", "Route", "Franchise", "Outlets",
+              "Total Produced", "Total Sold", "Revenue Rs.", "Net Rs.", "Orders", "New outlets",
+              "Payment Rs.", "Status", "Verified by"]
     ws.append(header)
     navy = PatternFill("solid", fgColor="12284B"); boldw = Font(bold=True, color="FFFFFF")
     for cc in ws[4]:
@@ -563,27 +639,22 @@ def api_audit_export_all():
         except Exception:
             p = {}
         c = _compute(p, s)
-        n = p.get("numbers", {})
-        ws.append([row["audit_date"], row["emp_name"], row["emp_id"], row["role"], row["route"],
-                   row["franchise"], row["went_with"],
-                   int(c["total_produced"]), int(c["total_sold"]), int(c["revenue"]), int(c["net"]),
-                   int(_num(n.get("stores_visited"))), int(_num(n.get("orders_taken"))),
-                   int(_num(n.get("new_outlets"))), int(_num(n.get("payment_collected"))),
-                   int(_num(n.get("issues_found"))),
-                   row["status"], row["verified_by"] or ""])
-    widths = [12, 20, 12, 12, 20, 18, 14, 12, 10, 11, 11, 12, 8, 11, 11, 8, 11, 16]
+        ws.append([row["audit_date"], row["emp_name"], row["emp_id"], row["role"], row["route"], row["franchise"],
+                   c["outlet_count"], int(c["produced"]), int(c["sold"]), int(c["revenue"]), int(c["net"]),
+                   int(c["orders"]), int(c["new_outlets"]), int(c["payment"]), row["status"], row["verified_by"] or ""])
+    widths = [12, 20, 12, 12, 20, 18, 8, 13, 10, 11, 11, 8, 11, 11, 11, 16]
     for i, w in enumerate(widths, start=1):
         col = chr(64 + i) if i <= 26 else "A" + chr(64 + i - 26)
         ws.column_dimensions[col].width = w
     bio = io.BytesIO(); wb.save(bio); bio.seek(0)
-    fname = f"All_Route_Audits_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    fname = "All_Route_Audits_" + datetime.utcnow().strftime("%Y%m%d") + ".xlsx"
     return Response(bio.getvalue(),
                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+                    headers={"Content-Disposition": 'attachment; filename="' + fname + '"'})
 
 
 # ---------------------------------------------------------------
-#  Hook-up (called from app.py)
+#  Hook-up
 # ---------------------------------------------------------------
 def init_audit(app, get_db, current_user):
     global _get_db, _current_user
