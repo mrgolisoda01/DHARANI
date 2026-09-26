@@ -160,7 +160,17 @@
   window.__aaAccess=function(){ accessScreen(); };
   window.__aaSample=function(){ sampleScreen(); };
   window.__aaSettings=function(){ settings(); };
-  window.__aaToggle=async function(emp,on){ var r=await postJ("/api/audit/set-access",{emp_id:emp,enabled:on}); if(!r.ok){ note(r.msg||"Failed."); } else { note(on?"Enabled.":"Disabled."); } };
+  window.__aaToggle=async function(emp,on){
+    var r=await postJ("/api/audit/set-access",{emp_id:emp,enabled:on});
+    if(!r.ok){
+      note((r.msg && r.msg.indexOf("Network")<0) ? r.msg : "Couldn't save — the server may be waking up. Please try again in a moment.");
+      // revert the switch so it reflects the real (unsaved) state
+      var cb=document.querySelector('input[onchange*="'+emp+'"]');
+      if(cb) cb.checked=!on;
+    } else {
+      note(on?"Enabled — this person can now fill audits.":"Disabled.");
+    }
+  };
   window.__aaVerify=async function(id){ if(!confirm("Mark this audit as verified?"))return; var r=await postJ("/api/audit/verify",{id:id}); if(r.ok){note("Verified.");openAudit(id);}else note(r.msg||"Failed."); };
   window.__aaDelete=async function(id){ if(!confirm("Delete this audit permanently?"))return; var r=await postJ("/api/audit/delete",{id:id}); if(r.ok){note("Deleted.");loadList();}else note(r.msg||"Failed."); };
   window.__aaWA=async function(id){ var d=await getJ("/api/audit/whatsapp?id="+id); if(d&&d.ok){ if(navigator.clipboard){navigator.clipboard.writeText(d.text).then(function(){note("Summary copied.");});} alert(d.text);} else note("Could not build summary."); };
