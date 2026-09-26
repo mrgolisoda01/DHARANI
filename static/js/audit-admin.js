@@ -1,8 +1,8 @@
 /* ============================================================
-   Mr. Golisoda LMS — "Audit" tab for admin / trainer.
-   Lists all submitted Route Audits, open to view full detail,
-   verify, download Excel (one / all), and (admin) edit settings.
-   Self-wires into the admin portal's switchTab().
+   Mr. Golisoda LMS — "Audit" tab for admin / trainer (v2).
+   Lists route audits, opens per-outlet detail, verifies, exports,
+   manages who can fill audits (enable), settings, and a sample.
+   Self-wires into admin switchTab().
    ============================================================ */
 (function(){
   "use strict";
@@ -19,18 +19,25 @@
     "#auditRoot .pill{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600}",
     "#auditRoot .pill.sub{background:#faf1de;color:#845a0b}#auditRoot .pill.ver{background:#eaf7f0;color:#0f6b45}",
     "#auditRoot .btn{padding:6px 12px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;border:none}",
-    "#auditRoot .btn.pri{background:var(--mg-blue,#1F5FA9);color:#fff}#auditRoot .btn.sec{background:#eef2f5;color:#12284B}",
-    "#auditRoot .btn.ok{background:#1d9e75;color:#fff}",
+    "#auditRoot .btn.pri{background:var(--mg-blue,#1F5FA9);color:#fff}#auditRoot .btn.sec{background:#eef2f5;color:#12284B}#auditRoot .btn.ok{background:#1d9e75;color:#fff}",
     "#auditRoot table{width:100%;border-collapse:collapse;font-size:12.5px}",
     "#auditRoot .det th{background:#12284B;color:#fff;padding:5px 6px;font-size:11px;text-align:left}",
     "#auditRoot .det td{border-bottom:1px solid #eee;padding:5px 6px}",
     "#auditRoot .sec{background:#fff;border:1px solid var(--mg-line);border-radius:10px;padding:12px;margin-bottom:10px}",
     "#auditRoot .sec h4{margin:0 0 8px;font-size:13px;color:#12284B}",
-    "#auditRoot .kv{font-size:12.5px;padding:2px 0}"
+    "#auditRoot .ol{background:#fbfdff;border:1px solid #d7e8f5;border-radius:10px;padding:11px;margin-bottom:8px}",
+    "#auditRoot .grand{background:#12284B;color:#fff;border-radius:10px;padding:12px 14px;font-size:13px;margin:10px 0}",
+    "#auditRoot .grand b{color:#FFD600}",
+    "#auditRoot .kv{font-size:12.5px;padding:2px 0}",
+    "#auditRoot .sw{position:relative;width:44px;height:24px;display:inline-block}",
+    "#auditRoot .sw input{opacity:0;width:0;height:0}",
+    "#auditRoot .sl{position:absolute;cursor:pointer;inset:0;background:#ccc;border-radius:24px;transition:.2s}",
+    "#auditRoot .sl:before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}",
+    "#auditRoot input:checked+.sl{background:#1d9e75}#auditRoot input:checked+.sl:before{transform:translateX(20px)}"
   ].join("\n");
   document.head.appendChild(css);
 
-  var S = { view:"list", filter:"submitted", cfg:null };
+  var S = { filter:"submitted", cfg:null };
 
   async function getJ(u){ try{ return await (await fetch(u,{credentials:"same-origin"})).json(); }catch(e){ return {ok:false}; } }
   async function postJ(u,b){ try{ return await (await fetch(u,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})).json(); }catch(e){ return {ok:false,msg:"Network problem."}; } }
@@ -44,7 +51,7 @@
     var audits=(d&&d.ok)?d.audits:[];
     var rows=audits.length?audits.map(function(a){
       return '<div class="arow"><div><b>'+esc(a.emp_name||a.emp_id)+'</b> <span style="color:#62707a;font-size:12px">· '+esc(a.role||"")+'</span><br>'+
-        '<span style="font-size:12px;color:#62707a">'+esc(a.route||"(no route)")+' · '+esc(fmtD(a.audit_date))+(a.franchise?" · "+esc(a.franchise):"")+'</span></div>'+
+        '<span style="font-size:12px;color:#62707a">'+esc(a.route||"(no route)")+' · '+(a.outlet_count||0)+' outlet(s) · '+esc(fmtD(a.audit_date))+'</span></div>'+
         '<div style="text-align:right;white-space:nowrap"><span class="pill '+(a.status==="verified"?"ver":"sub")+'">'+(a.status==="verified"?"Verified":"Submitted")+'</span><br>'+
         '<button class="btn sec" style="margin-top:5px" onclick="__aaOpen('+a.id+')">Open</button></div></div>';
     }).join(""):'<div class="empty" style="padding:16px">No audits '+(S.filter==="all"?"":"("+S.filter+")")+' yet.</div>';
@@ -54,6 +61,8 @@
         '<select onchange="__aaFilter(this.value)" style="padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px">'+
           sel("submitted","Pending verification")+sel("verified","Verified")+sel("all","All audits")+'</select>'+
         '<a class="btn sec" href="/api/audit/export-all.xlsx'+(S.filter!=="all"?("?status="+S.filter):"")+'" style="text-decoration:none">⬇ Export all (Excel)</a>'+
+        '<button class="btn sec" onclick="__aaAccess()">👥 Who can audit</button>'+
+        '<button class="btn sec" onclick="__aaSample()">📖 Sample & guide</button>'+
         (S.cfg.is_admin?'<button class="btn sec" onclick="__aaSettings()">⚙ Prices & flavours</button>':'')+
       '</div>'+rows;
   }
@@ -63,14 +72,18 @@
     root.innerHTML='<div class="empty">Loading…</div>';
     var d=await getJ("/api/audit/get?id="+id);
     if(!d||!d.ok){ root.innerHTML='<div class="empty">Could not open.</div>'; return; }
-    var a=d.audit, p=a.payload||{}, c=a.computed||{}, s=d.settings;
-    var flTable='<table class="det"><thead><tr><th>Flavour</th><th>Glass made</th><th>PET made</th><th>Glass sold</th><th>PET sold</th></tr></thead><tbody>'+
-      s.flavours.map(function(f){ var r=(p.flavours||{})[f]||{}; return '<tr><td>'+esc(f)+'</td><td>'+num(r.gp)+'</td><td>'+num(r.pp)+'</td><td>'+num(r.gs)+'</td><td>'+num(r.ps)+'</td></tr>'; }).join("")+
-      '<tr style="font-weight:700"><td>TOTAL</td><td>'+c.tot_gp+'</td><td>'+c.tot_pp+'</td><td>'+c.tot_gs+'</td><td>'+c.tot_ps+'</td></tr></tbody></table>';
-    var checkTable='<table class="det"><thead><tr><th>Check</th><th>Result</th><th>Remarks</th></tr></thead><tbody>'+
-      d.checks.map(function(item,i){ var v=(p.checks||{})[i]||(p.checks||{})[String(i)]||"—"; var rm=(p.check_remarks||{})[i]||(p.check_remarks||{})[String(i)]||""; return '<tr><td>'+(i+1)+". "+esc(item)+'</td><td>'+esc(v)+'</td><td>'+esc(rm)+'</td></tr>'; }).join("")+'</tbody></table>';
-    var nums=p.numbers||{};
-    var numTable=d.numbers.map(function(n){ return '<div class="kv"><b>'+esc(n[1])+':</b> '+num(nums[n[0]])+'</div>'; }).join("");
+    var a=d.audit, p=a.payload||{}, h=p.header||{}, c=a.computed||{}, s=d.settings;
+    var outlets=(p.outlets||[]).map(function(o,i){
+      var flTable='<table class="det"><thead><tr><th>Flavour</th><th>G made</th><th>P made</th><th>G sold</th><th>P sold</th></tr></thead><tbody>'+
+        s.flavours.filter(function(f){return (o.flavours||{})[f];}).map(function(f){var r=o.flavours[f];return '<tr><td>'+esc(f)+'</td><td>'+num(r.gp)+'</td><td>'+num(r.pp)+'</td><td>'+num(r.gs)+'</td><td>'+num(r.ps)+'</td></tr>';}).join("")+'</tbody></table>';
+      var checks=d.checks.map(function(item,j){var v=(o.checks||{})[j]||(o.checks||{})[String(j)]||"—";var rm=(o.check_remarks||{})[j]||(o.check_remarks||{})[String(j)]||"";return '<div class="kv">'+(j+1)+". "+esc(item)+": <b>"+esc(v)+"</b>"+(rm?' — <i>'+esc(rm)+'</i>':'')+'</div>';}).join("");
+      var n=o.numbers||{};
+      return '<div class="ol"><b>Outlet '+(i+1)+': '+esc(o.outlet_name||"")+'</b>'+
+        flTable+
+        '<div class="kv" style="margin-top:4px">Empties: <b>'+num(o.empties)+'</b> · Orders: <b>'+num(n.orders_taken)+'</b> · New: <b>'+num(n.new_outlets)+'</b> · Payment: <b>₹'+num(n.payment_collected)+'</b> · Issues: <b>'+num(n.issues_found)+'</b></div>'+
+        '<div style="margin-top:5px">'+checks+'</div>'+
+        (o.notes?'<div class="kv" style="margin-top:4px"><i>'+esc(o.notes)+'</i></div>':'')+'</div>';
+    }).join("");
 
     root.innerHTML=
       '<button class="btn sec" onclick="__aaBack()" style="margin-bottom:10px">← Back to list</button>'+
@@ -80,19 +93,50 @@
         (a.status!=="verified"&&d.can_verify?'<button class="btn ok" onclick="__aaVerify('+a.id+')">✔ Verify audit</button>':'')+
         (S.cfg.is_admin?'<button class="btn sec" style="color:#d64545" onclick="__aaDelete('+a.id+')">Delete</button>':'')+
       '</div>'+
-      '<div class="sec"><h4>Audit details</h4>'+
+      '<div class="sec"><h4>Header</h4>'+
         '<div class="kv"><b>BDE:</b> '+esc(a.emp_name)+' ('+esc(a.emp_id)+') · '+esc(a.role||"")+'</div>'+
         '<div class="kv"><b>Route:</b> '+esc(a.route||"")+' · <b>Franchise:</b> '+esc(a.franchise||"")+'</div>'+
         '<div class="kv"><b>Went with:</b> '+esc(a.went_with||"")+' · <b>Date:</b> '+esc(fmtD(a.audit_date))+'</div>'+
+        '<div class="kv"><b>Trays:</b> '+num(h.factory_trays)+' → daily target <b>'+c.daily_target+'</b>, outlets needed <b>'+c.outlet_need+'</b></div>'+
         '<div class="kv"><b>Status:</b> '+esc(a.status)+(a.verified_by?' · verified by '+esc(a.verified_by):'')+'</div></div>'+
-      '<div class="sec"><h4>Targets</h4><div class="kv">Factory trays: <b>'+num(p.factory_trays)+'</b> · Max cases/day: <b>'+c.max_cases+'</b> · Weekly max: <b>'+c.weekly_max+'</b> · Daily target/route: <b>'+c.daily_target+'</b> · Outlets needed: <b>'+c.outlet_need+'</b></div></div>'+
-      '<div class="sec"><h4>Production & sales</h4>'+flTable+'<div class="kv" style="margin-top:6px">Empties collected: <b>'+num(p.empties)+'</b></div></div>'+
-      '<div class="sec"><h4>Store / route checks</h4>'+checkTable+'</div>'+
-      '<div class="sec"><h4>Daily numbers</h4>'+numTable+'</div>'+
-      '<div class="sec"><h4>P&L (₹)</h4>'+
-        '<div class="kv">Revenue: <b>₹'+Math.round(c.revenue)+'</b> · Prod. cost: <b>₹'+Math.round(c.prod_cost)+'</b> · Gross: <b>₹'+Math.round(c.gross)+'</b></div>'+
-        '<div class="kv">Fixed: ₹'+Math.round(c.fixed)+' · Variable: ₹'+Math.round(c.variable)+' · <b>Net: ₹'+Math.round(c.net)+'</b></div></div>'+
-      (p.notes?'<div class="sec"><h4>Notes</h4><div class="kv">'+esc(p.notes)+'</div></div>':'');
+      '<div class="sec"><h4>Outlets ('+(p.outlets||[]).length+')</h4>'+outlets+'</div>'+
+      '<div class="grand">DAY TOTAL — Produced: <b>'+Math.round(c.produced)+'</b> · Sold: <b>'+Math.round(c.sold)+'</b><br>'+
+        'Orders: <b>'+Math.round(c.orders)+'</b> · New outlets: <b>'+Math.round(c.new_outlets)+'</b> · Empties: <b>'+Math.round(c.empties)+'</b><br>'+
+        'Revenue: <b>₹'+Math.round(c.revenue)+'</b> · Payment: <b>₹'+Math.round(c.payment)+'</b> · Net: <b>₹'+Math.round(c.net)+'</b></div>';
+  }
+
+  async function accessScreen(){
+    var root=$("auditRoot");
+    root.innerHTML='<div class="empty">Loading…</div>';
+    var d=await getJ("/api/audit/access-list");
+    var people=(d&&d.ok)?d.people:[];
+    var rows=people.length?people.map(function(p){
+      return '<div class="arow"><div><b>'+esc(p.name)+'</b> <span style="font-size:12px;color:#62707a">· '+esc(p.designation)+' · '+esc(p.emp_id)+'</span></div>'+
+        '<label class="sw"><input type="checkbox" '+(p.enabled?"checked":"")+' onchange="__aaToggle(\''+esc(p.emp_id)+'\',this.checked)"><span class="sl"></span></label></div>';
+    }).join(""):'<div class="empty" style="padding:16px">No BDE / BDM / State Head found.</div>';
+    root.innerHTML=
+      '<button class="btn sec" onclick="__aaBack()" style="margin-bottom:10px">← Back</button>'+
+      '<div class="sectiontitle" style="margin:0 0 6px">Who can fill Route Audits</div>'+
+      '<p style="font-size:12.5px;color:#62707a;margin:0 0 12px">Turn the switch ON to let that person fill audits. They will see the Route Audit tab only when enabled.</p>'+
+      rows;
+  }
+
+  async function sampleScreen(){
+    var root=$("auditRoot");
+    var d=await getJ("/api/audit/sample");
+    if(!d||!d.ok){ note("Could not load sample."); return; }
+    var s=d.settings,p=d.payload,c=d.computed;
+    var help='<div class="sec"><h4>How to explain it to a first-timer</h4><ol style="margin:0 0 0 18px;padding:0;font-size:12.5px">'+d.help_steps.map(function(x){return "<li style=\"margin:3px 0\">"+esc(x)+"</li>";}).join("")+'</ol></div>';
+    var outlets=p.outlets.map(function(o,i){
+      var lines=s.flavours.filter(function(f){return o.flavours[f];}).map(function(f){var r=o.flavours[f];return esc(f)+": "+num(r.gp)+"/"+num(r.pp)+" made, "+num(r.gs)+"/"+num(r.ps)+" sold";}).join("<br>");
+      return '<div class="ol"><b>Outlet '+(i+1)+': '+esc(o.outlet_name)+'</b><div class="kv" style="margin-top:4px">'+lines+'<br>Orders '+num((o.numbers||{}).orders_taken)+' · Payment ₹'+num((o.numbers||{}).payment_collected)+'<br><i>'+esc(o.notes||"")+'</i></div></div>';
+    }).join("");
+    root.innerHTML=
+      '<button class="btn sec" onclick="__aaBack()" style="margin-bottom:10px">← Back</button>'+
+      '<div class="sectiontitle" style="margin:0 0 10px">Sample audit & guide</div>'+help+
+      '<div class="sec"><h4>Sample — header</h4><div class="kv">Route: '+esc(p.header.route)+'<br>Franchise: '+esc(p.header.franchise)+'<br>Trays: '+num(p.header.factory_trays)+' → daily target '+c.daily_target+'</div></div>'+
+      '<div class="sec"><h4>Sample — outlets</h4>'+outlets+'</div>'+
+      '<div class="grand">DAY TOTAL ('+c.outlet_count+' outlets) — Sold: <b>'+Math.round(c.sold)+'</b> · Revenue: <b>₹'+Math.round(c.revenue)+'</b> · Net: <b>₹'+Math.round(c.net)+'</b></div>';
   }
 
   async function settings(){
@@ -101,40 +145,34 @@
     if(!s){ note("Could not load settings."); return; }
     root.innerHTML=
       '<button class="btn sec" onclick="__aaBack()" style="margin-bottom:10px">← Back</button>'+
-      '<div class="sec"><h4>Prices (₹)</h4>'+
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'+
-        ['glass_sell|Glass sell','glass_cost|Glass cost','pet_sell|PET sell','pet_cost|PET cost'].map(function(x){var k=x.split("|");return '<div><label style="font-size:12px;color:#62707a">'+k[1]+'</label><input id="set_'+k[0]+'" type="number" step="0.01" value="'+s[k[0]]+'" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px"></div>';}).join("")+
-        '</div></div>'+
-      '<div class="sec"><h4>Calculation</h4>'+
-        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">'+
-        ['trays_divisor|Trays ÷ divisor','routes|Routes','outlet_buffer|Outlet buffer ×'].map(function(x){var k=x.split("|");return '<div><label style="font-size:12px;color:#62707a">'+k[1]+'</label><input id="set_'+k[0]+'" type="number" step="0.1" value="'+s[k[0]]+'" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px"></div>';}).join("")+
-        '</div></div>'+
-      '<div class="sec"><h4>Flavours (one per line)</h4>'+
-        '<textarea id="set_flavours" rows="8" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-family:inherit">'+esc((s.flavours||[]).join("\n"))+'</textarea></div>'+
+      '<div class="sec"><h4>Prices (₹)</h4><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'+
+        ['glass_sell|Glass sell','glass_cost|Glass cost','pet_sell|PET sell','pet_cost|PET cost'].map(function(x){var k=x.split("|");return '<div><label style="font-size:12px;color:#62707a">'+k[1]+'</label><input id="set_'+k[0]+'" type="number" step="0.01" value="'+s[k[0]]+'" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px"></div>';}).join("")+'</div></div>'+
+      '<div class="sec"><h4>Calculation</h4><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">'+
+        ['trays_divisor|Trays ÷','routes|Routes','outlet_buffer|Outlet ×'].map(function(x){var k=x.split("|");return '<div><label style="font-size:12px;color:#62707a">'+k[1]+'</label><input id="set_'+k[0]+'" type="number" step="0.1" value="'+s[k[0]]+'" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px"></div>';}).join("")+'</div></div>'+
+      '<div class="sec"><h4>Flavours (one per line)</h4><textarea id="set_flavours" rows="8" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-family:inherit">'+esc((s.flavours||[]).join("\n"))+'</textarea></div>'+
       '<button class="btn pri" onclick="__aaSaveSettings()">Save settings</button>';
   }
 
-  // ---- global handlers ----
+  // ---- handlers ----
   window.__aaFilter=function(v){ S.filter=v; loadList(); };
   window.__aaOpen=function(id){ openAudit(id); };
   window.__aaBack=function(){ loadList(); };
+  window.__aaAccess=function(){ accessScreen(); };
+  window.__aaSample=function(){ sampleScreen(); };
   window.__aaSettings=function(){ settings(); };
+  window.__aaToggle=async function(emp,on){ var r=await postJ("/api/audit/set-access",{emp_id:emp,enabled:on}); if(!r.ok){ note(r.msg||"Failed."); } else { note(on?"Enabled.":"Disabled."); } };
   window.__aaVerify=async function(id){ if(!confirm("Mark this audit as verified?"))return; var r=await postJ("/api/audit/verify",{id:id}); if(r.ok){note("Verified.");openAudit(id);}else note(r.msg||"Failed."); };
   window.__aaDelete=async function(id){ if(!confirm("Delete this audit permanently?"))return; var r=await postJ("/api/audit/delete",{id:id}); if(r.ok){note("Deleted.");loadList();}else note(r.msg||"Failed."); };
   window.__aaWA=async function(id){ var d=await getJ("/api/audit/whatsapp?id="+id); if(d&&d.ok){ if(navigator.clipboard){navigator.clipboard.writeText(d.text).then(function(){note("Summary copied.");});} alert(d.text);} else note("Could not build summary."); };
   window.__aaSaveSettings=async function(){
-    var body={
-      glass_sell:$("set_glass_sell").value, glass_cost:$("set_glass_cost").value,
-      pet_sell:$("set_pet_sell").value, pet_cost:$("set_pet_cost").value,
-      trays_divisor:$("set_trays_divisor").value, routes:$("set_routes").value,
-      outlet_buffer:$("set_outlet_buffer").value,
-      flavours:$("set_flavours").value.split("\n").map(function(x){return x.trim();}).filter(Boolean)
-    };
+    var body={glass_sell:$("set_glass_sell").value,glass_cost:$("set_glass_cost").value,pet_sell:$("set_pet_sell").value,pet_cost:$("set_pet_cost").value,
+      trays_divisor:$("set_trays_divisor").value,routes:$("set_routes").value,outlet_buffer:$("set_outlet_buffer").value,
+      flavours:$("set_flavours").value.split("\n").map(function(x){return x.trim();}).filter(Boolean)};
     var r=await postJ("/api/audit/save-settings",body);
     if(r.ok){ S.cfg=null; note("Settings saved."); loadList(); } else note(r.msg||"Failed.");
   };
 
-  // ---- self-wire into admin switchTab ----
+  // ---- self-wire ----
   try { TABS.audit = "tabAudit"; TAB_BTNS.audit = "tabAuditBtn"; } catch(e){}
   document.addEventListener("DOMContentLoaded", function(){
     var _os=window.switchTab;

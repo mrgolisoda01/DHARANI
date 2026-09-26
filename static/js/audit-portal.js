@@ -1,8 +1,7 @@
 /* ============================================================
-   Mr. Golisoda LMS — "Route Audit" tab for field staff.
-   Phone-friendly Daily Route Audit form with live calculations,
-   auto WhatsApp summary, and a list of the person's own audits.
-   Self-wires into the portal's showTab().
+   Mr. Golisoda LMS — "Route Audit" for field staff (v2).
+   One day/route header + multiple outlet entries + auto totals.
+   Enabled per person by admin. Self-wires into showTab().
    ============================================================ */
 (function(){
   "use strict";
@@ -16,6 +15,8 @@
   css.textContent = [
     "#myAudit .ac{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:14px;margin-bottom:12px}",
     "#myAudit h4{margin:0 0 8px;font-size:14px;color:#12284B}",
+    "#myAudit .ol{background:#fbfdff;border:1px solid #d7e8f5;border-radius:12px;padding:13px;margin-bottom:12px}",
+    "#myAudit .ol h5{margin:0;font-size:13.5px;color:#0c447c}",
     "#myAudit label.fl{display:block;font-size:12px;color:#62707a;margin:6px 0 2px}",
     "#myAudit input,#myAudit select,#myAudit textarea{width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-size:14px;font-family:inherit}",
     "#myAudit table{width:100%;border-collapse:collapse;font-size:12.5px}",
@@ -24,6 +25,8 @@
     "#myAudit td input{padding:5px;text-align:center;font-size:13px}",
     "#myAudit .calc{background:#eef5fc;border:1px solid #cddff0;border-radius:8px;padding:8px 10px;font-size:12.5px;margin-top:6px}",
     "#myAudit .calc b{color:#0c447c}",
+    "#myAudit .grand{background:#12284B;color:#fff;border-radius:10px;padding:12px 14px;font-size:13px;margin:12px 0}",
+    "#myAudit .grand b{color:#FFD600}",
     "#myAudit .yn{display:flex;gap:4px}",
     "#myAudit .yn button{flex:1;padding:5px;border:1px solid var(--mg-line);background:#fff;border-radius:6px;font-size:12px;cursor:pointer}",
     "#myAudit .yn button.on-yes{background:#1d9e75;color:#fff;border-color:#1d9e75}",
@@ -33,14 +36,17 @@
     "#myAudit .btn{padding:9px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:none}",
     "#myAudit .btn.pri{background:var(--mg-blue,#1F5FA9);color:#fff}",
     "#myAudit .btn.sec{background:#eef2f5;color:#12284B}",
-    "#myAudit .alist .arow{background:#fff;border:1px solid var(--mg-line);border-radius:10px;padding:11px 13px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px}",
+    "#myAudit .btn.ghost{background:#fff;border:1px dashed #1F5FA9;color:#1F5FA9;width:100%}",
+    "#myAudit .arow{background:#fff;border:1px solid var(--mg-line);border-radius:10px;padding:11px 13px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px}",
     "#myAudit .pill{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600}",
     "#myAudit .pill.sub{background:#faf1de;color:#845a0b}#myAudit .pill.ver{background:#eaf7f0;color:#0f6b45}",
-    "#myAudit .wa{white-space:pre-wrap;background:#f7f9fa;border:1px dashed var(--mg-line);border-radius:8px;padding:10px;font-size:12px;font-family:monospace}"
+    "#myAudit .wa{white-space:pre-wrap;background:#f7f9fa;border:1px dashed var(--mg-line);border-radius:8px;padding:10px;font-size:12px;font-family:monospace}",
+    "#myAudit .help{background:#fff7e6;border:1px solid #f0d9a0;border-radius:10px;padding:11px 13px;font-size:12.5px;margin-bottom:12px}",
+    "#myAudit .help ol{margin:6px 0 0 18px;padding:0}#myAudit .help li{margin:3px 0}"
   ].join("\n");
   document.head.appendChild(css);
 
-  var CFG = null, EDIT_ID = null;
+  var CFG = null, EDIT_ID = null, MODEL = null;
 
   async function getJ(u){ try{ return await (await fetch(u,{credentials:"same-origin"})).json(); }catch(e){ return {ok:false}; } }
   async function postJ(u,b){ try{ return await (await fetch(u,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})).json(); }catch(e){ return {ok:false,msg:"Network problem."}; } }
@@ -50,191 +56,247 @@
     var box = $("myAudit"); if(!box) return;
     if(!CFG){ var cf = await getJ("/api/audit/config"); CFG = (cf&&cf.ok)?cf:null; }
     if(!CFG){ box.innerHTML='<div class="empty">Could not load.</div>'; return; }
+    if(!CFG.enabled){
+      box.innerHTML = '<div class="help">Route Audit is <b>not enabled</b> for you yet. Please ask your admin or trainer to enable it, then refresh.</div>';
+      return;
+    }
     var d = await getJ("/api/audit/my");
     var audits = (d&&d.ok)?d.audits:[];
     var rows = audits.length ? audits.map(function(a){
-      return '<div class="arow"><div><b>'+esc(a.route||"(no route)")+'</b><br><span style="font-size:12px;color:#62707a">'+esc(fmtD(a.audit_date))+(a.franchise?" · "+esc(a.franchise):"")+'</span></div>'+
+      return '<div class="arow"><div><b>'+esc(a.route||"(no route)")+'</b> <span style="font-size:11px;color:#62707a">· '+(a.outlet_count||0)+' outlet(s)</span><br>'+
+        '<span style="font-size:12px;color:#62707a">'+esc(fmtD(a.audit_date))+(a.franchise?" · "+esc(a.franchise):"")+'</span></div>'+
         '<div style="text-align:right"><span class="pill '+(a.status==="verified"?"ver":"sub")+'">'+(a.status==="verified"?"Verified":"Submitted")+'</span><br>'+
         '<button class="btn sec" style="margin-top:5px;padding:4px 10px;font-size:12px" onclick="__auditOpen('+a.id+')">Open</button></div></div>';
-    }).join("") : '<div class="empty" style="padding:16px">No audits yet. Tap “New audit” to start.</div>';
+    }).join("") : '<div class="empty" style="padding:16px">No audits yet. Tap "New audit" to start.</div>';
     box.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'+
         '<div class="sectiontitle" style="margin:0">My Route Audits</div>'+
-        '<button class="btn pri" onclick="__auditNew()">＋ New audit</button></div>'+
-      '<div class="alist">'+rows+'</div>';
+        '<div><button class="btn sec" onclick="__auditSample()" style="margin-right:6px">View sample</button>'+
+        '<button class="btn pri" onclick="__auditNew()">＋ New audit</button></div></div>'+
+      '<div>'+rows+'</div>';
   }
 
-  function flavourRows(vals){
-    return CFG.settings.flavours.map(function(f){
-      var v = (vals&&vals[f])||{};
-      return '<tr data-fl="'+esc(f)+'"><td style="text-align:left;padding-left:6px">'+esc(f)+'</td>'+
-        '<td><input type="number" min="0" class="afl" data-k="gp" value="'+(v.gp||"")+'" placeholder="0"></td>'+
-        '<td><input type="number" min="0" class="afl" data-k="pp" value="'+(v.pp||"")+'" placeholder="0"></td>'+
-        '<td><input type="number" min="0" class="afl" data-k="gs" value="'+(v.gs||"")+'" placeholder="0"></td>'+
-        '<td><input type="number" min="0" class="afl" data-k="ps" value="'+(v.ps||"")+'" placeholder="0"></td></tr>';
-    }).join("");
+  function blankModel(){
+    return { header:{ route:"", franchise:"", went_with:"", audit_date:new Date().toISOString().slice(0,10), factory_trays:"" }, outlets:[ blankOutlet() ] };
   }
+  function blankOutlet(){ return { outlet_name:"", flavours:{}, empties:"", checks:{}, check_remarks:{}, numbers:{}, fixed_expenses:"", variable_expenses:"", notes:"" }; }
 
   function renderForm(a){
-    var box = $("myAudit");
-    var p = (a&&a.payload)||{};
-    EDIT_ID = a? a.id : null;
-    var me = CFG.me, s = CFG.settings;
-    var checks = p.checks||{}, cremarks = p.check_remarks||{}, nums = p.numbers||{};
-    var checkHtml = CFG.checks.map(function(item,i){
-      var cur = checks[i]||checks[String(i)]||"";
-      function b(val,cls,lbl){ return '<button type="button" data-ci="'+i+'" data-val="'+val+'" class="'+(cur===val?("on-"+cls):"")+'">'+lbl+'</button>'; }
-      return '<div style="padding:7px 0;border-bottom:1px solid #f0f0f0">'+
-        '<div style="font-size:13px;margin-bottom:4px">'+(i+1)+". "+esc(item)+'</div>'+
-        '<div class="yn">'+b("Yes","yes","Yes")+b("No","no","No")+b("N.A.","na","N.A.")+'</div>'+
-        '<input type="text" class="acr" data-ci="'+i+'" placeholder="Remarks (optional)" value="'+esc(cremarks[i]||cremarks[String(i)]||"")+'" style="margin-top:4px;font-size:12px">'+
-        '</div>';
-    }).join("");
-    var numHtml = CFG.numbers.map(function(n){
-      return '<label class="fl">'+esc(n[1])+'</label><input type="number" min="0" class="anum" data-k="'+n[0]+'" value="'+(nums[n[0]]||"")+'" placeholder="0">';
-    }).join("");
+    EDIT_ID = a ? a.id : null;
+    MODEL = a && a.payload ? JSON.parse(JSON.stringify(a.payload)) : blankModel();
+    if(!MODEL.header) MODEL.header = blankModel().header;
+    if(!MODEL.outlets || !MODEL.outlets.length) MODEL.outlets = [ blankOutlet() ];
+    var box = $("myAudit"), s = CFG.settings, me = CFG.me;
+    var h = MODEL.header;
+    var locked = a && a.status === "verified";
+
+    var outletsHtml = MODEL.outlets.map(function(o, idx){ return outletBlock(o, idx, s, locked); }).join("");
 
     box.innerHTML =
       '<button class="btn sec" onclick="__auditList()" style="margin-bottom:10px">← Back to my audits</button>'+
-      (a&&a.status==="verified"?'<div class="ac" style="background:#eaf7f0;border-color:#b7e3ca;color:#0f6b45"><b>✔ Verified</b> by '+esc(a.verified_by||"trainer")+' — this audit is locked.</div>':'')+
-      // details
-      '<div class="ac"><h4>Audit details</h4>'+
-        '<div class="row2"><div><label class="fl">BDE Name</label><input id="a_name" value="'+esc(me.name)+'" readonly></div>'+
+      (locked?'<div class="ac" style="background:#eaf7f0;border-color:#b7e3ca;color:#0f6b45"><b>✔ Verified</b> — locked.</div>':'')+
+      '<div class="ac"><h4>Day / route header</h4>'+
+        '<div class="row2"><div><label class="fl">BDE Name</label><input value="'+esc(me.name)+'" readonly></div>'+
         '<div><label class="fl">Employee ID</label><input value="'+esc(me.emp_id)+'" readonly></div></div>'+
-        '<div class="row2"><div><label class="fl">Route Audited</label><input id="a_route" value="'+esc(p.route||"")+'" placeholder="Route 1 - Chennai 1"></div>'+
-        '<div><label class="fl">Franchise / City</label><input id="a_fr" value="'+esc(p.franchise||"")+'" placeholder="Thiruvallur Franchise"></div></div>'+
-        '<div class="row2"><div><label class="fl">Went With (Senior BDE / BDM)</label><input id="a_with" value="'+esc(p.went_with||"")+'" placeholder="BDE / BDM name"></div>'+
-        '<div><label class="fl">Audit Date</label><input id="a_date" type="date" value="'+esc((p.audit_date||new Date().toISOString().slice(0,10)).slice(0,10))+'"></div></div></div>'+
-      // targets
-      '<div class="ac"><h4>Target calculation check</h4>'+
-        '<label class="fl">Factory Trays available (actual count on site)</label>'+
-        '<input id="a_trays" type="number" min="0" value="'+(p.factory_trays||"")+'" placeholder="1500">'+
-        '<div class="calc" id="a_targetcalc"></div></div>'+
-      // production
-      '<div class="ac"><h4>Production & sales by flavour (bottles)</h4>'+
-        '<div style="overflow-x:auto"><table><thead><tr><th style="text-align:left">Flavour</th><th>Glass<br>made</th><th>PET<br>made</th><th>Glass<br>sold</th><th>PET<br>sold</th></tr></thead>'+
-        '<tbody id="a_fltbody">'+flavourRows(p.flavours)+'</tbody></table></div>'+
-        '<div class="calc" id="a_prodcalc"></div>'+
-        '<label class="fl" style="margin-top:8px">Empty bottles collected today</label>'+
-        '<input id="a_empties" type="number" min="0" value="'+(p.empties||"")+'" placeholder="0"></div>'+
-      // checks
-      '<div class="ac"><h4>Store / route checks</h4>'+checkHtml+'</div>'+
-      // numbers
-      '<div class="ac"><h4>Daily numbers</h4>'+numHtml+'</div>'+
-      // p&l
-      '<div class="ac"><h4>Full P&L (₹)</h4>'+
-        '<div class="row2"><div><label class="fl">Fixed Expenses (₹)</label><input id="a_fixed" type="number" min="0" value="'+(p.fixed_expenses||"")+'" placeholder="0"></div>'+
-        '<div><label class="fl">Variable Expenses (₹)</label><input id="a_var" type="number" min="0" value="'+(p.variable_expenses||"")+'" placeholder="0"></div></div>'+
-        '<div class="calc" id="a_plcalc"></div></div>'+
-      // notes
-      '<div class="ac"><h4>Notes / issues</h4><textarea id="a_notes" rows="3" placeholder="Anything else to note">'+esc(p.notes||"")+'</textarea></div>'+
-      // whatsapp
-      '<div class="ac"><h4>WhatsApp summary</h4><div class="wa" id="a_wa"></div>'+
+        '<div class="row2"><div><label class="fl">Route</label><input id="h_route" value="'+esc(h.route||"")+'" placeholder="Route 1 - Chennai North"></div>'+
+        '<div><label class="fl">Franchise / City</label><input id="h_fr" value="'+esc(h.franchise||"")+'" placeholder="Thiruvallur Franchise"></div></div>'+
+        '<div class="row2"><div><label class="fl">Went With</label><input id="h_with" value="'+esc(h.went_with||"")+'" placeholder="Senior BDE / BDM"></div>'+
+        '<div><label class="fl">Date</label><input id="h_date" type="date" value="'+esc((h.audit_date||"").slice(0,10))+'"></div></div>'+
+        '<label class="fl">Factory Trays available (for the day)</label><input id="h_trays" type="number" min="0" value="'+(h.factory_trays||"")+'" placeholder="1500">'+
+        '<div class="calc" id="h_targetcalc"></div></div>'+
+      '<div id="outletsWrap">'+outletsHtml+'</div>'+
+      (locked?'':'<button class="btn ghost" onclick="__auditAddOutlet()" style="margin-bottom:12px">＋ Add outlet</button>')+
+      '<div class="grand" id="grandTotal"></div>'+
+      '<div class="ac"><h4>WhatsApp summary (whole day)</h4><div class="wa" id="a_wa"></div>'+
         '<button class="btn sec" style="margin-top:8px" onclick="__auditCopyWA()">📋 Copy summary</button></div>'+
-      // actions
       '<div style="display:flex;gap:10px;margin-bottom:30px">'+
-        (a&&a.status==="verified"?"":'<button class="btn pri" style="flex:1" onclick="__auditSubmit()">'+(EDIT_ID?"Update audit":"Submit audit")+'</button>')+
-        (EDIT_ID?'<button class="btn sec" onclick="__auditDelete('+EDIT_ID+')">Delete</button>':'')+
+        (locked?'':'<button class="btn pri" style="flex:1" onclick="__auditSubmit()">'+(EDIT_ID?"Update audit":"Submit audit")+'</button>')+
+        (EDIT_ID&&!locked?'<button class="btn sec" onclick="__auditDelete('+EDIT_ID+')">Delete</button>':'')+
       '</div>';
 
+    wireForm(locked);
     recompute();
-    // live recompute on any input
-    box.querySelectorAll("input,textarea").forEach(function(el){ el.addEventListener("input", recompute); });
-    // yes/no/na buttons
+  }
+
+  function outletBlock(o, idx, s, locked){
+    var flRows = s.flavours.map(function(f){
+      var v = (o.flavours||{})[f]||{};
+      return '<tr data-fl="'+esc(f)+'"><td style="text-align:left;padding-left:6px">'+esc(f)+'</td>'+
+        '<td><input type="number" min="0" class="ofl" data-k="gp" value="'+(v.gp||"")+'" placeholder="0" '+(locked?"disabled":"")+'></td>'+
+        '<td><input type="number" min="0" class="ofl" data-k="pp" value="'+(v.pp||"")+'" placeholder="0" '+(locked?"disabled":"")+'></td>'+
+        '<td><input type="number" min="0" class="ofl" data-k="gs" value="'+(v.gs||"")+'" placeholder="0" '+(locked?"disabled":"")+'></td>'+
+        '<td><input type="number" min="0" class="ofl" data-k="ps" value="'+(v.ps||"")+'" placeholder="0" '+(locked?"disabled":"")+'></td></tr>';
+    }).join("");
+    var checkHtml = CFG.checks.map(function(item,i){
+      var cur = (o.checks||{})[i]||(o.checks||{})[String(i)]||"";
+      function b(val,cls,lbl){ return '<button type="button" data-ci="'+i+'" data-val="'+val+'" class="'+(cur===val?("on-"+cls):"")+'" '+(locked?"disabled":"")+'>'+lbl+'</button>'; }
+      return '<div style="padding:6px 0;border-bottom:1px solid #eef2f5">'+
+        '<div style="font-size:12.5px;margin-bottom:3px">'+(i+1)+". "+esc(item)+'</div>'+
+        '<div class="yn">'+b("Yes","yes","Yes")+b("No","no","No")+b("N.A.","na","N.A.")+'</div>'+
+        '<input type="text" class="ocr" data-ci="'+i+'" placeholder="Remarks (optional)" value="'+esc((o.check_remarks||{})[i]||(o.check_remarks||{})[String(i)]||"")+'" style="margin-top:3px;font-size:12px" '+(locked?"disabled":"")+'>'+
+        '</div>';
+    }).join("");
+    var numHtml = CFG.numbers.map(function(n){
+      return '<label class="fl">'+esc(n[1])+'</label><input type="number" min="0" class="onum" data-k="'+n[0]+'" value="'+((o.numbers||{})[n[0]]||"")+'" placeholder="0" '+(locked?"disabled":"")+'>';
+    }).join("");
+    return '<div class="ol" data-outlet="'+idx+'">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
+        '<h5>Outlet '+(idx+1)+'</h5>'+
+        (locked?'':'<button class="btn sec" style="padding:3px 10px;font-size:12px;color:#d64545" onclick="__auditRemoveOutlet('+idx+')">Remove</button>')+'</div>'+
+      '<label class="fl">Outlet / shop name</label><input class="o_name" value="'+esc(o.outlet_name||"")+'" placeholder="Shop name" '+(locked?"disabled":"")+'>'+
+      '<div style="overflow-x:auto;margin-top:8px"><table><thead><tr><th style="text-align:left">Flavour</th><th>Glass made</th><th>PET made</th><th>Glass sold</th><th>PET sold</th></tr></thead><tbody>'+flRows+'</tbody></table></div>'+
+      '<label class="fl" style="margin-top:8px">Empties collected here</label><input type="number" min="0" class="o_empties" value="'+(o.empties||"")+'" placeholder="0" '+(locked?"disabled":"")+'>'+
+      '<div style="margin-top:10px;font-size:12.5px;font-weight:600;color:#12284B">Store checks</div>'+checkHtml+
+      '<div style="margin-top:8px">'+numHtml+'</div>'+
+      '<div class="row2" style="margin-top:8px"><div><label class="fl">Fixed exp (₹)</label><input type="number" min="0" class="o_fixed" value="'+(o.fixed_expenses||"")+'" placeholder="0" '+(locked?"disabled":"")+'></div>'+
+        '<div><label class="fl">Variable exp (₹)</label><input type="number" min="0" class="o_var" value="'+(o.variable_expenses||"")+'" placeholder="0" '+(locked?"disabled":"")+'></div></div>'+
+      '<label class="fl">Notes for this outlet</label><textarea class="o_notes" rows="2" '+(locked?"disabled":"")+'>'+esc(o.notes||"")+'</textarea>'+
+      '<div class="calc o_calc"></div>'+
+      '</div>';
+  }
+
+  function wireForm(locked){
+    var box = $("myAudit");
+    box.querySelectorAll("input,textarea").forEach(function(el){ el.addEventListener("input", function(){ collect(); recompute(); }); });
+    if(locked) return;
     box.querySelectorAll(".yn button").forEach(function(b){
       b.addEventListener("click", function(){
-        var ci=b.dataset.ci;
-        box.querySelectorAll('.yn button[data-ci="'+ci+'"]').forEach(function(x){ x.className=""; });
+        var ol = b.closest(".ol"), ci=b.dataset.ci;
+        ol.querySelectorAll('.yn button[data-ci="'+ci+'"]').forEach(function(x){ x.className=""; });
         b.className = "on-"+(b.dataset.val==="Yes"?"yes":b.dataset.val==="No"?"no":"na");
+        collect(); recompute();
       });
     });
   }
 
   function collect(){
     var box=$("myAudit");
-    var fl={};
-    box.querySelectorAll("#a_fltbody tr").forEach(function(tr){
-      var name=tr.dataset.fl, o={};
-      tr.querySelectorAll(".afl").forEach(function(i){ o[i.dataset.k]=i.value; });
-      fl[name]=o;
-    });
-    var checks={}, cr={};
-    box.querySelectorAll('.yn button[class^="on-"]').forEach(function(b){ checks[b.dataset.ci]=b.dataset.val; });
-    box.querySelectorAll(".acr").forEach(function(i){ if(i.value.trim()) cr[i.dataset.ci]=i.value.trim(); });
-    var nums={}; box.querySelectorAll(".anum").forEach(function(i){ nums[i.dataset.k]=i.value; });
-    return {
-      route:$("a_route").value.trim(), franchise:$("a_fr").value.trim(), went_with:$("a_with").value.trim(),
-      audit_date:$("a_date").value, factory_trays:$("a_trays").value,
-      flavours:fl, empties:$("a_empties").value, checks:checks, check_remarks:cr, numbers:nums,
-      fixed_expenses:$("a_fixed").value, variable_expenses:$("a_var").value, notes:$("a_notes").value.trim()
+    MODEL.header = {
+      route:$("h_route").value.trim(), franchise:$("h_fr").value.trim(), went_with:$("h_with").value.trim(),
+      audit_date:$("h_date").value, factory_trays:$("h_trays").value
     };
+    var outlets=[];
+    box.querySelectorAll(".ol").forEach(function(ol){
+      var o={ flavours:{}, checks:{}, check_remarks:{}, numbers:{} };
+      o.outlet_name = ol.querySelector(".o_name").value.trim();
+      ol.querySelectorAll("tr[data-fl]").forEach(function(tr){
+        var name=tr.dataset.fl, obj={};
+        tr.querySelectorAll(".ofl").forEach(function(i){ obj[i.dataset.k]=i.value; });
+        o.flavours[name]=obj;
+      });
+      o.empties = ol.querySelector(".o_empties").value;
+      ol.querySelectorAll('.yn button[class^="on-"]').forEach(function(b){ o.checks[b.dataset.ci]=b.dataset.val; });
+      ol.querySelectorAll(".ocr").forEach(function(i){ if(i.value.trim()) o.check_remarks[i.dataset.ci]=i.value.trim(); });
+      ol.querySelectorAll(".onum").forEach(function(i){ o.numbers[i.dataset.k]=i.value; });
+      o.fixed_expenses = ol.querySelector(".o_fixed").value;
+      o.variable_expenses = ol.querySelector(".o_var").value;
+      o.notes = ol.querySelector(".o_notes").value.trim();
+      outlets.push(o);
+    });
+    MODEL.outlets = outlets;
+    return MODEL;
   }
 
   function recompute(){
-    var s=CFG.settings, p=collect();
-    // targets
-    var trays=num(p.factory_trays);
+    var s=CFG.settings, box=$("myAudit");
+    // header targets
+    var trays=num(MODEL.header.factory_trays);
     var maxc=s.trays_divisor?Math.floor(trays/s.trays_divisor):0;
-    var weekly=maxc*s.routes, daily=s.routes?Math.floor(weekly/s.routes):0;
-    var outlet=Math.ceil(daily*s.outlet_buffer);
-    $("a_targetcalc").innerHTML="Max cases/day: <b>"+maxc+"</b> · Weekly max: <b>"+weekly+"</b> · Daily target/route: <b>"+daily+"</b> · Outlets needed: <b>"+outlet+"</b>";
-    // production
-    var gp=0,pp=0,gs=0,ps=0;
-    Object.keys(p.flavours).forEach(function(k){ var r=p.flavours[k]; gp+=num(r.gp);pp+=num(r.pp);gs+=num(r.gs);ps+=num(r.ps); });
-    $("a_prodcalc").innerHTML="Total produced: <b>"+(gp+pp)+"</b> · Total sold: <b>"+(gs+ps)+"</b> (Glass "+gs+" / PET "+ps+")";
-    // p&l
-    var rev=gs*s.glass_sell+ps*s.pet_sell, cost=gp*s.glass_cost+pp*s.pet_cost, gross=rev-cost;
-    var net=gross-num(p.fixed_expenses)-num(p.variable_expenses);
-    $("a_plcalc").innerHTML="Revenue: <b>₹"+Math.round(rev)+"</b> · Prod. cost: <b>₹"+Math.round(cost)+"</b> · Gross: <b>₹"+Math.round(gross)+"</b> · <b>Net: ₹"+Math.round(net)+"</b>";
-    // whatsapp
-    $("a_wa").textContent = buildWA(p, {gp:gp,pp:pp,gs:gs,ps:ps,rev:rev,cost:cost,gross:gross,net:net});
+    var weekly=maxc*s.routes, daily=s.routes?Math.floor(weekly/s.routes):0, outlet=Math.ceil(daily*s.outlet_buffer);
+    if($("h_targetcalc")) $("h_targetcalc").innerHTML="Max cases/day: <b>"+maxc+"</b> · Weekly max: <b>"+weekly+"</b> · Daily target: <b>"+daily+"</b> · Outlets needed: <b>"+outlet+"</b>";
+    // per outlet + grand
+    var G={produced:0,sold:0,gs:0,ps:0,gp:0,pp:0,rev:0,cost:0,net:0,orders:0,newo:0,pay:0,empties:0};
+    var olEls = box.querySelectorAll(".ol");
+    MODEL.outlets.forEach(function(o, i){
+      var gp=0,pp=0,gs=0,ps=0;
+      Object.keys(o.flavours).forEach(function(k){ var r=o.flavours[k]; gp+=num(r.gp);pp+=num(r.pp);gs+=num(r.gs);ps+=num(r.ps); });
+      var rev=gs*s.glass_sell+ps*s.pet_sell, cost=gp*s.glass_cost+pp*s.pet_cost;
+      var net=rev-cost-num(o.fixed_expenses)-num(o.variable_expenses);
+      G.produced+=gp+pp; G.sold+=gs+ps; G.gs+=gs; G.ps+=ps; G.gp+=gp; G.pp+=pp; G.rev+=rev; G.cost+=cost; G.net+=net;
+      G.orders+=num((o.numbers||{}).orders_taken); G.newo+=num((o.numbers||{}).new_outlets);
+      G.pay+=num((o.numbers||{}).payment_collected); G.empties+=num(o.empties);
+      if(olEls[i]){ var cc=olEls[i].querySelector(".o_calc"); if(cc) cc.innerHTML="This outlet — sold: <b>"+(gs+ps)+"</b> · revenue: <b>₹"+Math.round(rev)+"</b> · net: <b>₹"+Math.round(net)+"</b>"; }
+    });
+    if($("grandTotal")) $("grandTotal").innerHTML=
+      "DAY TOTAL ("+MODEL.outlets.length+" outlets) — Produced: <b>"+Math.round(G.produced)+"</b> · Sold: <b>"+Math.round(G.sold)+"</b><br>"+
+      "Orders: <b>"+Math.round(G.orders)+"</b> · New outlets: <b>"+Math.round(G.newo)+"</b> · Empties: <b>"+Math.round(G.empties)+"</b><br>"+
+      "Revenue: <b>₹"+Math.round(G.rev)+"</b> · Payment: <b>₹"+Math.round(G.pay)+"</b> · Net: <b>₹"+Math.round(G.net)+"</b>";
+    if($("a_wa")) $("a_wa").textContent = buildWA(G);
   }
 
-  function buildWA(p, c){
-    var s=CFG.settings, me=CFG.me, L=[];
+  function buildWA(G){
+    var me=CFG.me, h=MODEL.header, L=[];
     L.push("*MR. GOLISODA — DAILY SUMMARY*","==============");
     L.push("BDE: "+me.name+"   ID: "+me.emp_id);
-    L.push("Route: "+(p.route||"")+"  ("+(p.went_with||"")+")");
-    L.push("Date: "+(p.audit_date||""));
-    L.push("==============","*PRODUCTION (made / sold):*");
-    s.flavours.forEach(function(f){ var r=p.flavours[f]||{}; var made=num(r.gp)+num(r.pp), sold=num(r.gs)+num(r.ps); L.push("• "+f+": "+made+" made / "+sold+" sold"); });
-    L.push("Total Produced: "+(c.gp+c.pp)+" bottles","Total Sold: "+(c.gs+c.ps)+" bottles","(Glass sold "+c.gs+" / PET sold "+c.ps+")");
-    L.push("Empties collected: "+num(p.empties),"==============","*ROUTE NUMBERS:*");
-    var n=p.numbers||{};
-    L.push("• Stores visited: "+num(n.stores_visited));
-    L.push("• Orders: "+num(n.orders_taken)+"   New outlets: "+num(n.new_outlets));
-    L.push("• Payment: ₹"+num(n.payment_collected)+"   Issues: "+num(n.issues_found));
-    L.push("==============","*P&L (today):*");
-    L.push("• Revenue: ₹"+Math.round(c.rev),"• Prod. Cost: ₹"+Math.round(c.cost),"• Gross Profit: ₹"+Math.round(c.gross),"• Net Profit: ₹"+Math.round(c.net));
+    L.push("Route: "+(h.route||"")+"  ("+(h.went_with||"")+")");
+    L.push("Date: "+(h.audit_date||"")+"   Outlets: "+MODEL.outlets.length);
+    L.push("==============","*PER OUTLET:*");
+    var s=CFG.settings;
+    MODEL.outlets.forEach(function(o,i){
+      var gs=0,ps=0,rev=0;
+      Object.keys(o.flavours).forEach(function(k){ var r=o.flavours[k]; gs+=num(r.gs);ps+=num(r.ps); });
+      rev=gs*s.glass_sell+ps*s.pet_sell;
+      L.push((i+1)+". "+(o.outlet_name||("Outlet "+(i+1)))+": sold "+(gs+ps)+", ₹"+Math.round(rev));
+    });
+    L.push("==============","*DAY TOTAL:*");
+    L.push("Produced: "+Math.round(G.produced)+" · Sold: "+Math.round(G.sold));
+    L.push("Orders: "+Math.round(G.orders)+" · New outlets: "+Math.round(G.newo));
+    L.push("Empties: "+Math.round(G.empties)+" · Payment: ₹"+Math.round(G.pay));
+    L.push("Revenue: ₹"+Math.round(G.rev)+" · Net: ₹"+Math.round(G.net));
     L.push("==============","Submitted by: "+me.name);
     return L.join("\n");
   }
 
-  // ---- global handlers (called from inline onclick) ----
+  // ---- sample viewer ----
+  async function showSample(){
+    var d = await getJ("/api/audit/sample");
+    if(!d||!d.ok){ note("Could not load sample."); return; }
+    var box=$("myAudit"), s=d.settings, p=d.payload, c=d.computed;
+    var help = '<div class="help"><b>How to fill this audit:</b><ol>'+d.help_steps.map(function(x){return "<li>"+esc(x)+"</li>";}).join("")+'</ol></div>';
+    var outlets = p.outlets.map(function(o,i){
+      var lines = s.flavours.filter(function(f){return o.flavours[f];}).map(function(f){var r=o.flavours[f];return "&nbsp;&nbsp;"+esc(f)+": "+num(r.gp)+"/"+num(r.pp)+" made, "+num(r.gs)+"/"+num(r.ps)+" sold";}).join("<br>");
+      return '<div class="ol"><h5>Outlet '+(i+1)+': '+esc(o.outlet_name)+'</h5>'+
+        '<div style="font-size:12.5px;margin-top:5px">'+lines+'<br>Orders: '+num((o.numbers||{}).orders_taken)+' · Payment: ₹'+num((o.numbers||{}).payment_collected)+'<br><i>'+esc(o.notes||"")+'</i></div></div>';
+    }).join("");
+    box.innerHTML =
+      '<button class="btn sec" onclick="__auditList()" style="margin-bottom:10px">← Back</button>'+
+      '<div class="sectiontitle" style="margin:0 0 10px">Sample audit (example)</div>'+ help +
+      '<div class="ac"><h4>Header</h4><div style="font-size:12.5px">Route: '+esc(p.header.route)+'<br>Franchise: '+esc(p.header.franchise)+'<br>Trays: '+num(p.header.factory_trays)+' → daily target '+c.daily_target+', outlets needed '+c.outlet_need+'</div></div>'+
+      outlets +
+      '<div class="grand">DAY TOTAL ('+c.outlet_count+' outlets) — Produced: <b>'+Math.round(c.produced)+'</b> · Sold: <b>'+Math.round(c.sold)+'</b><br>Revenue: <b>₹'+Math.round(c.revenue)+'</b> · Net: <b>₹'+Math.round(c.net)+'</b></div>'+
+      '<button class="btn pri" onclick="__auditNew()">Got it — start my audit</button>';
+  }
+
+  // ---- global handlers ----
   window.__auditNew = function(){ renderForm(null); };
   window.__auditList = function(){ loadList(); };
+  window.__auditSample = function(){ showSample(); };
   window.__auditOpen = async function(id){ var d=await getJ("/api/audit/get?id="+id); if(d&&d.ok){ renderForm(d.audit); } else note((d&&d.msg)||"Could not open."); };
-  window.__auditCopyWA = function(){ var t=$("a_wa").textContent; if(navigator.clipboard){ navigator.clipboard.writeText(t).then(function(){note("Summary copied.");},function(){note("Copy failed — long-press to copy.");}); } else note("Long-press the text to copy."); };
+  window.__auditAddOutlet = function(){ collect(); MODEL.outlets.push(blankOutlet()); rerenderOutlets(); };
+  window.__auditRemoveOutlet = function(i){ collect(); if(MODEL.outlets.length<=1){ note("At least one outlet is needed."); return; } MODEL.outlets.splice(i,1); rerenderOutlets(); };
+  function rerenderOutlets(){
+    var wrap=$("outletsWrap"); if(!wrap) return;
+    var s=CFG.settings;
+    wrap.innerHTML = MODEL.outlets.map(function(o,idx){ return outletBlock(o, idx, s, false); }).join("");
+    wireForm(false); recompute();
+  }
+  window.__auditCopyWA = function(){ var t=$("a_wa").textContent; if(navigator.clipboard){ navigator.clipboard.writeText(t).then(function(){note("Summary copied.");},function(){note("Long-press to copy.");}); } else note("Long-press the text to copy."); };
   window.__auditSubmit = async function(){
-    var p=collect();
-    if(!p.route){ note("Enter the route audited."); return; }
-    var body={payload:p}; if(EDIT_ID) body.id=EDIT_ID;
+    collect();
+    if(!MODEL.header.route){ note("Enter the route in the header."); return; }
+    if(!MODEL.outlets.length){ note("Add at least one outlet."); return; }
+    var body={payload:MODEL}; if(EDIT_ID) body.id=EDIT_ID;
     var r=await postJ("/api/audit/submit", body);
     if(r.ok){ note(r.msg||"Saved."); loadList(); } else note(r.msg||"Could not save.");
   };
-  window.__auditDelete = async function(id){
-    if(!confirm("Delete this audit?")) return;
-    var r=await postJ("/api/audit/delete",{id:id});
-    if(r.ok){ note("Deleted."); loadList(); } else note(r.msg||"Could not delete.");
-  };
+  window.__auditDelete = async function(id){ if(!confirm("Delete this audit?")) return; var r=await postJ("/api/audit/delete",{id:id}); if(r.ok){ note("Deleted."); loadList(); } else note(r.msg||"Could not delete."); };
 
-  // ---- self-wire into the portal tab system ----
+  // ---- self-wire ----
   function showAuditTab(){ var t=$("tab-audit-btn"); if(t) t.style.display=""; }
   document.addEventListener("DOMContentLoaded", function(){
     showAuditTab();
     var _os = window.showTab;
     window.showTab = function(which){ if(_os) _os(which); if(which==="audit") loadList(); };
   });
-  // in case DOMContentLoaded already fired
   if(document.readyState!=="loading"){ showAuditTab(); var _os2=window.showTab; window.showTab=function(w){ if(_os2)_os2(w); if(w==="audit") loadList(); }; }
 })();
