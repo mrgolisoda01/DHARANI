@@ -144,6 +144,17 @@
         '<h5>Outlet '+(idx+1)+'</h5>'+
         (locked?'':'<button class="btn sec" style="padding:3px 10px;font-size:12px;color:#d64545" onclick="__auditRemoveOutlet('+idx+')">Remove</button>')+'</div>'+
       '<label class="fl">Outlet / shop name</label><input class="o_name" value="'+esc(o.outlet_name||"")+'" placeholder="Shop name" '+(locked?"disabled":"")+'>'+
+      '<div class="row2" style="margin-top:8px">'+
+        '<div><label class="fl">Location</label><select class="o_loc" '+(locked?"disabled":"")+'>'+
+          '<option value="">— select location —</option>'+
+          (s.locations||[]).map(function(L){ return '<option value="'+esc(L.name)+'"'+((o.location||"")===L.name?" selected":"")+'>'+esc(L.name)+'</option>'; }).join("")+
+          '<option value="__other"'+((o.location==="__other")?" selected":"")+'>Other / manual</option>'+
+        '</select></div>'+
+        '<div></div></div>'+
+      '<div class="row2">'+
+        '<div><label class="fl">Glass selling price (₹)</label><input type="number" step="0.01" class="o_gsell" value="'+(o.glass_sell||"")+'" placeholder="e.g. 15" '+(locked?"disabled":"")+'></div>'+
+        '<div><label class="fl">PET selling price (₹)</label><input type="number" step="0.01" class="o_psell" value="'+(o.pet_sell||"")+'" placeholder="e.g. 20" '+(locked?"disabled":"")+'></div>'+
+      '</div>'+
       '<div style="overflow-x:auto;margin-top:8px"><table><thead><tr><th style="text-align:left">Flavour</th><th>Glass made</th><th>PET made</th><th>Glass sold</th><th>PET sold</th></tr></thead><tbody>'+flRows+'</tbody></table></div>'+
       '<label class="fl" style="margin-top:8px">Empties collected here</label><input type="number" min="0" class="o_empties" value="'+(o.empties||"")+'" placeholder="0" '+(locked?"disabled":"")+'>'+
       '<div style="margin-top:10px;font-size:12.5px;font-weight:600;color:#12284B">Store checks</div>'+checkHtml+
@@ -159,6 +170,18 @@
     var box = $("myAudit");
     box.querySelectorAll("input,textarea").forEach(function(el){ el.addEventListener("input", function(){ collect(); recompute(); }); });
     if(locked) return;
+    // location dropdown -> pre-fill that location's selling price (BDE can still change)
+    box.querySelectorAll(".o_loc").forEach(function(sel){
+      sel.addEventListener("change", function(){
+        var ol = sel.closest(".ol");
+        var loc = (CFG.settings.locations||[]).filter(function(L){ return L.name===sel.value; })[0];
+        if(loc){
+          var g=ol.querySelector(".o_gsell"), p=ol.querySelector(".o_psell");
+          if(g) g.value = loc.glass; if(p) p.value = loc.pet;
+        }
+        collect(); recompute();
+      });
+    });
     box.querySelectorAll(".yn button").forEach(function(b){
       b.addEventListener("click", function(){
         var ol = b.closest(".ol"), ci=b.dataset.ci;
@@ -179,6 +202,9 @@
     box.querySelectorAll(".ol").forEach(function(ol){
       var o={ flavours:{}, checks:{}, check_remarks:{}, numbers:{} };
       o.outlet_name = ol.querySelector(".o_name").value.trim();
+      var locEl=ol.querySelector(".o_loc"); o.location = locEl?locEl.value:"";
+      var gsEl=ol.querySelector(".o_gsell"), psEl=ol.querySelector(".o_psell");
+      o.glass_sell = gsEl?gsEl.value:""; o.pet_sell = psEl?psEl.value:"";
       ol.querySelectorAll("tr[data-fl]").forEach(function(tr){
         var name=tr.dataset.fl, obj={};
         tr.querySelectorAll(".ofl").forEach(function(i){ obj[i.dataset.k]=i.value; });
@@ -210,7 +236,8 @@
     MODEL.outlets.forEach(function(o, i){
       var gp=0,pp=0,gs=0,ps=0;
       Object.keys(o.flavours).forEach(function(k){ var r=o.flavours[k]; gp+=num(r.gp);pp+=num(r.pp);gs+=num(r.gs);ps+=num(r.ps); });
-      var rev=gs*s.glass_sell+ps*s.pet_sell, cost=gp*s.glass_cost+pp*s.pet_cost;
+      var gsell=num(o.glass_sell)||s.glass_sell, psell=num(o.pet_sell)||s.pet_sell;
+      var rev=gs*gsell+ps*psell, cost=gp*s.glass_cost+pp*s.pet_cost;
       var net=rev-cost-num(o.fixed_expenses)-num(o.variable_expenses);
       G.produced+=gp+pp; G.sold+=gs+ps; G.gs+=gs; G.ps+=ps; G.gp+=gp; G.pp+=pp; G.rev+=rev; G.cost+=cost; G.net+=net;
       G.orders+=num((o.numbers||{}).orders_taken); G.newo+=num((o.numbers||{}).new_outlets);
@@ -235,7 +262,7 @@
     MODEL.outlets.forEach(function(o,i){
       var gs=0,ps=0,rev=0;
       Object.keys(o.flavours).forEach(function(k){ var r=o.flavours[k]; gs+=num(r.gs);ps+=num(r.ps); });
-      rev=gs*s.glass_sell+ps*s.pet_sell;
+      rev=gs*(num(o.glass_sell)||s.glass_sell)+ps*(num(o.pet_sell)||s.pet_sell);
       L.push((i+1)+". "+(o.outlet_name||("Outlet "+(i+1)))+": sold "+(gs+ps)+", ₹"+Math.round(rev));
     });
     L.push("==============","*DAY TOTAL:*");

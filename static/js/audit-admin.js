@@ -79,6 +79,8 @@
       var checks=d.checks.map(function(item,j){var v=(o.checks||{})[j]||(o.checks||{})[String(j)]||"—";var rm=(o.check_remarks||{})[j]||(o.check_remarks||{})[String(j)]||"";return '<div class="kv">'+(j+1)+". "+esc(item)+": <b>"+esc(v)+"</b>"+(rm?' — <i>'+esc(rm)+'</i>':'')+'</div>';}).join("");
       var n=o.numbers||{};
       return '<div class="ol"><b>Outlet '+(i+1)+': '+esc(o.outlet_name||"")+'</b>'+
+        (o.location?' <span style="font-size:11px;color:#62707a">· '+esc(o.location)+'</span>':'')+
+        '<div class="kv" style="margin-top:3px">Selling price: Glass ₹'+num(o.glass_sell||s.glass_sell)+' · PET ₹'+num(o.pet_sell||s.pet_sell)+'</div>'+
         flTable+
         '<div class="kv" style="margin-top:4px">Empties: <b>'+num(o.empties)+'</b> · Orders: <b>'+num(n.orders_taken)+'</b> · New: <b>'+num(n.new_outlets)+'</b> · Payment: <b>₹'+num(n.payment_collected)+'</b> · Issues: <b>'+num(n.issues_found)+'</b></div>'+
         '<div style="margin-top:5px">'+checks+'</div>'+
@@ -150,6 +152,9 @@
       '<div class="sec"><h4>Calculation</h4><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">'+
         ['trays_divisor|Trays ÷','routes|Routes','outlet_buffer|Outlet ×'].map(function(x){var k=x.split("|");return '<div><label style="font-size:12px;color:#62707a">'+k[1]+'</label><input id="set_'+k[0]+'" type="number" step="0.1" value="'+s[k[0]]+'" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px"></div>';}).join("")+'</div></div>'+
       '<div class="sec"><h4>Flavours (one per line)</h4><textarea id="set_flavours" rows="8" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-family:inherit">'+esc((s.flavours||[]).join("\n"))+'</textarea></div>'+
+      '<div class="sec"><h4>Locations & selling price</h4>'+
+        '<p style="font-size:12px;color:#62707a;margin:0 0 8px">One line per location as <b>Name, GlassPrice, PetPrice</b> — e.g. <i>Chennai, 15, 20</i>. The BDE picks a location and its price pre-fills (they can still change it).</p>'+
+        '<textarea id="set_locations" rows="6" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-family:inherit">'+esc((s.locations||[]).map(function(L){return L.name+", "+L.glass+", "+L.pet;}).join("\n"))+'</textarea></div>'+
       '<button class="btn pri" onclick="__aaSaveSettings()">Save settings</button>';
   }
 
@@ -175,9 +180,15 @@
   window.__aaDelete=async function(id){ if(!confirm("Delete this audit permanently?"))return; var r=await postJ("/api/audit/delete",{id:id}); if(r.ok){note("Deleted.");loadList();}else note(r.msg||"Failed."); };
   window.__aaWA=async function(id){ var d=await getJ("/api/audit/whatsapp?id="+id); if(d&&d.ok){ if(navigator.clipboard){navigator.clipboard.writeText(d.text).then(function(){note("Summary copied.");});} alert(d.text);} else note("Could not build summary."); };
   window.__aaSaveSettings=async function(){
+    var locs=($("set_locations").value||"").split("\n").map(function(line){
+      var parts=line.split(",").map(function(x){return x.trim();});
+      if(!parts[0]) return null;
+      return {name:parts[0], glass:parseFloat(parts[1])||0, pet:parseFloat(parts[2])||0};
+    }).filter(Boolean);
     var body={glass_sell:$("set_glass_sell").value,glass_cost:$("set_glass_cost").value,pet_sell:$("set_pet_sell").value,pet_cost:$("set_pet_cost").value,
       trays_divisor:$("set_trays_divisor").value,routes:$("set_routes").value,outlet_buffer:$("set_outlet_buffer").value,
-      flavours:$("set_flavours").value.split("\n").map(function(x){return x.trim();}).filter(Boolean)};
+      flavours:$("set_flavours").value.split("\n").map(function(x){return x.trim();}).filter(Boolean),
+      locations:locs};
     var r=await postJ("/api/audit/save-settings",body);
     if(r.ok){ S.cfg=null; note("Settings saved."); loadList(); } else note(r.msg||"Failed.");
   };
