@@ -341,6 +341,7 @@
         return '<div class="ojt-task-wrap" style="border-bottom:1px solid #f0f0f0;padding:6px 0">' +
           '<label class="ojt-task" style="align-items:flex-start"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
           (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim + scoreBadge + editLink +
+          (t.topic ? ' <span style="font-size:10px;color:#0c447c;background:#eef5fc;border:1px solid #cddff0;padding:1px 7px;border-radius:20px">'+esc(t.topic)+'</span>' : '') +
           (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") +
           savedRemark + savedReason +
           "</span></label>" + editor + "</div>";
@@ -414,11 +415,14 @@
       var barCol = (v===null||v===undefined) ? "#ccc" : (v>=70 ? "#1d9e75" : (v>=50 ? "#c9a227" : "#d64545"));
       var pct = (v===null||v===undefined) ? 0 : v;
       var weak = (v!==null&&v!==undefined&&v<70) ? ' <span style="color:#d64545;font-weight:700;font-size:11px">⚠ needs improvement</span>' : '';
+      var autoNote = (t.auto_avg!==null&&t.auto_avg!==undefined)
+        ? '<span style="font-size:11px;color:#62707a">auto '+t.auto_avg+'% ('+t.task_count+' task'+(t.task_count===1?'':'s')+')'+((t.override!==null&&t.override!==undefined)?', overridden':'')+'</span>'
+        : '<span style="font-size:11px;color:#aaa">no task scores yet</span>';
       var input = active
-        ? '<input type="number" min="0" max="100" class="ojt-topicscore" data-topic="'+t.id+'" value="'+(v!==null&&v!==undefined?v:"")+'" placeholder="0-100" style="width:80px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">'
+        ? '<input type="number" min="0" max="100" class="ojt-topicscore" data-topic="'+(t.id||'')+'" data-name="'+esc(t.name)+'" value="'+((t.override!==null&&t.override!==undefined)?t.override:"")+'" placeholder="override" title="Leave blank to use the auto average" style="width:90px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">'
         : '<b>'+(v!==null&&v!==undefined?v+"%":"—")+'</b>';
-      return '<div style="margin:8px 0">'+
-        '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px"><span><b>'+esc(t.name)+'</b>'+weak+'</span>'+input+'</div>'+
+      return '<div style="margin:9px 0">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;gap:8px"><span><b>'+esc(t.name)+'</b>'+weak+'<br>'+autoNote+'</span><span style="text-align:right"><b style="font-size:14px;color:'+barCol+'">'+(v!==null&&v!==undefined?v+'%':'—')+'</b><br>'+input+'</span></div>'+
         '<div style="height:8px;background:#eef2f5;border-radius:6px;margin-top:4px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+barCol+'"></div></div>'+
         '</div>';
     }).join("");
@@ -427,7 +431,7 @@
       '  ·  <b>Task-score average:</b> '+(sc.task_avg!==null&&sc.task_avg!==undefined?sc.task_avg+'%':'—')+'</div>';
     var scoreCard = '<div class="ojt-scorecard" style="margin-top:14px;padding:12px;border:1px solid var(--mg-line);border-radius:10px;background:#fff">'+
       '<div style="font-size:14px;font-weight:700;color:#12284B;margin-bottom:4px">📊 Competency scorecard</div>'+
-      '<div style="font-size:11.5px;color:#62707a;margin-bottom:6px">Trainer scores each topic 0-100. Below 70% is flagged for development.</div>'+
+      '<div style="font-size:11.5px;color:#62707a;margin-bottom:6px">Each topic score is the average of that topic\'s task scores (auto). Type a number to override; leave blank to keep the auto average. Below 70% is flagged.</div>'+
       (scRows || '<div class="muted" style="font-size:12.5px">No topics set. Admin can add them under 🏷 in the OJT tab.</div>')+
       (active&&scRows?'<div style="text-align:right;margin-top:6px"><button class="ojt-savetopics" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer">Save topic scores</button></div>':'')+
       avgLine+'</div>';
@@ -717,6 +721,7 @@
       var okAll = true;
       for(var i=0;i<inputs.length;i++){
         var el2 = inputs[i];
+        if(!el2.dataset.topic) continue;  // topic not in admin list — can't override
         var r2 = await postJ("/api/ojt/save-topic-score", { enrollment_id: enrId, topic_id: el2.dataset.topic, score: el2.value });
         if(!r2.ok) okAll = false;
       }
