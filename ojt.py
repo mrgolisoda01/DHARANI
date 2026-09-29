@@ -124,6 +124,7 @@ def _ensure_tables():
             sort_order  INTEGER NOT NULL DEFAULT 0,
             title       TEXT NOT NULL,
             description TEXT,
+            topic       TEXT,
             updated_by  TEXT,
             updated_at  TEXT
         )
@@ -273,6 +274,11 @@ def _ensure_tables():
         db.execute("ALTER TABLE ojt_signoffs ADD COLUMN IF NOT EXISTS score INTEGER")
     except Exception:
         pass
+    # each task belongs to a competency topic (added later)
+    try:
+        db.execute("ALTER TABLE ojt_tasks ADD COLUMN IF NOT EXISTS topic TEXT")
+    except Exception:
+        pass
     # Seed a starter set of topics the first time (admin can edit/add/remove later).
     if not db.execute("SELECT 1 FROM ojt_topics LIMIT 1").fetchone():
         for i, t in enumerate(["P&L / Financial", "YOLO app usage", "Roles & Responsibilities",
@@ -321,14 +327,15 @@ def _ojt_before():
 def _tasks_by_day(role):
     db = _get_db()
     rows = db.execute(
-        "SELECT id, day_no, sort_order, title, description FROM ojt_tasks "
+        "SELECT id, day_no, sort_order, title, description, topic FROM ojt_tasks "
         "WHERE role=? ORDER BY day_no, sort_order, id", (role,)
     ).fetchall()
     days = {d: [] for d in range(1, OJT_DAYS + 1)}
     for r in rows:
         if r["day_no"] in days:
             days[r["day_no"]].append({"id": r["id"], "title": r["title"],
-                                      "description": r["description"] or ""})
+                                      "description": r["description"] or "",
+                                      "topic": (r["topic"] if "topic" in r.keys() else "") or ""})
     return days
 
 
@@ -368,13 +375,13 @@ def _apply_days(role, days_map, user_id):
                 tid = pool[key].pop(0)
                 kept.add(tid)
                 db.execute(
-                    "UPDATE ojt_tasks SET sort_order=?, title=?, description=?, updated_by=?, updated_at=? WHERE id=?",
-                    (i, t["title"], t["description"], user_id, _now(), tid))
+                    "UPDATE ojt_tasks SET sort_order=?, title=?, description=?, topic=?, updated_by=?, updated_at=? WHERE id=?",
+                    (i, t["title"], t["description"], t.get("topic", ""), user_id, _now(), tid))
             else:
                 db.execute(
-                    "INSERT INTO ojt_tasks (role, day_no, sort_order, title, description, updated_by, updated_at) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (role, day_no, i, t["title"], t["description"], user_id, _now()))
+                    "INSERT INTO ojt_tasks (role, day_no, sort_order, title, description, topic, updated_by, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (role, day_no, i, t["title"], t["description"], t.get("topic", ""), user_id, _now()))
         for e in existing:
             if e["id"] not in kept:
                 db.execute("DELETE FROM ojt_tasks WHERE id=?", (e["id"],))
@@ -463,9 +470,9 @@ def _parse_upload(file_storage):
 
     rows, errors = [], []
     for i, r in enumerate(raw_rows[start:], start=start + 1):
-        r = (r + ["", "", ""])[:3]
-        day_s, title, desc = r
-        if not day_s and not title and not desc:
+        r = (r + ["", "", "", ""])[:4]
+        day_s, title, desc, topic = r
+        if not day_s and not title and not desc and not topic:
             continue
         try:
             day_no = int(float(day_s))
@@ -478,7 +485,7 @@ def _parse_upload(file_storage):
         if not title:
             errors.append(f"Row {i}: Task title is empty.")
             continue
-        rows.append((day_no, title[:300], desc[:2000]))
+        rows.append((day_no, title[:300], desc[:2000], (topic or "").strip()[:80]))
     return rows, errors
 
 
@@ -501,8 +508,8 @@ def api_upload():
     if not rows:
         return jsonify(ok=False, msg="The file has no tasks."), 400
     days_map = {}
-    for day_no, title, desc in rows:
-        days_map.setdefault(day_no, []).append({"title": title, "description": desc})
+    for day_no, title, desc, topic in rows:
+        days_map.setdefault(day_no, []).append({"title": title, "description": desc, "topic": topic})
     for dn, tl in days_map.items():
         if len(tl) > MAX_TASKS_PER_DAY:
             return jsonify(ok=False, msg=f"Day {dn} has more than {MAX_TASKS_PER_DAY} tasks."), 400
@@ -527,7 +534,7 @@ def api_template_xlsx():
     ws.append([f"Mr. Golisoda — {role} OJT task template (one row per task; add as many rows per day as needed)"])
     ws["A1"].font = Font(bold=True, size=12)
     ws.append(["Days 29–30 are Final review. Sundays are shown automatically as week off. Do not change the header row below."])
-    ws.append(["Day", "Task title", "Task description"])
+    ws.append(["Day", "Task title", "Task description", "Topic"])
     for c in ws[3]:
         c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="00AEEF")
@@ -535,14 +542,15 @@ def api_template_xlsx():
     if has_any:
         for d in range(1, OJT_DAYS + 1):
             for t in days[d]:
-                ws.append([d, t["title"], t["description"]])
+                ws.append([d, t["title"], t["description"], t.get("topic", "")])
     else:
-        ws.append([1, "Example: Outlet visit with buddy", "Visit 10 existing outlets with your buddy and observe billing"])
-        ws.append([1, "Example: Learn the order app", "Enter 3 practice orders in the app"])
-        ws.append([2, "Example: Independent outlet visits", "Visit 5 outlets on your own, buddy checks"])
+        ws.append([1, "Example: Outlet visit with buddy", "Visit 10 existing outlets with your buddy and observe billing", "Route & PJP discipline"])
+        ws.append([1, "Example: Learn the order app", "Enter 3 practice orders in the app", "YOLO app usage"])
+        ws.append([2, "Example: Independent outlet visits", "Visit 5 outlets on your own, buddy checks", "Customer handling"])
     ws.column_dimensions["A"].width = 8
     ws.column_dimensions["B"].width = 42
     ws.column_dimensions["C"].width = 80
+    ws.column_dimensions["D"].width = 26
     for row in ws.iter_rows(min_row=4):
         for c in row:
             c.alignment = Alignment(wrap_text=True, vertical="top")
@@ -1016,28 +1024,63 @@ def api_ojt_topic_delete():
 @ojt_bp.route("/api/ojt/scorecard")
 @_staff_required
 def api_ojt_scorecard():
-    """Return the trainee's topic scores + per-task score average, for one enrollment."""
+    """Topic scorecard for one trainee. Each topic's score is the AVERAGE of the
+    scores of tasks tagged with that topic (auto). A manual override in
+    ojt_topic_scores, if set, wins over the auto average."""
     db = _get_db()
     enr_id = request.args.get("id")
     e = db.execute("SELECT * FROM ojt_enrollments WHERE id=?", (enr_id,)).fetchone()
     if not e:
         return jsonify(ok=False, msg="Not found."), 404
-    topics = [dict(r) for r in db.execute("SELECT id, name FROM ojt_topics WHERE active=1 ORDER BY sort_no, name").fetchall()]
-    scores = {r["topic_id"]: r["score"] for r in db.execute(
-        "SELECT topic_id, score FROM ojt_topic_scores WHERE enrollment_id=?", (enr_id,)).fetchall()}
+    role = e["role"]
+
+    # map task_id -> topic (for this role)
+    task_topic = {}
+    for r in db.execute("SELECT id, topic FROM ojt_tasks WHERE role=?", (role,)).fetchall():
+        task_topic[r["id"]] = (r["topic"] if "topic" in r.keys() else "") or ""
+
+    # task scores for this trainee
+    auto = {}   # topic -> [scores]
+    for r in db.execute("SELECT task_id, score FROM ojt_signoffs WHERE enrollment_id=? AND score IS NOT NULL",
+                        (enr_id,)).fetchall():
+        tp = task_topic.get(r["task_id"], "")
+        if tp:
+            auto.setdefault(tp, []).append(r["score"])
+
+    # admin topic list (names) + any manual overrides keyed by topic name
+    topic_rows = db.execute("SELECT id, name FROM ojt_topics WHERE active=1 ORDER BY sort_no, name").fetchall()
+    override = {}   # topic_name -> score
+    id_by_name = {}
+    for t in topic_rows:
+        id_by_name[t["name"]] = t["id"]
+    for r in db.execute("SELECT topic_id, score FROM ojt_topic_scores WHERE enrollment_id=?", (enr_id,)).fetchall():
+        # find the topic name for this id
+        for t in topic_rows:
+            if t["id"] == r["topic_id"] and r["score"] is not None:
+                override[t["name"]] = r["score"]
+
     out = []
     vals = []
-    for t in topics:
-        sc = scores.get(t["id"])
-        out.append({"id": t["id"], "name": t["name"], "score": sc})
-        if sc is not None:
-            vals.append(sc)
+    # include every admin topic, plus any topic that appears on tasks but isn't in the admin list
+    all_names = [t["name"] for t in topic_rows]
+    for tp in auto.keys():
+        if tp not in all_names:
+            all_names.append(tp)
+    for name in all_names:
+        scores = auto.get(name, [])
+        auto_avg = round(sum(scores) / len(scores)) if scores else None
+        final = override.get(name, auto_avg)   # manual override wins
+        out.append({"id": id_by_name.get(name), "name": name,
+                    "auto_avg": auto_avg, "override": override.get(name),
+                    "score": final, "task_count": len(scores)})
+        if final is not None:
+            vals.append(final)
     topic_avg = round(sum(vals) / len(vals)) if vals else None
-    # per-task score average
     trow = db.execute("SELECT AVG(score) a, COUNT(score) c FROM ojt_signoffs WHERE enrollment_id=? AND score IS NOT NULL",
                       (enr_id,)).fetchone()
     task_avg = round(trow["a"]) if trow and trow["a"] is not None else None
-    return jsonify(ok=True, topics=out, topic_avg=topic_avg, task_avg=task_avg, task_scored=(trow["c"] if trow else 0))
+    return jsonify(ok=True, topics=out, topic_avg=topic_avg, task_avg=task_avg,
+                   task_scored=(trow["c"] if trow else 0))
 
 
 @ojt_bp.route("/api/ojt/save-topic-score", methods=["POST"])
