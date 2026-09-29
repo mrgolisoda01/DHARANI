@@ -246,6 +246,38 @@ def _ensure_tables():
             called_at     TEXT
         )
     """)
+    # Competency topics the trainer scores each trainee on (admin-managed list).
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_topics (
+            id       SERIAL PRIMARY KEY,
+            name     TEXT NOT NULL,
+            active   INTEGER NOT NULL DEFAULT 1,
+            sort_no  INTEGER DEFAULT 0,
+            UNIQUE (name)
+        )
+    """)
+    # Trainer's 0-100 score per topic for a trainee.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_topic_scores (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            topic_id      INTEGER NOT NULL,
+            score         INTEGER,
+            scored_by     TEXT,
+            scored_at     TEXT,
+            UNIQUE (enrollment_id, topic_id)
+        )
+    """)
+    # per-task 0-100 score (added alongside the tick sign-off)
+    try:
+        db.execute("ALTER TABLE ojt_signoffs ADD COLUMN IF NOT EXISTS score INTEGER")
+    except Exception:
+        pass
+    # Seed a starter set of topics the first time (admin can edit/add/remove later).
+    if not db.execute("SELECT 1 FROM ojt_topics LIMIT 1").fetchone():
+        for i, t in enumerate(["P&L / Financial", "YOLO app usage", "Roles & Responsibilities",
+                               "Route & PJP discipline", "Product knowledge", "Customer handling"], start=1):
+            db.execute("INSERT INTO ojt_topics (name, active, sort_no) VALUES (?,1,?)", (t, i))
     # Seed a starter set of tags the first time (admin can edit/add/remove later).
     if not db.execute("SELECT 1 FROM ojt_tags LIMIT 1").fetchone():
         seed = [
@@ -613,7 +645,7 @@ def _timeline(enr, light=False):
         overrides[h["on_date"]] = (h["kind"] if ("kind" in h.keys() and h["kind"]) else "leave")
 
     signed = {s["task_id"]: s for s in db.execute(
-        "SELECT task_id, signed_by, signed_at FROM ojt_signoffs WHERE enrollment_id=?", (enr["id"],)).fetchall()}
+        "SELECT task_id, signed_by, signed_at, score FROM ojt_signoffs WHERE enrollment_id=?", (enr["id"],)).fetchall()}
     if light:
         selfmarks = set(); daynotes = {}; task_remarks = {}; day_remarks = {}; calls_by_day = {}
     else:
@@ -679,6 +711,7 @@ def _timeline(enr, light=False):
                 tr = task_remarks.get(t["id"], {"remark": "", "not_done_reason": "", "tag_ids": []})
                 tl.append({"id": t["id"], "title": t["title"], "description": t["description"],
                            "done": bool(s), "signed_at": s["signed_at"] if s else None,
+                           "score": (s["score"] if (s and "score" in s.keys() and s["score"] is not None) else None),
                            "self_done": t["id"] in selfmarks,
                            "remark": tr["remark"], "not_done_reason": tr["not_done_reason"],
                            "tag_ids": tr["tag_ids"]})
@@ -897,7 +930,144 @@ def api_signoff():
     return jsonify(ok=True)
 
 
-@ojt_bp.route("/api/ojt/holiday", methods=["POST"])
+@ojt_bp.route("/api/ojt/score-task", methods=["POST"])
+@_staff_required
+def api_score_task():
+    """Trainer sets a 0-100 score on a task. Works whether or not it's ticked —
+    creates the signoff row if needed so the score has somewhere to live."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    db = _get_db()
+    t = db.execute("SELECT id, title, day_no, role FROM ojt_tasks WHERE id=?", (d.get("task_id"),)).fetchone()
+    if not t or t["role"] != e["role"]:
+        return jsonify(ok=False, msg="Task not found."), 404
+    sc = d.get("score")
+    if sc == "" or sc is None:
+        score = None
+    else:
+        try:
+            score = max(0, min(100, int(float(sc))))
+        except (TypeError, ValueError):
+            return jsonify(ok=False, msg="Score must be a number 0-100."), 400
+    row = db.execute("SELECT 1 FROM ojt_signoffs WHERE enrollment_id=? AND task_id=?", (e["id"], t["id"])).fetchone()
+    if row:
+        db.execute("UPDATE ojt_signoffs SET score=? WHERE enrollment_id=? AND task_id=?", (score, e["id"], t["id"]))
+    else:
+        db.execute("INSERT INTO ojt_signoffs (enrollment_id, task_id, task_title, day_no, signed_by, signed_at, score) "
+                   "VALUES (?,?,?,?,?,?,?)",
+                   (e["id"], t["id"], t["title"], t["day_no"], _current_user()["emp_id"], _now(), score))
+    db.commit()
+    return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------
+#  Competency topics + topic scores + scorecard
+# ---------------------------------------------------------------
+@ojt_bp.route("/api/ojt/topics")
+@_staff_required
+def api_ojt_topics():
+    db = _get_db()
+    inc = bool(request.args.get("all")) and _current_user()["role"] == "admin"
+    q = "SELECT id, name, active FROM ojt_topics"
+    if not inc:
+        q += " WHERE active=1"
+    q += " ORDER BY sort_no, name"
+    return jsonify(ok=True, topics=[dict(r) for r in db.execute(q).fetchall()])
+
+
+@ojt_bp.route("/api/ojt/topic-save", methods=["POST"])
+@_staff_required
+def api_ojt_topic_save():
+    u = _current_user()
+    if u["role"] != "admin":
+        return jsonify(ok=False, msg="Only an admin can manage topics."), 403
+    d = request.get_json(force=True)
+    name = (d.get("name") or "").strip()[:80]
+    if not name:
+        return jsonify(ok=False, msg="Topic name is required."), 400
+    db = _get_db()
+    tid = d.get("id")
+    if tid:
+        db.execute("UPDATE ojt_topics SET name=? WHERE id=?", (name, tid))
+    else:
+        if db.execute("SELECT 1 FROM ojt_topics WHERE lower(name)=lower(?)", (name,)).fetchone():
+            return jsonify(ok=False, msg="That topic already exists."), 400
+        n = db.execute("SELECT COALESCE(MAX(sort_no),0)+1 AS s FROM ojt_topics").fetchone()["s"]
+        db.execute("INSERT INTO ojt_topics (name, active, sort_no) VALUES (?,1,?)", (name, n))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/topic-delete", methods=["POST"])
+@_staff_required
+def api_ojt_topic_delete():
+    u = _current_user()
+    if u["role"] != "admin":
+        return jsonify(ok=False, msg="Only an admin can manage topics."), 403
+    d = request.get_json(force=True)
+    db = _get_db()
+    db.execute("UPDATE ojt_topics SET active=0 WHERE id=?", (d.get("id"),))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/scorecard")
+@_staff_required
+def api_ojt_scorecard():
+    """Return the trainee's topic scores + per-task score average, for one enrollment."""
+    db = _get_db()
+    enr_id = request.args.get("id")
+    e = db.execute("SELECT * FROM ojt_enrollments WHERE id=?", (enr_id,)).fetchone()
+    if not e:
+        return jsonify(ok=False, msg="Not found."), 404
+    topics = [dict(r) for r in db.execute("SELECT id, name FROM ojt_topics WHERE active=1 ORDER BY sort_no, name").fetchall()]
+    scores = {r["topic_id"]: r["score"] for r in db.execute(
+        "SELECT topic_id, score FROM ojt_topic_scores WHERE enrollment_id=?", (enr_id,)).fetchall()}
+    out = []
+    vals = []
+    for t in topics:
+        sc = scores.get(t["id"])
+        out.append({"id": t["id"], "name": t["name"], "score": sc})
+        if sc is not None:
+            vals.append(sc)
+    topic_avg = round(sum(vals) / len(vals)) if vals else None
+    # per-task score average
+    trow = db.execute("SELECT AVG(score) a, COUNT(score) c FROM ojt_signoffs WHERE enrollment_id=? AND score IS NOT NULL",
+                      (enr_id,)).fetchone()
+    task_avg = round(trow["a"]) if trow and trow["a"] is not None else None
+    return jsonify(ok=True, topics=out, topic_avg=topic_avg, task_avg=task_avg, task_scored=(trow["c"] if trow else 0))
+
+
+@ojt_bp.route("/api/ojt/save-topic-score", methods=["POST"])
+@_staff_required
+def api_ojt_save_topic_score():
+    d = request.get_json(force=True)
+    e, err = None, None
+    db = _get_db()
+    enr_id = d.get("enrollment_id")
+    e = db.execute("SELECT id FROM ojt_enrollments WHERE id=?", (enr_id,)).fetchone()
+    if not e:
+        return jsonify(ok=False, msg="Not found."), 404
+    tid = d.get("topic_id")
+    sc = d.get("score")
+    if sc == "" or sc is None:
+        score = None
+    else:
+        try:
+            score = max(0, min(100, int(float(sc))))
+        except (TypeError, ValueError):
+            return jsonify(ok=False, msg="Score must be 0-100."), 400
+    u = _current_user()
+    if db.execute("SELECT 1 FROM ojt_topic_scores WHERE enrollment_id=? AND topic_id=?", (enr_id, tid)).fetchone():
+        db.execute("UPDATE ojt_topic_scores SET score=?, scored_by=?, scored_at=? WHERE enrollment_id=? AND topic_id=?",
+                   (score, u["emp_id"], _now(), enr_id, tid))
+    else:
+        db.execute("INSERT INTO ojt_topic_scores (enrollment_id, topic_id, score, scored_by, scored_at) VALUES (?,?,?,?,?)",
+                   (enr_id, tid, score, u["emp_id"], _now()))
+    db.commit()
+    return jsonify(ok=True)
 @_staff_required
 def api_holiday():
     """Set a per-day override for one enrollment date.
