@@ -94,6 +94,7 @@
         (S.isAdmin && S.pendingCount ? '<span class="badge">' + S.pendingCount + "</span>" : "")]
     ];
     if(S.isAdmin) views.push(["tags", "🏷 Manage tags"]);
+    if(S.isAdmin) views.push(["topics", "📊 Score topics"]);
     views = views.map(function(v){
       return '<button class="ojt-view' + (S.view === v[0] ? " on" : "") + '" data-act="view" data-v="' + v[0] + '">' + v[1] + "</button>";
     }).join("");
@@ -128,6 +129,7 @@
     if(S.view === "trainees") loadTrainees();
     else if(S.view === "tasks") loadTasks();
     else if(S.view === "tags") loadTagManager();
+    else if(S.view === "topics") loadTopicManager();
     else loadApprovals();
   }
 
@@ -162,6 +164,25 @@
   }
 
   /* ================= TRAINEES ================= */
+  async function loadTopicManager(){
+    var body = $("ojtBody");
+    body.innerHTML = '<div class="empty">Loading…</div>';
+    var d = await getJ("/api/ojt/topics?all=1");
+    var topics = (d && d.ok) ? d.topics.filter(function(t){ return t.active; }) : [];
+    var rows = topics.length ? topics.map(function(t){
+      return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0">'+
+        '<span style="flex:1;font-size:13px">'+esc(t.name)+'</span>'+
+        '<button class="ojt-link ojt-topicedit" data-id="'+t.id+'" data-name="'+esc(t.name)+'">✎ edit</button>'+
+        '<button class="ojt-link ojt-topicdel" data-id="'+t.id+'" style="color:var(--mg-red)">remove</button></div>';
+    }).join("") : '<div class="muted" style="font-size:12.5px">No topics yet.</div>';
+    body.innerHTML =
+      '<div class="card" style="margin-bottom:12px"><b>Competency score topics</b>'+
+      '<p style="font-size:12px;color:var(--mg-muted);margin:6px 0">These are the areas the trainer scores each trainee on (0-100). e.g. P&amp;L, YOLO app, Roles &amp; Responsibilities.</p>'+
+      '<div style="display:flex;gap:8px;margin-top:6px"><input id="newTopic" placeholder="New topic name" style="flex:1;padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px">'+
+      '<button class="btn primary" id="addTopicBtn">Add topic</button></div></div>'+
+      '<div class="card">'+rows+'</div>';
+  }
+
   async function loadTrainees(){
     var body = $("ojtBody");
     body.innerHTML = '<div class="empty">Loading…</div>';
@@ -246,6 +267,9 @@
       var tg = await getJ("/api/ojt/tags");
       S.tags = (tg && tg.ok) ? tg.tags : [];
     }
+    // load this trainee's competency scorecard
+    var scd = await getJ("/api/ojt/scorecard?id=" + id);
+    S.scorecard = (scd && scd.ok) ? scd : {topics:[], topic_avg:null, task_avg:null};
     var e = d.enrollment, tl = d.timeline, active = e.status === "active";
     var TAGMAP = {}; (S.tags || []).forEach(function(t){ TAGMAP[t.id] = t; });
     function tagChips(ids){
@@ -302,16 +326,21 @@
           : '';
         var savedRemark = t.remark ? '<div style="font-size:12px;color:#555;margin-top:2px">📝 ' + esc(t.remark) + '</div>' : '';
         var savedReason = (!t.done && t.not_done_reason) ? '<div style="font-size:12px;color:#9e2b2b;margin-top:2px">⚠ Not done: ' + esc(t.not_done_reason) + '</div>' : '';
+        var scoreBadge = (t.score !== null && t.score !== undefined)
+          ? ' <span style="font-size:11px;font-weight:700;padding:1px 8px;border-radius:20px;'+(t.score>=70?'background:#eaf7f0;color:#0f6b45':'background:#fdeaea;color:#9e2b2b')+'">'+t.score+'%</span>' : '';
         var editor = active ? (
           '<div class="ojt-trow-edit" data-task="' + t.id + '" style="display:none;margin-top:6px;padding:8px;background:#f7f9fa;border-radius:8px">' +
             (t.done ? '' : '<input type="text" class="ojt-reason" placeholder="Reason not done (required if not ticked)" value="' + esc(t.not_done_reason) + '" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;margin-bottom:5px">') +
             '<textarea class="ojt-remark" placeholder="Trainer remark for this task" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(t.remark) + '</textarea>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><label style="font-size:12px;color:#62707a">Score (0-100):</label>'+
+              '<input type="number" min="0" max="100" class="ojt-tscore" data-task="'+t.id+'" value="'+(t.score!==null&&t.score!==undefined?t.score:"")+'" placeholder="0-100" style="width:90px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">'+
+              '<button class="ojt-savescore" data-task="'+t.id+'" style="background:#1d9e75;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer">Save score</button></div>'+
             '<div style="text-align:right;margin-top:5px"><button class="ojt-savetr" data-task="' + t.id + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark</button></div>' +
           '</div>') : '';
-        var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark</button>' : '';
+        var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark / score</button>' : '';
         return '<div class="ojt-task-wrap" style="border-bottom:1px solid #f0f0f0;padding:6px 0">' +
           '<label class="ojt-task" style="align-items:flex-start"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
-          (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim + editLink +
+          (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim + scoreBadge + editLink +
           (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") +
           savedRemark + savedReason +
           "</span></label>" + editor + "</div>";
@@ -378,6 +407,31 @@
         "</div></div>"
       : '<div class="note"><b>Status:</b> ' + esc(e.status) + (e.final_note ? " — " + esc(e.final_note) : "") + "</div>";
 
+    // ---- competency scorecard (topic scores + weak-area highlight) ----
+    var sc = S.scorecard || {topics:[], topic_avg:null, task_avg:null};
+    var scRows = (sc.topics||[]).map(function(t){
+      var v = t.score;
+      var barCol = (v===null||v===undefined) ? "#ccc" : (v>=70 ? "#1d9e75" : (v>=50 ? "#c9a227" : "#d64545"));
+      var pct = (v===null||v===undefined) ? 0 : v;
+      var weak = (v!==null&&v!==undefined&&v<70) ? ' <span style="color:#d64545;font-weight:700;font-size:11px">⚠ needs improvement</span>' : '';
+      var input = active
+        ? '<input type="number" min="0" max="100" class="ojt-topicscore" data-topic="'+t.id+'" value="'+(v!==null&&v!==undefined?v:"")+'" placeholder="0-100" style="width:80px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">'
+        : '<b>'+(v!==null&&v!==undefined?v+"%":"—")+'</b>';
+      return '<div style="margin:8px 0">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px"><span><b>'+esc(t.name)+'</b>'+weak+'</span>'+input+'</div>'+
+        '<div style="height:8px;background:#eef2f5;border-radius:6px;margin-top:4px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+barCol+'"></div></div>'+
+        '</div>';
+    }).join("");
+    var avgLine = '<div style="margin-top:8px;font-size:13px"><b>Overall topic score:</b> '+
+      (sc.topic_avg!==null&&sc.topic_avg!==undefined?'<b style="color:'+(sc.topic_avg>=70?"#0f6b45":"#9e2b2b")+'">'+sc.topic_avg+'%</b>':'—')+
+      '  ·  <b>Task-score average:</b> '+(sc.task_avg!==null&&sc.task_avg!==undefined?sc.task_avg+'%':'—')+'</div>';
+    var scoreCard = '<div class="ojt-scorecard" style="margin-top:14px;padding:12px;border:1px solid var(--mg-line);border-radius:10px;background:#fff">'+
+      '<div style="font-size:14px;font-weight:700;color:#12284B;margin-bottom:4px">📊 Competency scorecard</div>'+
+      '<div style="font-size:11.5px;color:#62707a;margin-bottom:6px">Trainer scores each topic 0-100. Below 70% is flagged for development.</div>'+
+      (scRows || '<div class="muted" style="font-size:12.5px">No topics set. Admin can add them under 🏷 in the OJT tab.</div>')+
+      (active&&scRows?'<div style="text-align:right;margin-top:6px"><button class="ojt-savetopics" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer">Save topic scores</button></div>':'')+
+      avgLine+'</div>';
+
     modal(
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">' +
       "<h3 style=\"margin:0\">" + esc(e.name) + ' <span class="muted">(' + esc(e.emp_id) + ")</span></h3>" +
@@ -385,7 +439,7 @@
       '<p class="sub">' + esc(e.role) + " · " + esc(e.day_label) + " · Trainer: " + esc(e.trainer) +
       "<br>" + fmtD(e.start_date) + " → " + fmtD(tl.end_date) + " · " + tl.done + "/" + tl.total + " tasks signed off · " +
       tl.sundays + " week-offs · " + tl.holidays + " leave days</p>" +
-      daysHtml + closeBox, 760
+      scoreCard + daysHtml + closeBox, 760
     );
   }
 
@@ -619,10 +673,57 @@
       return;
     }
 
+    // ---- topic manager (admin) ----
+    var addTp = e.target.closest("#addTopicBtn");
+    if(addTp){
+      var lab = ($("newTopic")||{}).value || "";
+      if(!lab.trim()){ note("Enter a topic name."); return; }
+      var ra2 = await postJ("/api/ojt/topic-save", { name: lab });
+      if(!ra2.ok){ note(ra2.msg || "Could not add."); } else { note("Topic added."); loadTopicManager(); }
+      return;
+    }
+    var edTp = e.target.closest(".ojt-topicedit");
+    if(edTp){
+      var nn = prompt("Edit topic name:", edTp.dataset.name);
+      if(nn === null) return;
+      var re2 = await postJ("/api/ojt/topic-save", { id: edTp.dataset.id, name: nn });
+      if(!re2.ok){ note(re2.msg || "Could not save."); } else { note("Topic updated."); loadTopicManager(); }
+      return;
+    }
+    var dlTp = e.target.closest(".ojt-topicdel");
+    if(dlTp){
+      if(!confirm("Remove this topic? Existing scores stay; it just won't show for new scoring.")) return;
+      var rd2 = await postJ("/api/ojt/topic-delete", { id: dlTp.dataset.id });
+      if(!rd2.ok){ note(rd2.msg || "Could not remove."); } else { note("Topic removed."); loadTopicManager(); }
+      return;
+    }
+
     if(!S.current || !S.current.enrollment) return;
     var enrId = S.current.enrollment.id;
 
-    // toggle a task's remark editor open/closed
+    // save a single task's score
+    var ss = e.target.closest(".ojt-savescore");
+    if(ss){
+      var inp = document.querySelector('.ojt-tscore[data-task="'+ss.dataset.task+'"]');
+      var r = await postJ("/api/ojt/score-task", { enrollment_id: enrId, task_id: ss.dataset.task, score: inp?inp.value:"" });
+      if(!r.ok){ note(r.msg || "Could not save score."); } else { note("Score saved."); openTrainee(enrId); }
+      return;
+    }
+
+    // save all topic scores at once
+    var st2 = e.target.closest(".ojt-savetopics");
+    if(st2){
+      var inputs = document.querySelectorAll(".ojt-topicscore");
+      var okAll = true;
+      for(var i=0;i<inputs.length;i++){
+        var el2 = inputs[i];
+        var r2 = await postJ("/api/ojt/save-topic-score", { enrollment_id: enrId, topic_id: el2.dataset.topic, score: el2.value });
+        if(!r2.ok) okAll = false;
+      }
+      note(okAll ? "Topic scores saved." : "Some scores failed to save.");
+      openTrainee(enrId);
+      return;
+    }
     var er = e.target.closest(".ojt-editrow");
     if(er){ var box = document.querySelector('.ojt-trow-edit[data-task="' + er.dataset.task + '"]');
       if(box) box.style.display = (box.style.display === "none" || !box.style.display) ? "block" : "none"; return; }
