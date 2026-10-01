@@ -1111,6 +1111,9 @@ def api_ojt_save_topic_score():
                    (enr_id, tid, score, u["emp_id"], _now()))
     db.commit()
     return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/holiday", methods=["POST"])
 @_staff_required
 def api_holiday():
     """Set a per-day override for one enrollment date.
