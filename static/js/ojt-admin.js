@@ -453,12 +453,17 @@
     body.innerHTML = '<div class="empty">Loading…</div>';
     var d = await getJ("/api/ojt/tasks?role=" + encodeURIComponent(S.role));
     if(!d.ok){ body.innerHTML = '<div class="empty">' + esc(d.msg || "Could not load.") + "</div>"; return; }
+    // load the topic list once so each task can be tagged with its topic
+    if(!S.topicList){
+      var tp = await getJ("/api/ojt/topics");
+      S.topicList = (tp && tp.ok) ? tp.topics : [];
+    }
     S.days = d.days;
     var info = S.isAdmin ? "Changes you save go live immediately."
       : "Your changes go to the admin for approval. The current tasks stay live until approved.";
     var head =
       '<div class="note"><b>' + esc(S.role) + " task template</b> — " + d.total + " tasks across 30 days. " + info +
-      "<br>Add tasks day by day below, <b>or</b> download the Excel, fill one row per task (Day, Task title, Task description) and upload it back. Days not in the file are left unchanged.</div>" +
+      "<br>Assign a <b>Topic</b> to each task — the trainer's task score then rolls into that topic's competency score. Add tasks below, <b>or</b> download the Excel (Day, Title, Description, Topic) and upload it back.</div>" +
       '<div class="sec-head"><div class="btns">' +
         '<a class="btn" href="/api/ojt/template.xlsx?role=' + encodeURIComponent(S.role) + '">⬇ Download Excel (' + (d.total ? "current tasks" : "sample") + ")</a>" +
         '<input type="file" id="ojtFile" accept=".xlsx,.csv" style="font-size:12px">' +
@@ -494,16 +499,24 @@
   }
 
   function taskRow(i, t){
+    var topics = S.topicList || [];
+    var opts = '<option value="">— topic —</option>' +
+      topics.map(function(tp){ return '<option value="'+esc(tp.name)+'"'+((t.topic||"")===tp.name?" selected":"")+'>'+esc(tp.name)+'</option>'; }).join("") +
+      ((t.topic && topics.filter(function(x){return x.name===t.topic;}).length===0) ? '<option value="'+esc(t.topic)+'" selected>'+esc(t.topic)+'</option>' : '');
     return '<div class="trow"><span class="no">' + (i + 1) + "</span>" +
       '<input data-f="title" placeholder="e.g. Outlet visit with buddy" value="' + esc(t.title) + '">' +
       '<textarea data-f="description" placeholder="What exactly should they do?">' + esc(t.description) + "</textarea>" +
+      '<select data-f="topic" title="Which topic this task scores into" style="min-width:150px">'+opts+'</select>' +
       '<button class="act del" data-act="delrow" title="Remove this task">✕</button></div>';
   }
 
   function readRows(){
     var out = [];
     document.querySelectorAll("#ojtRows .trow").forEach(function(r){
-      out.push({ title: r.querySelector('[data-f="title"]').value, description: r.querySelector('[data-f="description"]').value });
+      var tsel = r.querySelector('[data-f="topic"]');
+      out.push({ title: r.querySelector('[data-f="title"]').value,
+                 description: r.querySelector('[data-f="description"]').value,
+                 topic: tsel ? tsel.value : "" });
     });
     return out;
   }
@@ -514,8 +527,8 @@
     if(S.openDay === n){ S.openDay = null; renderDays(); return; }
     S.openDay = n;
     var day = currentDay();
-    day._edit = day.tasks.length ? day.tasks.map(function(t){ return { title: t.title, description: t.description }; })
-                                 : [{ title:"", description:"" }];
+    day._edit = day.tasks.length ? day.tasks.map(function(t){ return { title: t.title, description: t.description, topic: t.topic || "" }; })
+                                 : [{ title:"", description:"", topic:"" }];
     renderDays();
   }
 
@@ -633,7 +646,9 @@
       }
       else if(act === "dayset"){
         var rh = await postJ("/api/ojt/holiday", { enrollment_id: S.current.enrollment.id, date: el.dataset.date, kind: el.dataset.kind });
-        if(!rh.ok) note(rh.msg || "Could not save."); else openTrainee(S.current.enrollment.id);
+        if(!rh.ok){ note(rh.msg || "Could not save."); }
+        else { note("Saved."); try{ openTrainee(S.current.enrollment.id); }catch(e){} }
+        return;
       }
       else if(act === "close"){
         var label = el.dataset.v === "completed" ? "COMPLETED" : "FAILED";
