@@ -349,7 +349,7 @@ def _validate_tasks(tasks):
             continue
         if not title:
             return None, "Every task needs a title."
-        out.append({"title": title[:300], "description": desc[:2000]})
+        out.append({"title": title[:300], "description": desc[:2000], "topic": (t.get("topic") or "").strip()[:80]})
     if len(out) > MAX_TASKS_PER_DAY:
         return None, f"Maximum {MAX_TASKS_PER_DAY} tasks per day."
     return out, None
