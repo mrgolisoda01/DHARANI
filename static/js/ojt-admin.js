@@ -468,6 +468,7 @@
         '<a class="btn" href="/api/ojt/template.xlsx?role=' + encodeURIComponent(S.role) + '">⬇ Download Excel (' + (d.total ? "current tasks" : "sample") + ")</a>" +
         '<input type="file" id="ojtFile" accept=".xlsx,.csv" style="font-size:12px">' +
         '<button class="btn primary" data-act="upload">⬆ Upload file</button>' +
+        ((S.isAdmin && d.total) ? '<button class="btn" data-act="clear-tasks" style="color:var(--mg-red);margin-left:auto">🗑 Clear all tasks</button>' : "") +
       '</div></div><div id="ojtUpMsg"></div>';
     body.innerHTML = head + '<div id="ojtDays"></div>';
     renderDays();
@@ -629,6 +630,12 @@
       else if(act === "cancel-day"){ S.openDay = null; renderDays(); }
       else if(act === "save-day") saveDay(el);
       else if(act === "upload") upload(el);
+      else if(act === "clear-tasks"){
+        if(confirm("Delete ALL tasks for " + S.role + "? This cannot be undone. You'll then upload a fresh file.")){
+          var rc = await postJ("/api/ojt/clear-tasks", { role: S.role });
+          if(rc.ok){ note(rc.msg || "Cleared."); loadTasks(); } else note(rc.msg || "Could not clear.");
+        }
+      }
       else if(act === "resolve"){
         var r = await postJ("/api/ojt/resolve", { id: el.dataset.id, decision: el.dataset.v });
         note(r.msg || "Done."); load();
