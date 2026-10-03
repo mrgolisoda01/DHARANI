@@ -400,6 +400,18 @@ def _queue_change(role, days_map, label, u):
     db.commit()
 
 
+def _queue_meta(action_type, label, payload, u):
+    """Instructor tag/topic add/edit/remove -> pending admin approval.
+    action_type is 'ojt_tag' or 'ojt_topic'; payload holds the operation."""
+    db = _get_db()
+    db.execute(
+        "INSERT INTO pending_actions (action_type, target_type, target_id, target_label, payload, "
+        "requested_by, requested_by_name, status, created_at) "
+        "VALUES (?, 'ojt', '', ?, ?, ?, ?, 'pending', ?)",
+        (action_type, label, json.dumps(payload), u["emp_id"], u["name"], _now()))
+    db.commit()
+
+
 def _save_or_queue(role, days_map, label):
     u = _current_user()
     if u["role"] == "admin":
@@ -589,12 +601,12 @@ def api_pending():
     db = _get_db()
     if u["role"] == "admin":
         rows = db.execute(
-            "SELECT id, target_id, target_label, payload, requested_by_name, created_at FROM pending_actions "
-            "WHERE action_type='ojt_tasks' AND status='pending' ORDER BY created_at").fetchall()
+            "SELECT id, action_type, target_id, target_label, payload, requested_by_name, created_at FROM pending_actions "
+            "WHERE action_type IN ('ojt_tasks','ojt_tag','ojt_topic') AND status='pending' ORDER BY created_at").fetchall()
     else:
         rows = db.execute(
-            "SELECT id, target_id, target_label, payload, requested_by_name, created_at, status FROM pending_actions "
-            "WHERE action_type='ojt_tasks' AND requested_by=? ORDER BY created_at DESC LIMIT 30",
+            "SELECT id, action_type, target_id, target_label, payload, requested_by_name, created_at, status FROM pending_actions "
+            "WHERE action_type IN ('ojt_tasks','ojt_tag','ojt_topic') AND requested_by=? ORDER BY created_at DESC LIMIT 30",
             (u["emp_id"],)).fetchall()
     items = []
     for r in rows:
@@ -602,7 +614,7 @@ def api_pending():
             p = json.loads(r["payload"] or "{}")
         except Exception:
             p = {}
-        items.append({"id": r["id"], "role": r["target_id"], "label": r["target_label"],
+        items.append({"id": r["id"], "kind": r["action_type"], "role": r["target_id"], "label": r["target_label"],
                       "by": r["requested_by_name"], "created_at": r["created_at"],
                       "status": r["status"] if "status" in r.keys() else "pending",
                       "days": p.get("days", {})})
@@ -614,10 +626,42 @@ def api_pending():
 def api_resolve():
     d = request.get_json(force=True)
     db = _get_db()
-    act = db.execute("SELECT * FROM pending_actions WHERE id=? AND action_type='ojt_tasks' AND status='pending'",
+    act = db.execute("SELECT * FROM pending_actions WHERE id=? AND action_type IN ('ojt_tasks','ojt_tag','ojt_topic') AND status='pending'",
                      (d.get("id"),)).fetchone()
     if not act:
         return jsonify(ok=False, msg="Request not found or already handled."), 404
+
+    # --- tag / topic requests ---
+    if act["action_type"] in ("ojt_tag", "ojt_topic"):
+        if d.get("decision") != "approve":
+            db.execute("UPDATE pending_actions SET status='rejected' WHERE id=?", (act["id"],))
+            db.commit()
+            return jsonify(ok=True, msg="Rejected.")
+        p = json.loads(act["payload"] or "{}")
+        op = p.get("op")
+        if act["action_type"] == "ojt_tag":
+            if op == "add":
+                if not db.execute("SELECT 1 FROM ojt_tags WHERE lower(label)=lower(?)", (p.get("label"),)).fetchone():
+                    n = db.execute("SELECT COALESCE(MAX(sort_no),0)+1 AS s FROM ojt_tags").fetchone()["s"]
+                    db.execute("INSERT INTO ojt_tags (label, kind, active, sort_no, created_at) VALUES (?,?,1,?,?)",
+                               (p.get("label"), p.get("kind", "problem"), n, _now()))
+            elif op == "edit":
+                db.execute("UPDATE ojt_tags SET label=?, kind=? WHERE id=?", (p.get("label"), p.get("kind", "problem"), p.get("id")))
+            elif op == "delete":
+                db.execute("UPDATE ojt_tags SET active=0 WHERE id=?", (p.get("id"),))
+        else:  # ojt_topic
+            if op == "add":
+                if not db.execute("SELECT 1 FROM ojt_topics WHERE lower(name)=lower(?)", (p.get("name"),)).fetchone():
+                    n = db.execute("SELECT COALESCE(MAX(sort_no),0)+1 AS s FROM ojt_topics").fetchone()["s"]
+                    db.execute("INSERT INTO ojt_topics (name, active, sort_no) VALUES (?,1,?)", (p.get("name"), n))
+            elif op == "edit":
+                db.execute("UPDATE ojt_topics SET name=? WHERE id=?", (p.get("name"), p.get("id")))
+            elif op == "delete":
+                db.execute("UPDATE ojt_topics SET active=0 WHERE id=?", (p.get("id"),))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (act["id"],))
+        db.commit()
+        return jsonify(ok=True, msg="Approved.")
+
     if d.get("decision") == "approve":
         p = json.loads(act["payload"] or "{}")
         role = _clean_role(p.get("role"))
@@ -1006,12 +1050,15 @@ def api_ojt_topics():
 @_staff_required
 def api_ojt_topic_save():
     u = _current_user()
-    if u["role"] != "admin":
-        return jsonify(ok=False, msg="Only an admin can manage topics."), 403
     d = request.get_json(force=True)
     name = (d.get("name") or "").strip()[:80]
     if not name:
         return jsonify(ok=False, msg="Topic name is required."), 400
+    if u["role"] == "instructor":
+        verb = "Edit" if d.get("id") else "Add"
+        _queue_meta("ojt_topic", f"{verb} topic: {name}",
+                    {"op": ("edit" if d.get("id") else "add"), "id": d.get("id"), "name": name}, u)
+        return jsonify(ok=True, msg="Request sent for admin approval.")
     db = _get_db()
     tid = d.get("id")
     if tid:
@@ -1029,9 +1076,13 @@ def api_ojt_topic_save():
 @_staff_required
 def api_ojt_topic_delete():
     u = _current_user()
-    if u["role"] != "admin":
-        return jsonify(ok=False, msg="Only an admin can manage topics."), 403
     d = request.get_json(force=True)
+    if u["role"] == "instructor":
+        db = _get_db()
+        row = db.execute("SELECT name FROM ojt_topics WHERE id=?", (d.get("id"),)).fetchone()
+        _queue_meta("ojt_topic", f"Remove topic: {(row['name'] if row else d.get('id'))}",
+                    {"op": "delete", "id": d.get("id")}, u)
+        return jsonify(ok=True, msg="Request sent for admin approval.")
     db = _get_db()
     db.execute("UPDATE ojt_topics SET active=0 WHERE id=?", (d.get("id"),))
     db.commit()
@@ -1326,10 +1377,8 @@ def api_ojt_tags():
 @ojt_bp.route("/api/ojt/tag-save", methods=["POST"])
 @_staff_required
 def api_ojt_tag_save():
-    """Admin only: add or edit a tag."""
+    """Admin: add or edit a tag directly. Instructor: send it for admin approval."""
     u = _current_user()
-    if u["role"] != "admin":
-        return jsonify(ok=False, msg="Only an admin can manage tags."), 403
     d = request.get_json(force=True)
     label = (d.get("label") or "").strip()[:80]
     kind = (d.get("kind") or "problem").strip().lower()
@@ -1337,6 +1386,11 @@ def api_ojt_tag_save():
         kind = "problem"
     if not label:
         return jsonify(ok=False, msg="Tag name is required."), 400
+    if u["role"] == "instructor":
+        verb = "Edit" if d.get("id") else "Add"
+        _queue_meta("ojt_tag", f"{verb} tag: {label}",
+                    {"op": ("edit" if d.get("id") else "add"), "id": d.get("id"), "label": label, "kind": kind}, u)
+        return jsonify(ok=True, msg="Request sent for admin approval.")
     db = _get_db()
     tid = d.get("id")
     if tid:
@@ -1354,11 +1408,15 @@ def api_ojt_tag_save():
 @ojt_bp.route("/api/ojt/tag-delete", methods=["POST"])
 @_staff_required
 def api_ojt_tag_delete():
-    """Admin only: deactivate a tag (kept for old records, hidden from pickers)."""
+    """Admin: remove a tag directly. Instructor: send it for admin approval."""
     u = _current_user()
-    if u["role"] != "admin":
-        return jsonify(ok=False, msg="Only an admin can manage tags."), 403
     d = request.get_json(force=True)
+    if u["role"] == "instructor":
+        db = _get_db()
+        row = db.execute("SELECT label FROM ojt_tags WHERE id=?", (d.get("id"),)).fetchone()
+        _queue_meta("ojt_tag", f"Remove tag: {(row['label'] if row else d.get('id'))}",
+                    {"op": "delete", "id": d.get("id")}, u)
+        return jsonify(ok=True, msg="Request sent for admin approval.")
     db = _get_db()
     db.execute("UPDATE ojt_tags SET active=0 WHERE id=?", (d.get("id"),))
     db.commit()
