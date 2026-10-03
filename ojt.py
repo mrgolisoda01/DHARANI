@@ -442,6 +442,23 @@ def api_save_day():
     return jsonify(ok=True, msg=msg)
 
 
+@ojt_bp.route("/api/ojt/clear-tasks", methods=["POST"])
+@_admin_only
+def api_clear_tasks():
+    """Admin only: delete ALL tasks for a role (to re-upload a fresh template).
+    Trainees' existing sign-offs/scores stay in the DB but become orphaned once
+    the tasks are gone — intended for the setup/trial phase."""
+    d = request.get_json(force=True)
+    role = _clean_role(d.get("role"))
+    if not role:
+        return jsonify(ok=False, msg="Pick a valid role."), 400
+    db = _get_db()
+    n = db.execute("SELECT COUNT(*) c FROM ojt_tasks WHERE role=?", (role,)).fetchone()["c"]
+    db.execute("DELETE FROM ojt_tasks WHERE role=?", (role,))
+    db.commit()
+    return jsonify(ok=True, msg=f"Cleared {n} task(s) for {role}. You can now upload a fresh file.")
+
+
 def _parse_upload(file_storage):
     """Read an uploaded .xlsx or .csv into rows of (day, title, description).
     Returns (rows, errors)."""
