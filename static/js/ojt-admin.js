@@ -93,8 +93,8 @@
       ["appr", "✅ " + (S.isAdmin ? "Approvals" : "My requests") +
         (S.isAdmin && S.pendingCount ? '<span class="badge">' + S.pendingCount + "</span>" : "")]
     ];
-    if(S.isAdmin) views.push(["tags", "🏷 Manage tags"]);
-    if(S.isAdmin) views.push(["topics", "📊 Score topics"]);
+    views.push(["tags", "🏷 Manage tags"]);
+    views.push(["topics", "📊 Score topics"]);
     views = views.map(function(v){
       return '<button class="ojt-view' + (S.view === v[0] ? " on" : "") + '" data-act="view" data-v="' + v[0] + '">' + v[1] + "</button>";
     }).join("");
@@ -572,10 +572,13 @@
     var d = await getJ("/api/ojt/pending");
     if(!d.ok){ body.innerHTML = '<div class="empty">Could not load.</div>'; return; }
     if(!d.items.length){
-      body.innerHTML = '<div class="empty">' + (d.is_admin ? "No OJT task changes waiting for approval." : "You haven't submitted any OJT task changes yet.") + "</div>";
+      body.innerHTML = '<div class="empty">' + (d.is_admin ? "Nothing waiting for approval." : "You haven't submitted any OJT change requests yet.") + "</div>";
       return;
     }
     body.innerHTML = d.items.map(function(it){
+      var kindBadge = it.kind === "ojt_tag" ? '<span class="pill" style="background:#eef5fc;color:#0c447c">Tag</span> '
+        : it.kind === "ojt_topic" ? '<span class="pill" style="background:#f3eafc;color:#6b2fb3">Topic</span> '
+        : '<span class="pill" style="background:#eef2f5;color:#12284B">Tasks</span> ';
       var days = Object.keys(it.days).sort(function(a, b){ return a - b; }).map(function(k){
         var ts = it.days[k];
         return '<div style="margin-top:6px"><b>Day ' + esc(k) + "</b> — " + (ts.length ? ts.map(function(t){
@@ -589,7 +592,7 @@
           '<button class="btn" data-act="resolve" data-id="' + it.id + '" data-v="reject">Reject</button></div>'
         : "";
       return '<div class="card" style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">' +
-        "<b>" + esc(it.label) + "</b>" + status + "</div>" +
+        "<b>" + kindBadge + esc(it.label) + "</b>" + status + "</div>" +
         '<div class="muted">Requested by ' + esc(it.by) + " · " + fmtD(it.created_at) + "</div>" +
         '<div style="font-size:13px;margin-top:6px;max-height:260px;overflow:auto">' + days + "</div>" + actions + "</div>";
     }).join("");
@@ -680,7 +683,7 @@
       var kind = ($("newTagKind") || {}).value || "problem";
       if(!lab.trim()){ note("Enter a tag name."); return; }
       var ra = await postJ("/api/ojt/tag-save", { label: lab, kind: kind });
-      if(!ra.ok){ note(ra.msg || "Could not add."); } else { note("Tag added."); loadTagManager(); }
+      if(!ra.ok){ note(ra.msg || "Could not add."); } else { note(ra.msg || "Tag added."); loadTagManager(); }
       return;
     }
     var edT = e.target.closest(".ojt-tagedit");
@@ -688,14 +691,14 @@
       var nl = prompt("Edit tag name:", edT.dataset.label);
       if(nl === null) return;
       var re = await postJ("/api/ojt/tag-save", { id: edT.dataset.id, label: nl, kind: edT.dataset.kind });
-      if(!re.ok){ note(re.msg || "Could not save."); } else { note("Tag updated."); loadTagManager(); }
+      if(!re.ok){ note(re.msg || "Could not save."); } else { note(re.msg || "Tag updated."); loadTagManager(); }
       return;
     }
     var dlT = e.target.closest(".ojt-tagdel");
     if(dlT){
       if(!confirm("Remove this tag? Existing records keep it; it just won't show for new remarks.")) return;
       var rd = await postJ("/api/ojt/tag-delete", { id: dlT.dataset.id });
-      if(!rd.ok){ note(rd.msg || "Could not remove."); } else { note("Tag removed."); loadTagManager(); }
+      if(!rd.ok){ note(rd.msg || "Could not remove."); } else { note(rd.msg || "Tag removed."); loadTagManager(); }
       return;
     }
 
@@ -705,7 +708,7 @@
       var lab = ($("newTopic")||{}).value || "";
       if(!lab.trim()){ note("Enter a topic name."); return; }
       var ra2 = await postJ("/api/ojt/topic-save", { name: lab });
-      if(!ra2.ok){ note(ra2.msg || "Could not add."); } else { note("Topic added."); loadTopicManager(); }
+      if(!ra2.ok){ note(ra2.msg || "Could not add."); } else { note(ra2.msg || "Topic added."); loadTopicManager(); }
       return;
     }
     var edTp = e.target.closest(".ojt-topicedit");
@@ -713,14 +716,14 @@
       var nn = prompt("Edit topic name:", edTp.dataset.name);
       if(nn === null) return;
       var re2 = await postJ("/api/ojt/topic-save", { id: edTp.dataset.id, name: nn });
-      if(!re2.ok){ note(re2.msg || "Could not save."); } else { note("Topic updated."); loadTopicManager(); }
+      if(!re2.ok){ note(re2.msg || "Could not save."); } else { note(re2.msg || "Topic updated."); loadTopicManager(); }
       return;
     }
     var dlTp = e.target.closest(".ojt-topicdel");
     if(dlTp){
       if(!confirm("Remove this topic? Existing scores stay; it just won't show for new scoring.")) return;
       var rd2 = await postJ("/api/ojt/topic-delete", { id: dlTp.dataset.id });
-      if(!rd2.ok){ note(rd2.msg || "Could not remove."); } else { note("Topic removed."); loadTopicManager(); }
+      if(!rd2.ok){ note(rd2.msg || "Could not remove."); } else { note(rd2.msg || "Topic removed."); loadTopicManager(); }
       return;
     }
 
