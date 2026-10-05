@@ -131,7 +131,8 @@
 
   <!-- TAB NAV -->
   <div style="background:#fff;border-bottom:1px solid var(--mg-line);padding:0 22px;display:flex;gap:4px">
-    <button class="tabbtn active" id="tabEmpBtn" onclick="switchTab('emp')">👥 Employees</button>
+    <button class="tabbtn active" id="tabHomeBtn" onclick="switchTab('home')">🏠 Home</button>
+    <button class="tabbtn" id="tabEmpBtn" onclick="switchTab('emp')">👥 Employees</button>
     <button class="tabbtn" id="tabAsBtn" onclick="switchTab('as')">📝 Assessments</button>
     <button class="tabbtn" id="tabIndBtn" onclick="switchTab('ind')">📘 Induction</button>
     <button class="tabbtn" id="tabTrnBtn" onclick="switchTab('trn')">🎓 Training</button>
@@ -145,7 +146,11 @@
   </div>
 
   <!-- ============ EMPLOYEES TAB ============ -->
-  <div class="wrap tabpane" id="tabEmp" style="display:block">
+  <div class="wrap tabpane" id="tabHome" style="display:block">
+    <div id="dashRoot"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="wrap tabpane" id="tabEmp" style="display:none">
 
     <div class="cards">
       <div class="card"><div class="lbl">Total employees</div><div class="val" style="color:var(--mg-blue)" id="cTotal">—</div></div>
@@ -163,7 +168,7 @@
     <div class="sec-head">
       <h2>Employee management</h2>
       <div class="btns">
-        <input class="search" id="searchBox" placeholder="Search name, ID, designation…" oninput="renderTable()" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" name="emp-search-nofill" />
+        <input class="search" id="searchBox" type="search" placeholder="Search name, ID, designation…" oninput="renderTable()" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" name="q_emp_search_x" readonly onfocus="this.removeAttribute('readonly')" data-lpignore="true" data-form-type="other" />
         <select id="empStatusFilter" onchange="renderTable()" style="padding:8px 10px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px">
           <option value="active">Active employees</option>
           <option value="resigned">Resigned only</option>
@@ -660,6 +665,15 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     document.addEventListener("DOMContentLoaded", function(){
       var t = document.getElementById("adTitle");
       if(t) t.textContent = "Mr. Golisoda Training · " + (window.IS_ADMIN ? "Admin" : "Instructor");
+      // safety net: browsers sometimes autofill the search box with a saved
+      // login ID, which filters the employee list to one row. Clear it after
+      // load (and again shortly after) so the full list always shows.
+      var _clearSearch = function(){
+        var sb = document.getElementById("searchBox");
+        if(sb && sb.value){ sb.value = ""; if(typeof renderTable === "function") renderTable(); }
+      };
+      setTimeout(_clearSearch, 300);
+      setTimeout(_clearSearch, 1200);
       if(!window.IS_ADMIN){
         var n = document.getElementById("instrAddNote");
         if(n) n.style.display = "block";
@@ -746,10 +760,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     }
 
     const TABS = {
-      emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', prog: 'tabProg', appr: 'tabAppr', set: 'tabSet', ojt: 'tabOjt', audit: 'tabAudit'
+      home: 'tabHome', emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', prog: 'tabProg', appr: 'tabAppr', set: 'tabSet', ojt: 'tabOjt', audit: 'tabAudit'
     };
     const TAB_BTNS = {
-      emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', appr: 'tabApprBtn', set: 'tabSetBtn', ojt: 'tabOjtBtn', audit: 'tabAuditBtn'
+      home: 'tabHomeBtn', emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', appr: 'tabApprBtn', set: 'tabSetBtn', ojt: 'tabOjtBtn', audit: 'tabAuditBtn'
     };
     function switchTab(which){
       Object.keys(TABS).forEach(k=>{
@@ -1618,5 +1632,6 @@ Priya S,MG087,9876500000,State Head,"></textarea>
   </script>
   <script src="{{ url_for('static', filename='js/ojt-admin.js') }}"></script>
   <script src="{{ url_for('static', filename='js/audit-admin.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 </body>
 </html>
