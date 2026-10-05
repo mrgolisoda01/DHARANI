@@ -34,22 +34,26 @@ def _c(db, sql, params=()):
 
 
 def _admin_home(db):
-    total = _c(db, "SELECT COUNT(*) c FROM users WHERE role != 'admin'")
-    approved = _c(db, "SELECT COUNT(*) c FROM users WHERE status='approved' AND role != 'admin'")
-    pending = _c(db, "SELECT COUNT(*) c FROM users WHERE status='pending'")
-    instructors = _c(db, "SELECT COUNT(*) c FROM users WHERE role='instructor' AND status='approved'")
-    passed_any = _c(db,
+    total = _safe(db, "SELECT COUNT(*) c FROM users WHERE role != 'admin'")
+    approved = _safe(db, "SELECT COUNT(*) c FROM users WHERE status='approved' AND role != 'admin'")
+    pending = _safe(db, "SELECT COUNT(*) c FROM users WHERE status='pending'")
+    instructors = _safe(db, "SELECT COUNT(*) c FROM users WHERE role='instructor' AND status='approved'")
+    passed_any = _safe(db,
         "SELECT COUNT(DISTINCT r.emp_id) c FROM assessment_results r "
         "JOIN users u ON u.emp_id=r.emp_id WHERE r.passed=1 AND u.status='approved' AND u.role!='admin'")
     completion = min(100, round(passed_any * 100 / approved)) if approved else 0
-    avg_row = _one(db,
-        "SELECT AVG(r.percent) a FROM assessment_results r JOIN users u ON u.emp_id=r.emp_id "
-        "WHERE u.status='approved' AND u.role!='admin'")
-    avg_score = round(avg_row["a"]) if avg_row and avg_row["a"] is not None else 0
+    avg_score = 0
+    try:
+        avg_row = _one(db,
+            "SELECT AVG(r.percent) a FROM assessment_results r JOIN users u ON u.emp_id=r.emp_id "
+            "WHERE u.status='approved' AND u.role!='admin'")
+        avg_score = round(avg_row["a"]) if avg_row and avg_row["a"] is not None else 0
+    except Exception:
+        avg_score = 0
 
     # approvals waiting (employees + content + ojt change requests)
     appr_emp = pending
-    appr_content = _safe(db, "SELECT COUNT(*) c FROM content_items WHERE status='pending'")
+    appr_content = _safe(db, "SELECT COUNT(*) c FROM content_modules WHERE status='pending'")
     appr_ojt = _safe(db, "SELECT COUNT(*) c FROM pending_actions WHERE action_type IN ('ojt_tasks','ojt_tag','ojt_topic') AND status='pending'")
     appr_total = appr_emp + appr_content + appr_ojt
 
@@ -62,16 +66,19 @@ def _admin_home(db):
 
     # chart: learners by designation (top 8)
     desig = []
-    for r in db.execute(
-        "SELECT COALESCE(NULLIF(designation,''),'(none)') d, COUNT(*) c FROM users "
-        "WHERE status='approved' AND role!='admin' GROUP BY designation ORDER BY c DESC LIMIT 8").fetchall():
-        desig.append({"label": r["d"], "value": r["c"]})
+    try:
+        for r in db.execute(
+            "SELECT COALESCE(NULLIF(designation,''),'(none)') d, COUNT(*) c FROM users "
+            "WHERE status='approved' AND role!='admin' GROUP BY designation ORDER BY c DESC LIMIT 8").fetchall():
+            desig.append({"label": r["d"], "value": r["c"]})
+    except Exception:
+        desig = []
 
     # chart: assessment pass vs fail (active learners)
-    pass_cnt = _c(db,
+    pass_cnt = _safe(db,
         "SELECT COUNT(*) c FROM assessment_results r JOIN users u ON u.emp_id=r.emp_id "
         "WHERE r.passed=1 AND u.status='approved' AND u.role!='admin'")
-    fail_cnt = _c(db,
+    fail_cnt = _safe(db,
         "SELECT COUNT(*) c FROM assessment_results r JOIN users u ON u.emp_id=r.emp_id "
         "WHERE r.passed=0 AND u.status='approved' AND u.role!='admin'")
 
@@ -79,8 +86,8 @@ def _admin_home(db):
     recent = []
     try:
         for r in db.execute(
-            "SELECT when_ts, actor_name, action, affected FROM activity_log ORDER BY id DESC LIMIT 6").fetchall():
-            recent.append({"when": r["when_ts"], "who": r["actor_name"], "action": r["action"], "what": r["affected"]})
+            "SELECT created_at, actor_name, action, target_label FROM activity_log ORDER BY id DESC LIMIT 6").fetchall():
+            recent.append({"when": r["created_at"], "who": r["actor_name"], "action": r["action"], "what": r["target_label"]})
     except Exception:
         pass
 
@@ -152,7 +159,7 @@ def _learner_home(db, u):
     mine = u["emp_id"]
     taken = _safe(db, "SELECT COUNT(DISTINCT assessment_id) c FROM assessment_results WHERE emp_id=?", (mine,))
     passed = _safe(db, "SELECT COUNT(DISTINCT assessment_id) c FROM assessment_results WHERE emp_id=? AND passed=1", (mine,))
-    certs = _safe(db, "SELECT COUNT(*) c FROM certificates WHERE emp_id=?", (mine,))
+    certs = _safe(db, "SELECT COUNT(*) c FROM issued_certificates WHERE emp_id=?", (mine,))
     avg_row = None
     try:
         avg_row = _one(db, "SELECT AVG(percent) a FROM assessment_results WHERE emp_id=?", (mine,))
