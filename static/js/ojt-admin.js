@@ -270,6 +270,11 @@
     // load this trainee's competency scorecard
     var scd = await getJ("/api/ojt/scorecard?id=" + id);
     S.scorecard = (scd && scd.ok) ? scd : {topics:[], topic_avg:null, task_avg:null};
+    // load trainer list (admin can reassign)
+    if(S.isAdmin && !S.trainerList){
+      var trl = await getJ("/api/ojt/trainers");
+      S.trainerList = (trl && trl.ok) ? trl.trainers : [];
+    }
     var e = d.enrollment, tl = d.timeline, active = e.status === "active";
     var TAGMAP = {}; (S.tags || []).forEach(function(t){ TAGMAP[t.id] = t; });
     function tagChips(ids){
@@ -443,6 +448,15 @@
       '<p class="sub">' + esc(e.role) + " · " + esc(e.day_label) + " · Trainer: " + esc(e.trainer) +
       "<br>" + fmtD(e.start_date) + " → " + fmtD(tl.end_date) + " · " + tl.done + "/" + tl.total + " tasks signed off · " +
       tl.sundays + " week-offs · " + tl.holidays + " leave days</p>" +
+      (S.isAdmin ?
+        '<div style="display:flex;align-items:center;gap:8px;margin:-4px 0 12px;flex-wrap:wrap">'+
+          '<label style="font-size:12px;color:#62707a">Change trainer:</label>'+
+          '<select id="ojtChTrainer" style="padding:6px 8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px;min-width:160px">'+
+            '<option value="">— Not assigned —</option>'+
+            (S.trainerList||[]).map(function(t){ return '<option value="'+esc(t.emp_id)+'"'+((e.trainer_id||"")===t.emp_id?" selected":"")+'>'+esc(t.name)+'</option>'; }).join("")+
+          '</select>'+
+          '<button class="btn" data-act="save-trainer" data-enr="'+e.id+'" style="padding:5px 12px;font-size:12px;background:var(--mg-blue);color:#fff;border:none;border-radius:6px">Save trainer</button>'+
+        '</div>' : "") +
       scoreCard + daysHtml + closeBox, 760
     );
   }
@@ -633,6 +647,12 @@
       else if(act === "cancel-day"){ S.openDay = null; renderDays(); }
       else if(act === "save-day") saveDay(el);
       else if(act === "upload") upload(el);
+      else if(act === "save-trainer"){
+        var selT = $("ojtChTrainer");
+        var rt = await postJ("/api/ojt/change-trainer", { enrollment_id: el.dataset.enr, trainer_id: selT ? selT.value : "" });
+        if(rt.ok){ note(rt.msg || "Trainer updated."); try{ openTrainee(el.dataset.enr); }catch(e){} }
+        else note(rt.msg || "Could not update.");
+      }
       else if(act === "clear-tasks"){
         if(confirm("Delete ALL tasks for " + S.role + "? This cannot be undone. You'll then upload a fresh file.")){
           var rc = await postJ("/api/ojt/clear-tasks", { role: S.role });
