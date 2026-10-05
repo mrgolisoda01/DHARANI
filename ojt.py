@@ -960,7 +960,8 @@ def api_trainee():
     tl = _timeline(e)
     return jsonify(ok=True, enrollment={
         "id": e["id"], "name": e["name"] or e["emp_id"], "emp_id": e["emp_id"], "role": e["role"],
-        "start_date": e["start_date"], "trainer": e["trainer_name"] or "—", "status": e["status"],
+        "start_date": e["start_date"], "trainer": e["trainer_name"] or "—",
+        "trainer_id": e["trainer_id"] or "", "status": e["status"],
         "final_note": e["final_note"] or "", "day_label": _day_label(tl["day_no"], e["status"]),
     }, timeline=tl)
 
@@ -1262,6 +1263,37 @@ def api_remove():
     db.execute("DELETE FROM ojt_enrollments WHERE id=?", (eid,))
     db.commit()
     return jsonify(ok=True, msg="OJT removed.")
+
+
+@ojt_bp.route("/api/ojt/trainers")
+@_staff_required
+def api_ojt_trainers():
+    """List possible trainers (instructors + admins) for the change-trainer picker."""
+    db = _get_db()
+    rows = db.execute(
+        "SELECT emp_id, name FROM users WHERE role IN ('instructor','admin') AND status='approved' ORDER BY name"
+    ).fetchall()
+    return jsonify(ok=True, trainers=[dict(r) for r in rows])
+
+
+@ojt_bp.route("/api/ojt/change-trainer", methods=["POST"])
+@_admin_only
+def api_ojt_change_trainer():
+    """Admin only: reassign a trainee's OJT to a different trainer, any time."""
+    d = request.get_json(force=True)
+    eid = d.get("enrollment_id")
+    new_trainer = (d.get("trainer_id") or "").strip() or None
+    db = _get_db()
+    e = db.execute("SELECT id FROM ojt_enrollments WHERE id=?", (eid,)).fetchone()
+    if not e:
+        return jsonify(ok=False, msg="Not found."), 404
+    if new_trainer:
+        t = db.execute("SELECT 1 FROM users WHERE emp_id=? AND role IN ('instructor','admin')", (new_trainer,)).fetchone()
+        if not t:
+            return jsonify(ok=False, msg="Pick a valid trainer."), 400
+    db.execute("UPDATE ojt_enrollments SET trainer_id=? WHERE id=?", (new_trainer, eid))
+    db.commit()
+    return jsonify(ok=True, msg="Trainer updated.")
 
 
 # ---------------------------------------------------------------
