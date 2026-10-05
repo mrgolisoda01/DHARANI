@@ -3957,6 +3957,12 @@ init_ojt(app, get_db, current_user)
 from audit import init_audit
 init_audit(app, get_db, current_user)
 
+# ---------------------------------------------------------------
+#  Home dashboard module (dashboard.py)
+# ---------------------------------------------------------------
+from dashboard import init_dashboard
+init_dashboard(app, get_db, current_user)
+
 
 # ---------------------------------------------------------------
 #  Start
