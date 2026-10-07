@@ -141,6 +141,7 @@
     <button class="tabbtn" id="tabProgBtn" onclick="switchTab('prog')">📊 Progress</button>
     <button class="tabbtn" id="tabOjtBtn" onclick="switchTab('ojt')">🧭 OJT</button>
     <button class="tabbtn" id="tabAuditBtn" onclick="switchTab('audit')">📋 Audit</button>
+    <button class="tabbtn" id="tabTcBtn" onclick="switchTab('tc')">🎓 Trainer Credit</button>
     <button class="tabbtn" id="tabApprBtn" onclick="switchTab('appr')">✅ <span id="apprTabLabel">Approvals</span> <span id="apprBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
     <button class="tabbtn" id="tabSetBtn" onclick="switchTab('set')">⚙️ Settings</button>
   </div>
@@ -470,6 +471,11 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
   <div class="wrap tabpane" id="tabAudit" style="display:none">
     <div id="auditRoot"><div class="empty">Loading…</div></div>
   </div>
+
+  <!-- ============ TRAINER CREDIT TAB (training-credit.js) ============ -->
+  <div class="wrap tabpane" id="tabTc" style="display:none">
+    <div id="tcRoot"><div class="empty">Loading…</div></div>
+  </div>
   <div class="ov" id="ojtOv"><div class="modal"><div id="ojtModalBody"></div></div></div>
 
   <div class="wrap tabpane" id="tabAppr" style="display:none">
@@ -760,10 +766,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     }
 
     const TABS = {
-      home: 'tabHome', emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', prog: 'tabProg', appr: 'tabAppr', set: 'tabSet', ojt: 'tabOjt', audit: 'tabAudit'
+      home: 'tabHome', emp: 'tabEmp', as: 'tabAs', ind: 'tabInd', trn: 'tabTrn', vid: 'tabVid', crt: 'tabCrt', prog: 'tabProg', appr: 'tabAppr', set: 'tabSet', ojt: 'tabOjt', audit: 'tabAudit', tc: 'tabTc'
     };
     const TAB_BTNS = {
-      home: 'tabHomeBtn', emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', appr: 'tabApprBtn', set: 'tabSetBtn', ojt: 'tabOjtBtn', audit: 'tabAuditBtn'
+      home: 'tabHomeBtn', emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', appr: 'tabApprBtn', set: 'tabSetBtn', ojt: 'tabOjtBtn', audit: 'tabAuditBtn', tc: 'tabTcBtn'
     };
     function switchTab(which){
       Object.keys(TABS).forEach(k=>{
@@ -1633,5 +1639,6 @@ Priya S,MG087,9876500000,State Head,"></textarea>
   <script src="{{ url_for('static', filename='js/ojt-admin.js') }}"></script>
   <script src="{{ url_for('static', filename='js/audit-admin.js') }}"></script>
   <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/training-credit.js') }}"></script>
 </body>
 </html>
