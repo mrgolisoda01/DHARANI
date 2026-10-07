@@ -875,7 +875,7 @@ def api_trainees():
             "id": e["id"], "emp_id": e["emp_id"], "name": e["name"] or e["emp_id"],
             "designation": e["designation"] or "", "role": e["role"],
             "start_date": e["start_date"], "end_date": tl["end_date"],
-            "trainer": e["trainer_name"] or "—", "status": e["status"],
+            "trainer": e["trainer_name"] or "—", "trainer_id": e["trainer_id"] or "", "status": e["status"],
             "day_no": tl["day_no"], "day_label": _day_label(tl["day_no"], e["status"]),
             "done": tl["done"], "total": tl["total"], "overdue": tl["overdue"],
         })
@@ -952,7 +952,7 @@ def api_start():
 def api_trainee():
     u = _current_user()
     db = _get_db()
-    e = db.execute("SELECT e.*, us.name, tr.name AS trainer_name FROM ojt_enrollments e "
+    e = db.execute("SELECT e.*, us.name, us.phone, us.designation, tr.name AS trainer_name FROM ojt_enrollments e "
                    "LEFT JOIN users us ON us.emp_id=e.emp_id LEFT JOIN users tr ON tr.emp_id=e.trainer_id "
                    "WHERE e.id=?", (request.args.get("id"),)).fetchone()
     if not e or not _enrollment_visible(e, u):
@@ -960,6 +960,8 @@ def api_trainee():
     tl = _timeline(e)
     return jsonify(ok=True, enrollment={
         "id": e["id"], "name": e["name"] or e["emp_id"], "emp_id": e["emp_id"], "role": e["role"],
+        "phone": (e["phone"] if "phone" in e.keys() else "") or "",
+        "designation": (e["designation"] if "designation" in e.keys() else "") or "",
         "start_date": e["start_date"], "trainer": e["trainer_name"] or "—",
         "trainer_id": e["trainer_id"] or "", "status": e["status"],
         "final_note": e["final_note"] or "", "day_label": _day_label(tl["day_no"], e["status"]),
