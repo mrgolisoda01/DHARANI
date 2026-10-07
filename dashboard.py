@@ -7,7 +7,7 @@
 # ===============================================================
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 dashboard_bp = Blueprint("dashboard", __name__)
 _get_db = None
@@ -204,6 +204,116 @@ def api_dashboard_home():
         return jsonify(ok=False, msg="Could not load dashboard."), 200
     data["me"] = {"name": u["name"], "emp_id": u["emp_id"]}
     return jsonify(ok=True, **data)
+
+
+# ===============================================================
+#  Completion tracker — per-employee induction / training / assessments
+#  (who completed what, and which attempt they passed an assessment on)
+# ===============================================================
+def _staff_only(view):
+    @wraps(view)
+    def wrapped(*a, **k):
+        u = _current_user()
+        if u is None or u["role"] not in ("admin", "instructor"):
+            return jsonify(ok=False, msg="Not authorised."), 403
+        return view(*a, **k)
+    return wrapped
+
+
+def _roles_match(roles_field, designation):
+    roles = (roles_field or "all").strip().lower()
+    if roles in ("", "all"):
+        return True
+    desg = (designation or "").strip().lower()
+    allowed = [r.strip().lower() for r in roles.split(",")]
+    return any(a and a in desg for a in allowed)
+
+
+@dashboard_bp.route("/api/dashboard/completion")
+@_staff_only
+def api_dashboard_completion():
+    """Per-employee completion across Induction modules, Training modules and
+    Assessments. For each assessment shows total attempts and which attempt the
+    person first passed on. Optional ?designation= to filter."""
+    db = _get_db()
+    filt = (request.args.get("designation") or "").strip().lower()
+
+    # live modules & assessments (role-targeted lists)
+    try:
+        ind = [dict(r) for r in db.execute(
+            "SELECT id, title, roles FROM content_modules WHERE kind='induction' AND status='live' ORDER BY sort_order, id").fetchall()]
+    except Exception:
+        ind = []
+    try:
+        trn = [dict(r) for r in db.execute(
+            "SELECT id, title, roles FROM content_modules WHERE kind='training' AND status='live' ORDER BY sort_order, id").fetchall()]
+    except Exception:
+        trn = []
+    try:
+        ass = [dict(r) for r in db.execute(
+            "SELECT id, title, roles, pass_percent FROM assessments WHERE active=1 AND status='live' ORDER BY id").fetchall()]
+    except Exception:
+        ass = []
+
+    # people (approved learners)
+    people = [dict(r) for r in db.execute(
+        "SELECT emp_id, name, designation FROM users WHERE status='approved' AND role!='admin' ORDER BY name").fetchall()]
+    if filt:
+        people = [p for p in people if (p.get("designation") or "").strip().lower() == filt]
+
+    # completions sets
+    mod_done = {}   # emp_id -> set(module_id)
+    try:
+        for r in db.execute("SELECT emp_id, module_id FROM module_completions").fetchall():
+            mod_done.setdefault(r["emp_id"], set()).add(r["module_id"])
+    except Exception:
+        pass
+
+    # assessment attempts per (emp_id, assessment_id), ordered by time
+    attempts = {}   # (emp, aid) -> list of (passed, taken_at)
+    try:
+        for r in db.execute(
+            "SELECT emp_id, assessment_id, passed, taken_at FROM assessment_results ORDER BY taken_at, id").fetchall():
+            attempts.setdefault((r["emp_id"], r["assessment_id"]), []).append(r["passed"])
+    except Exception:
+        pass
+
+    rows = []
+    for p in people:
+        desg = p.get("designation") or ""
+        my_ind = [m for m in ind if _roles_match(m["roles"], desg)]
+        my_trn = [m for m in trn if _roles_match(m["roles"], desg)]
+        my_ass = [a for a in ass if _roles_match(a["roles"], desg)]
+        done = mod_done.get(p["emp_id"], set())
+        ind_done = sum(1 for m in my_ind if m["id"] in done)
+        trn_done = sum(1 for m in my_trn if m["id"] in done)
+        # assessments: attempts + pass-attempt
+        a_list = []
+        a_passed = 0
+        for a in my_ass:
+            tries = attempts.get((p["emp_id"], a["id"]), [])
+            n_try = len(tries)
+            pass_attempt = None
+            for i, pv in enumerate(tries, 1):
+                if pv:
+                    pass_attempt = i
+                    break
+            if pass_attempt:
+                a_passed += 1
+            a_list.append({"title": a["title"], "attempts": n_try, "pass_attempt": pass_attempt})
+        rows.append({
+            "emp_id": p["emp_id"], "name": p["name"], "designation": desg,
+            "ind_done": ind_done, "ind_total": len(my_ind),
+            "trn_done": trn_done, "trn_total": len(my_trn),
+            "ass_passed": a_passed, "ass_total": len(my_ass),
+            "assessments": a_list,
+        })
+
+    # designation options for the filter
+    desigs = sorted({(p.get("designation") or "").strip() for p in
+                     [dict(r) for r in db.execute("SELECT designation FROM users WHERE status='approved' AND role!='admin'").fetchall()]
+                     if (p.get("designation") or "").strip()})
+    return jsonify(ok=True, rows=rows, designations=desigs)
 
 
 def init_dashboard(app, get_db, current_user):
