@@ -3963,6 +3963,12 @@ init_audit(app, get_db, current_user)
 from dashboard import init_dashboard
 init_dashboard(app, get_db, current_user)
 
+# ---------------------------------------------------------------
+#  Training credit / trainer productivity (training_credit.py)
+# ---------------------------------------------------------------
+from training_credit import init_training_credit
+init_training_credit(app, get_db, current_user)
+
 
 # ---------------------------------------------------------------
 #  Start
