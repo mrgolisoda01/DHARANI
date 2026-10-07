@@ -102,12 +102,97 @@
         '</div>';
     }
 
+    // completion tracker section (admin/instructor) — loads on demand
+    var tracker = (d.role === "admin" || d.role === "instructor")
+      ? '<div class="pane" style="margin-top:14px"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'+
+          '<h4 style="margin:0">📋 Completion tracker — per employee</h4>'+
+          '<button id="dashTrackBtn" class="card" style="padding:7px 14px;font-size:12.5px;font-weight:700;color:#1F5FA9;cursor:pointer">Show tracker</button></div>'+
+          '<div id="dashTrackBox" style="margin-top:10px"></div></div>'
+      : "";
+
     root.innerHTML = '<div class="dhead">'+hello+'</div>'+
       '<div class="dsub">Here\'s your overview at a glance.</div>'+
-      cards + att + panes + extra + recent;
+      cards + att + panes + extra + tracker + recent;
 
     root.querySelectorAll("[data-go]").forEach(function(el){
       el.addEventListener("click", function(){ go(el.dataset.go); });
+    });
+    var tb = $("dashTrackBtn");
+    if(tb) tb.addEventListener("click", loadTracker);
+  }
+
+  async function loadTracker(){
+    var box = $("dashTrackBox"); var btn = $("dashTrackBtn");
+    if(!box) return;
+    box.innerHTML = '<div style="padding:10px;color:#62707a;font-size:13px">Loading…</div>';
+    if(btn) btn.style.display = "none";
+    var d = await getJ("/api/dashboard/completion");
+    if(!d || !d.ok){ box.innerHTML = '<div style="padding:10px;color:#9e2b2b;font-size:13px">Could not load.</div>'; return; }
+
+    function pct(done, total){ return total ? Math.round(done*100/total) : 0; }
+    function cell(done, total){
+      if(!total) return '<span style="color:#aaa">—</span>';
+      var p = pct(done,total);
+      var col = p>=100?"#1d9e75":(p>=50?"#c9a227":"#d64545");
+      return '<span style="font-weight:700;color:'+col+'">'+done+'/'+total+'</span> <span style="color:#8a97a1;font-size:11px">('+p+'%)</span>';
+    }
+
+    var desigOpts = '<option value="">All designations</option>' +
+      (d.designations||[]).map(function(x){ return '<option value="'+esc(x)+'">'+esc(x)+'</option>'; }).join("");
+
+    var head = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'+
+      '<select id="dashTrackDesig" style="padding:6px 8px;border:1px solid var(--mg-line,#e3e8ee);border-radius:7px;font-size:12.5px">'+desigOpts+'</select>'+
+      '<span style="font-size:11.5px;color:#62707a">Induction / Training = modules completed · Assessments = passed. Click a name for assessment attempt detail.</span></div>';
+
+    box.innerHTML = head + renderTrackTable(d.rows);
+    wireTrack(d.rows);
+  }
+
+  function renderTrackTable(rows){
+    if(!rows || !rows.length) return '<div style="padding:10px;color:#62707a;font-size:13px">No employees.</div>';
+    function pct(done, total){ return total ? Math.round(done*100/total) : 0; }
+    function cell(done, total){
+      if(!total) return '<span style="color:#aaa">—</span>';
+      var p = pct(done,total), col = p>=100?"#1d9e75":(p>=50?"#c9a227":"#d64545");
+      return '<b style="color:'+col+'">'+done+'/'+total+'</b> <span style="color:#8a97a1;font-size:11px">('+p+'%)</span>';
+    }
+    var body = rows.map(function(r,i){
+      return '<tr style="border-bottom:1px solid #f0f0f0;cursor:pointer" class="dash-trrow" data-i="'+i+'">'+
+        '<td style="padding:7px 6px"><b>'+esc(r.name)+'</b><br><span style="font-size:11px;color:#8a97a1">'+esc(r.emp_id)+' · '+esc(r.designation||"")+'</span></td>'+
+        '<td style="padding:7px 6px;text-align:center">'+cell(r.ind_done,r.ind_total)+'</td>'+
+        '<td style="padding:7px 6px;text-align:center">'+cell(r.trn_done,r.trn_total)+'</td>'+
+        '<td style="padding:7px 6px;text-align:center">'+cell(r.ass_passed,r.ass_total)+'</td></tr>'+
+        '<tr class="dash-trdet" data-d="'+i+'" style="display:none"><td colspan="4" style="padding:4px 14px 12px;background:#fbfdff">'+
+          (r.assessments && r.assessments.length ? r.assessments.map(function(a){
+            var v = a.pass_attempt ? '<span style="color:#0f6b45;font-weight:700">passed on attempt '+a.pass_attempt+'</span>'
+              : (a.attempts ? '<span style="color:#9e2b2b">not passed ('+a.attempts+' attempt'+(a.attempts===1?'':'s')+')</span>' : '<span style="color:#aaa">not attempted</span>');
+            return '<div style="font-size:12.5px;padding:2px 0">• '+esc(a.title)+' — '+v+'</div>';
+          }).join("") : '<span style="font-size:12px;color:#8a97a1">No assessments for this designation.</span>')+
+        '</td></tr>';
+    }).join("");
+    return '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">'+
+      '<thead><tr style="background:#12284B;color:#fff"><th style="padding:6px;text-align:left">Employee</th>'+
+      '<th style="padding:6px">Induction</th><th style="padding:6px">Training</th><th style="padding:6px">Assessments</th></tr></thead>'+
+      '<tbody>'+body+'</tbody></table></div>';
+  }
+
+  function wireTrack(rows){
+    var box = $("dashTrackBox");
+    box.querySelectorAll(".dash-trrow").forEach(function(tr){
+      tr.addEventListener("click", function(){
+        var det = box.querySelector('.dash-trdet[data-d="'+tr.dataset.i+'"]');
+        if(det) det.style.display = (det.style.display === "none" ? "table-row" : "none");
+      });
+    });
+    var sel = $("dashTrackDesig");
+    if(sel) sel.addEventListener("change", async function(){
+      var d = await getJ("/api/dashboard/completion"+(sel.value?("?designation="+encodeURIComponent(sel.value)):""));
+      var tbl = box.querySelector("div[style*='overflow-x']");
+      if(d && d.ok){
+        var newTbl = renderTrackTable(d.rows);
+        if(tbl) tbl.outerHTML = newTbl; else box.insertAdjacentHTML("beforeend", newTbl);
+        wireTrack(d.rows);
+      }
     });
   }
 

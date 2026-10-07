@@ -190,6 +190,10 @@
     try{ d = await getJ("/api/ojt/trainees?role=" + encodeURIComponent(S.role) + "&show=" + S.show); }
     catch(e){ body.innerHTML = '<div class="empty">Could not load.</div>'; return; }
     if(!d.ok){ body.innerHTML = '<div class="empty">' + esc(d.msg || "Could not load.") + "</div>"; return; }
+    if(S.isAdmin && !S.trainerList){
+      var trl = await getJ("/api/ojt/trainers");
+      S.trainerList = (trl && trl.ok) ? trl.trainers : [];
+    }
     S.counts = d.counts;
     var head =
       '<div class="sec-head"><div class="btns">' +
@@ -211,7 +215,12 @@
         "<td><b>" + esc(t.name) + '</b><div class="muted">' + esc(t.emp_id) + "</div></td>" +
         "<td>" + esc(t.day_label) + "</td>" +
         "<td>" + fmtD(t.start_date) + " → " + fmtD(t.end_date) + "</td>" +
-        "<td>" + esc(t.trainer) + "</td>" +
+        "<td>" + (S.isAdmin
+          ? '<select class="ojt-rowtrainer" data-enr="'+t.id+'" style="padding:5px 6px;border:1px solid var(--mg-line);border-radius:6px;font-size:12.5px;max-width:150px">'+
+              '<option value="">— Not assigned —</option>'+
+              (S.trainerList||[]).map(function(x){ return '<option value="'+esc(x.emp_id)+'"'+((t.trainer_id||"")===x.emp_id?" selected":"")+'>'+esc(x.name)+'</option>'; }).join("")+
+            '</select>'
+          : esc(t.trainer)) + "</td>" +
         '<td><div class="bar"><i style="width:' + pct + '%"></i></div><div class="muted">' + t.done + " / " + t.total + " tasks</div></td>" +
         "<td>" + (t.overdue ? '<span class="pill p-pending">' + t.overdue + " pending</span>" : '<span class="pill p-approved">On track</span>') + "</td>" +
         '<td><button class="btn" data-act="open" data-id="' + t.id + '">Open</button></td>' +
@@ -445,6 +454,12 @@
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">' +
       "<h3 style=\"margin:0\">" + esc(e.name) + ' <span class="muted">(' + esc(e.emp_id) + ")</span></h3>" +
       '<a class="btn" href="/api/ojt/export-trainee.xlsx?id=' + e.id + '" style="font-size:12px">⬇ Download Excel</a></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 10px">' +
+        '<span style="font-size:12px;background:#eef5fc;color:#0c447c;border:1px solid #cddff0;border-radius:20px;padding:3px 11px">🆔 ' + esc(e.emp_id) + '</span>' +
+        (e.phone ? '<span style="font-size:12px;background:#eef5fc;color:#0c447c;border:1px solid #cddff0;border-radius:20px;padding:3px 11px">📱 ' + esc(e.phone) + '</span>' : '') +
+        (e.designation ? '<span style="font-size:12px;background:#eef5fc;color:#0c447c;border:1px solid #cddff0;border-radius:20px;padding:3px 11px">💼 ' + esc(e.designation) + '</span>' : '') +
+        '<span style="font-size:12px;background:#eef5fc;color:#0c447c;border:1px solid #cddff0;border-radius:20px;padding:3px 11px">👤 Trainer: ' + esc(e.trainer) + '</span>' +
+      '</div>' +
       '<p class="sub">' + esc(e.role) + " · " + esc(e.day_label) + " · Trainer: " + esc(e.trainer) +
       "<br>" + fmtD(e.start_date) + " → " + fmtD(tl.end_date) + " · " + tl.done + "/" + tl.total + " tasks signed off · " +
       tl.sundays + " week-offs · " + tl.holidays + " leave days</p>" +
@@ -842,6 +857,14 @@
   document.addEventListener("change", async function(e){
     var el = e.target;
     if(el.dataset && el.dataset.act === "show" && el.closest("#tabOjt")){ S.show = el.value; loadTrainees(); }
+    // inline trainer reassignment from the trainees list (admin, saves instantly)
+    var rt = el.closest ? el.closest(".ojt-rowtrainer") : null;
+    if(rt){
+      var r0 = await postJ("/api/ojt/change-trainer", { enrollment_id: rt.dataset.enr, trainer_id: rt.value });
+      if(!r0.ok){ note(r0.msg || "Could not update trainer."); loadTrainees(); }
+      else { note("Trainer updated."); }
+      return;
+    }
     // edit a call's outcome
     var ce = el.closest ? el.closest(".ojt-calledit") : null;
     if(ce && S.current && S.current.enrollment){
