@@ -29,7 +29,17 @@
     "#tcRoot .pill{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}",
     "#tcRoot .arow{background:#fff;border:1px solid var(--mg-line,#e3e8ee);border-radius:10px;padding:10px 13px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px}",
     "#tcRoot .eff{display:inline-block;height:10px;border-radius:5px}",
-    "#tcRoot .big{font-size:22px;font-weight:800;color:#12284B}"
+    "#tcRoot .big{font-size:22px;font-weight:800;color:#12284B}",
+    "#tcRoot .pcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:14px}",
+    "#tcRoot .pcard{background:#fff;border:1px solid var(--mg-line,#e3e8ee);border-radius:14px;padding:16px 18px}",
+    "#tcRoot .pcard .pv{font-size:30px;font-weight:800;line-height:1.1}",
+    "#tcRoot .pcard .pl{font-size:12.5px;color:#62707a;margin-top:4px}",
+    "#tcRoot .pbar{display:flex;align-items:center;gap:10px;margin:8px 0;font-size:12.5px}",
+    "#tcRoot .pbar.mine{background:#eef5fc;border-radius:7px;padding:3px 6px;margin:5px -6px}",
+    "#tcRoot .pbar .pn{width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#42515c}",
+    "#tcRoot .pbar .pt{flex:1;height:16px;background:#eef2f5;border-radius:8px;overflow:hidden}",
+    "#tcRoot .pbar .pt i{display:block;height:100%}",
+    "#tcRoot .pbar .pvv{width:46px;text-align:right;font-weight:800;color:#12284B}"
   ].join("\n");
   document.head.appendChild(css);
 
@@ -129,28 +139,57 @@
     shell('<div class="empty">Loading…</div>');
     var d=await getJ("/api/training/productivity");
     var t=(d&&d.ok)?d.trainers:[];
+    var sm=(d&&d.summary)||{};
+    var meId=d&&d.me_id;
     if(!t.length){ shell('<div class="empty" style="padding:16px">No approved training records yet. Mark some training first.</div>'); return; }
+
+    // summary cards
+    function card(v, l, col){ return '<div class="pcard"><div class="pv" style="color:'+(col||"#12284B")+'">'+v+'</div><div class="pl">'+l+'</div></div>'; }
+    var cards = '<div class="pcards">'+
+      card(sm.trainers!=null?sm.trainers:"—", "Active trainers")+
+      card(sm.trained!=null?sm.trained:"—", "People trained")+
+      card(sm.avg_score!=null?sm.avg_score+"%":"—", "Overall avg score", sm.avg_score!=null?(sm.avg_score>=70?"#1d9e75":"#c9a227"):"#12284B")+
+      card(sm.first_rate!=null?sm.first_rate+"%":"—", "Overall 1st-try pass rate", sm.first_rate!=null?(sm.first_rate>=70?"#1d9e75":(sm.first_rate>=50?"#c9a227":"#d64545")):"#12284B")+
+    '</div>';
+
+    // bar chart: trainers by 1st-try rate
+    var maxRate = Math.max.apply(null, t.map(function(x){return x.first_rate||0;})) || 100;
+    var chart = '<div class="card"><h4 style="margin:0 0 12px;font-size:14px;color:#12284B">1st-try pass rate by trainer</h4>'+
+      t.map(function(x){
+        var r=x.first_rate||0, col=r>=70?"#1d9e75":(r>=50?"#c9a227":"#d64545");
+        var mine = (x.trainer_id===meId);
+        return '<div class="pbar'+(mine?" mine":"")+'"><span class="pn">'+esc(x.trainer)+(mine?' <span style="font-size:10px;color:#1F5FA9">(you)</span>':'')+'</span>'+
+          '<span class="pt"><i style="width:'+Math.round((x.first_rate||0)*100/maxRate)+'%;background:'+col+'"></i></span>'+
+          '<span class="pvv">'+(x.first_rate==null?"—":x.first_rate+"%")+'</span></div>';
+      }).join("")+'</div>';
+
+    // full table
     var rows=t.map(function(x){
       var fr = x.first_rate==null?"—":x.first_rate+"%";
       var frCol = x.first_rate==null?"#aaa":(x.first_rate>=70?"#1d9e75":(x.first_rate>=50?"#c9a227":"#d64545"));
       var avg = x.avg_score==null?"—":x.avg_score+"%";
-      // efficiency bar: first/second/third split
       var tot = x.pass_events||0;
-      function seg(n,col){ return tot? '<span class="eff" style="width:'+Math.round(n*60/tot)+'px;background:'+col+'" title="'+n+'"></span>':''; }
-      var bar = tot? '<div style="display:flex;gap:1px;align-items:center">'+seg(x.first_try,"#1d9e75")+seg(x.second,"#c9a227")+seg(x.third_plus,"#d64545")+'</div>' : '<span style="color:#aaa">—</span>';
-      return '<tr><td><b>'+esc(x.trainer)+'</b></td>'+
-        '<td style="text-align:center">'+x.learners+'</td>'+
+      function seg(n,col){ return tot&&n? '<span class="eff" style="flex:'+n+';background:'+col+'" title="'+n+'"></span>':''; }
+      var bar = tot? '<div style="display:flex;gap:1px;align-items:center;width:140px;height:12px;border-radius:6px;overflow:hidden;background:#eef2f5">'+seg(x.first_try,"#1d9e75")+seg(x.second,"#c9a227")+seg(x.third_plus,"#d64545")+'</div>' : '<span style="color:#aaa">—</span>';
+      var medal = x.rank===1?"🥇 ":x.rank===2?"🥈 ":x.rank===3?"🥉 ":"";
+      var mine = (x.trainer_id===meId);
+      return '<tr'+(mine?' style="background:#eef5fc"':'')+'>'+
+        '<td style="white-space:nowrap">'+medal+'<b>'+esc(x.trainer)+'</b>'+(mine?' <span style="font-size:10px;color:#1F5FA9">(you)</span>':'')+'</td>'+
+        '<td style="text-align:center;font-weight:700">'+x.learners+'</td>'+
         '<td style="text-align:center">'+x.ind+' / '+x.trn+'</td>'+
         '<td style="text-align:center;font-weight:700">'+avg+'</td>'+
         '<td style="text-align:center;font-weight:800;color:'+frCol+'">'+fr+'</td>'+
-        '<td>'+bar+'<br><span style="font-size:10px;color:#8a97a1">1st '+x.first_try+' · 2nd '+x.second+' · 3rd+ '+x.third_plus+'</span></td></tr>';
+        '<td>'+bar+'</td>'+
+        '<td style="font-size:11px;color:#62707a;white-space:nowrap">1st '+x.first_try+' · 2nd '+x.second+' · 3rd+ '+x.third_plus+'</td></tr>';
     }).join("");
+
     shell(
-      '<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto"><table>'+
-      '<thead><tr><th>Trainer</th><th style="text-align:center">Trained</th><th style="text-align:center">Induction / Training</th>'+
-      '<th style="text-align:center">Avg score</th><th style="text-align:center">1st-try pass rate</th><th>Pass efficiency</th></tr></thead>'+
+      cards + chart +
+      '<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto"><table style="min-width:680px">'+
+      '<thead><tr><th>Trainer</th><th style="text-align:center">Trained</th><th style="text-align:center">Ind / Trn</th>'+
+      '<th style="text-align:center">Avg score</th><th style="text-align:center">1st-try rate</th><th>Pass split</th><th>Breakdown</th></tr></thead>'+
       '<tbody>'+rows+'</tbody></table></div></div>'+
-      '<div style="font-size:11.5px;color:#62707a;padding:4px 2px">“1st-try pass rate” = of all assessments this trainer’s learners passed, how many they passed on the first attempt. Higher = more effective training. Bar shows the split: green 1st try, amber 2nd, red 3rd+.</div>'
+      '<div style="font-size:11.5px;color:#62707a;padding:4px 2px 20px">“1st-try pass rate” = of all assessments this trainer’s learners passed, how many on the first attempt. Higher = more effective training. Pass split bar: green 1st try · amber 2nd · red 3rd+.</div>'
     );
   }
 
