@@ -286,7 +286,109 @@ def api_training_productivity():
         })
     # sort by learners trained desc, then first-rate desc
     out.sort(key=lambda x: (-(x["learners"] or 0), -(x["first_rate"] or 0)))
-    return jsonify(ok=True, trainers=out)
+    # rank
+    for i, r in enumerate(out, 1):
+        r["rank"] = i
+    # overall summary
+    all_learners = set()
+    for info in trainers.values():
+        all_learners |= info["learners"]
+    tot_scores = [s for e in all_learners for s in learner_scores.get(e, [])]
+    tot_ft = sum(1 for e in all_learners for pa in learner_passattempt.get(e, []) if pa == 1)
+    tot_pe = sum(len(learner_passattempt.get(e, [])) for e in all_learners)
+    summary = {
+        "trainers": len(out),
+        "trained": len(all_learners),
+        "avg_score": round(sum(tot_scores) / len(tot_scores)) if tot_scores else None,
+        "first_rate": round(tot_ft * 100 / tot_pe) if tot_pe else None,
+    }
+    u = _current_user()
+    return jsonify(ok=True, trainers=out, summary=summary,
+                   me_id=u["emp_id"], is_admin=(u["role"] == "admin"))
+
+
+@tc_bp.route("/api/training/my-record")
+@_login_only
+def api_training_my_record():
+    """A learner's own training record: who trained them (induction/training),
+    their module completion, assessment scores and pass attempts."""
+    _ensure()
+    db = _get_db()
+    u = _current_user()
+    mine = u["emp_id"]
+
+    # who trained me
+    ind_by, trn_by = set(), set()
+    try:
+        for r in db.execute(
+            "SELECT d.kind, tr.name AS trainer FROM training_delivery d "
+            "LEFT JOIN users tr ON tr.emp_id=d.trainer_id "
+            "WHERE d.learner_id=? AND d.status='approved'", (mine,)).fetchall():
+            if r["kind"] == "induction" and r["trainer"]:
+                ind_by.add(r["trainer"])
+            elif r["kind"] == "training" and r["trainer"]:
+                trn_by.add(r["trainer"])
+    except Exception:
+        pass
+
+    # my module completion counts (induction / training) against my designation
+    desg = (u["designation"] or "")
+
+    def _roles_ok(roles):
+        roles = (roles or "all").strip().lower()
+        if roles in ("", "all"):
+            return True
+        allowed = [x.strip().lower() for x in roles.split(",")]
+        d = desg.strip().lower()
+        return any(a and a in d for a in allowed)
+
+    def _mods(kind):
+        try:
+            return [dict(r) for r in db.execute(
+                "SELECT id, title, roles FROM content_modules WHERE kind=? AND status='live'", (kind,)).fetchall()]
+        except Exception:
+            return []
+
+    done = set()
+    try:
+        for r in db.execute("SELECT module_id FROM module_completions WHERE emp_id=?", (mine,)).fetchall():
+            done.add(r["module_id"])
+    except Exception:
+        pass
+    my_ind = [m for m in _mods("induction") if _roles_ok(m["roles"])]
+    my_trn = [m for m in _mods("training") if _roles_ok(m["roles"])]
+    ind_done = sum(1 for m in my_ind if m["id"] in done)
+    trn_done = sum(1 for m in my_trn if m["id"] in done)
+
+    # my assessments: attempts + pass-attempt + best score
+    assessments = []
+    try:
+        ass = {dict(r)["id"]: dict(r) for r in db.execute(
+            "SELECT id, title, roles FROM assessments WHERE active=1 AND status='live'").fetchall()}
+        attempts = {}
+        for r in db.execute("SELECT assessment_id, passed, percent FROM assessment_results WHERE emp_id=? ORDER BY taken_at, id", (mine,)).fetchall():
+            attempts.setdefault(r["assessment_id"], []).append((r["passed"], r["percent"]))
+        for aid, a in ass.items():
+            if not _roles_ok(a.get("roles")):
+                continue
+            lst = attempts.get(aid, [])
+            best = max((p for _, p in lst), default=None)
+            pa = None
+            for i, (pv, _) in enumerate(lst, 1):
+                if pv:
+                    pa = i
+                    break
+            assessments.append({"title": a["title"], "attempts": len(lst),
+                                "best": best, "pass_attempt": pa})
+    except Exception:
+        pass
+
+    return jsonify(ok=True,
+                   me={"name": u["name"], "emp_id": mine, "designation": desg},
+                   induction_by=sorted(ind_by), training_by=sorted(trn_by),
+                   ind_done=ind_done, ind_total=len(my_ind),
+                   trn_done=trn_done, trn_total=len(my_trn),
+                   assessments=assessments)
 
 
 @tc_bp.route("/api/training/by-learner")
