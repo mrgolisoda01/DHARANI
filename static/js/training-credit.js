@@ -12,6 +12,10 @@
 
   var css = document.createElement("style");
   css.textContent = [
+    "#tcRoot{width:100%;box-sizing:border-box}",
+    "#tcRoot #tcBody{width:100%}",
+    "#tcRoot .card{width:100%;box-sizing:border-box}",
+    "#tcRoot table{width:100%}",
     "#tcRoot .subtabs{display:flex;gap:4px;border-bottom:1px solid var(--mg-line,#e3e8ee);margin-bottom:14px;flex-wrap:wrap}",
     "#tcRoot .subtab{border:none;background:none;padding:10px 14px;font-size:13.5px;font-weight:600;color:#62707a;cursor:pointer;border-bottom:3px solid transparent;font-family:inherit}",
     "#tcRoot .subtab.on{color:var(--mg-blue,#1F5FA9);border-bottom-color:var(--mg-blue,#1F5FA9)}",
