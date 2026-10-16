@@ -94,13 +94,66 @@
     );
     fillMods();
     $("tcKind").addEventListener("change", fillMods);
+    $("tcLearner").addEventListener("change", fillMods);
     $("tcMarkBtn").addEventListener("click", submitMark);
   }
+
+  // does a module's roles field apply to this designation?
+  function roleMatch(rolesField, designation){
+    var roles = (rolesField || "all").trim().toLowerCase();
+    if(roles === "" || roles === "all") return true;
+    var desg = (designation || "").trim().toLowerCase();
+    return roles.split(",").some(function(r){ r = r.trim(); return r && desg.indexOf(r) >= 0; });
+  }
+
+  // the selected learner's designation (for filtering training by designation)
+  function selectedLearnerDesg(){
+    var id = ($("tcLearner")||{}).value || "";
+    var l = (S.cfg.learners||[]).find(function(x){ return x.emp_id === id; });
+    return l ? (l.designation || "") : "";
+  }
+
   function fillMods(){
-    var kind=$("tcKind").value, list=(kind==="induction"?S.cfg.induction:S.cfg.training)||[];
-    $("tcMods").innerHTML = list.length
-      ? list.map(function(m){return '<label><input type="checkbox" class="tcMod" value="'+m.id+'"> '+esc(m.title)+'</label>';}).join("")
-      : '<div style="font-size:12.5px;color:#8a97a1;padding:4px">No '+kind+' modules found.</div>';
+    var kind = $("tcKind").value;
+    var box = $("tcMods");
+    var list;
+    if(kind === "induction"){
+      // induction is common to everyone — show all
+      list = S.cfg.induction || [];
+    } else {
+      // training — filter to the selected learner's designation
+      var learnerId = ($("tcLearner")||{}).value || "";
+      if(!learnerId){
+        box.innerHTML = '<div style="font-size:12.5px;color:#c98a00;padding:4px">Pick a learner first — training modules are shown for their designation.</div>';
+        return;
+      }
+      var desg = selectedLearnerDesg();
+      list = (S.cfg.training || []).filter(function(m){ return roleMatch(m.roles, desg); });
+    }
+    if(!list.length){
+      box.innerHTML = '<div style="font-size:12.5px;color:#8a97a1;padding:4px">No '+kind+' modules found'+(kind==="training"?' for this designation.':'.')+'</div>';
+      return;
+    }
+    // "Select all" row on top, then one checkbox per module
+    var header = '<label style="border-bottom:1px solid var(--mg-line,#e3e8ee);margin-bottom:4px;padding-bottom:6px;font-weight:700">'+
+                 '<input type="checkbox" id="tcModAll"> Select all ('+list.length+')</label>';
+    box.innerHTML = header + list.map(function(m){
+      return '<label><input type="checkbox" class="tcMod" value="'+m.id+'"> '+esc(m.title)+'</label>';
+    }).join("");
+    var all = $("tcModAll");
+    if(all){
+      all.addEventListener("change", function(){
+        var on = all.checked;
+        Array.prototype.slice.call(box.querySelectorAll(".tcMod")).forEach(function(c){ c.checked = on; });
+      });
+    }
+    // keep "Select all" in sync if individual boxes change
+    Array.prototype.slice.call(box.querySelectorAll(".tcMod")).forEach(function(c){
+      c.addEventListener("change", function(){
+        var boxes = Array.prototype.slice.call(box.querySelectorAll(".tcMod"));
+        if(all) all.checked = boxes.length && boxes.every(function(x){ return x.checked; });
+      });
+    });
   }
   async function submitMark(){
     var trainer = S.cfg.is_admin ? ($("tcTrainer")||{}).value : S.cfg.me.emp_id;
