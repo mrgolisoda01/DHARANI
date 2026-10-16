@@ -85,14 +85,44 @@ async function loadDashboard(){
   renderTable();
 }
 
+// name lookup for showing a manager's name from their emp_id
+function nameOf(empId){
+  if(!empId) return "";
+  const m = EMPLOYEES.find(x=>x.emp_id===empId);
+  return m ? (m.name || empId) : empId;
+}
+
+// keep the "manager" filter dropdown in sync with who is actually a manager
+function buildManagerFilter(){
+  const sel = $("empManagerFilter");
+  if(!sel) return;
+  const prev = sel.value;
+  // managers = anyone who is listed as someone's reports_to
+  const mgrIds = {};
+  EMPLOYEES.forEach(e=>{ if(e.reports_to) mgrIds[e.reports_to] = true; });
+  const mgrs = Object.keys(mgrIds)
+    .map(id=>({ id, name: nameOf(id) }))
+    .sort((a,b)=> (a.name||"").localeCompare(b.name||""));
+  let html = '<option value="">All managers</option><option value="__none__">⚠ No manager set</option>';
+  mgrs.forEach(m=>{ html += `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`; });
+  sel.innerHTML = html;
+  // restore previous choice if still valid
+  if(prev && (prev === "__none__" || mgrIds[prev])) sel.value = prev;
+}
+
 function renderTable(){
   const q = ($("searchBox").value || "").toLowerCase().trim();
   const statusFilter = ($("empStatusFilter") && $("empStatusFilter").value) || "active";
+  const mgrFilter = ($("empManagerFilter") && $("empManagerFilter").value) || "";
   const body = $("empBody");
+  buildManagerFilter();
   const list = EMPLOYEES.filter(e=>{
     // status filter: active = everyone except resigned; resigned = only resigned; all = everyone
     if(statusFilter === "active" && e.status === "resigned") return false;
     if(statusFilter === "resigned" && e.status !== "resigned") return false;
+    // manager filter
+    if(mgrFilter === "__none__" && (e.reports_to || "")) return false;
+    if(mgrFilter && mgrFilter !== "__none__" && (e.reports_to || "") !== mgrFilter) return false;
     if(!q) return true;
     return (e.name||"").toLowerCase().includes(q)
         || (e.emp_id||"").toLowerCase().includes(q)
@@ -100,7 +130,7 @@ function renderTable(){
   });
 
   if(list.length === 0){
-    body.innerHTML = '<tr><td colspan="8" class="empty">No employees found.</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="empty">No employees found.</td></tr>';
     return;
   }
 
@@ -112,6 +142,20 @@ function renderTable(){
       : (e.status === "resigned"
           ? '<span class="pill" style="background:#f3e0e0;color:#a33">Resigned</span>'
           : '<span class="pill p-pending">Pending</span>');
+
+    // "Reports to" cell: manager name + region tag, or a subtle flag if unset.
+    // Admins/resigned people don't need a manager, so no flag for them.
+    const regionTag = e.region
+      ? ` <span style="display:inline-block;background:#eef5fc;color:#0c447c;border:1px solid #cddff0;border-radius:10px;padding:0 6px;font-size:10.5px;margin-left:3px">${escapeHtml(e.region)}</span>`
+      : "";
+    let reportsCell;
+    if(e.reports_to){
+      reportsCell = `<span style="font-size:12.5px">${escapeHtml(nameOf(e.reports_to))}</span>${regionTag}`;
+    } else if(isAdmin || e.status === "resigned"){
+      reportsCell = `<span style="color:#c3c8ce;font-size:12px">—</span>${regionTag}`;
+    } else {
+      reportsCell = `<span style="color:#c98a00;font-size:11.5px;font-weight:600">⚠ not set</span>${regionTag}`;
+    }
 
     let actions = "";
     if(window.IS_ADMIN === false){
@@ -149,6 +193,7 @@ function renderTable(){
       <td>${escapeHtml(e.name||"")}</td>
       <td>${escapeHtml(e.emp_id||"")}</td>
       <td>${escapeHtml(e.designation||"")}</td>
+      <td>${reportsCell}</td>
       <td>${escapeHtml(e.phone||"")}</td>
       <td><span class="pill ${rc}">${rl}</span></td>
       <td>${statusPill}</td>
