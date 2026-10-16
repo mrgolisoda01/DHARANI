@@ -1,212 +1,366 @@
 /* ============================================================
-   my-team.js — "My Team" for managers (BDM / State Head / RSM / NSM)
-   Shows everyone below them in the reporting chain: each person's
-   induction / training / assessment completion, average score, and
-   who trained them. Drill into one person; export the team to Excel.
-
-   Self-wires into showTab('myteam') and reveals its own tab button
-   only when the signed-in person actually has a team (like My OJT).
-   Backend: /api/team, /api/team/member, /api/team/export.xlsx
+   admin.js — Admin dashboard logic (Delivery 1)
+   Talks to the new /api/admin/* routes in app.py
    ============================================================ */
-(function () {
-  "use strict";
-  function $(id) { return document.getElementById(id); }
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
+
+let EMPLOYEES = [];
+let CURRENT_EDIT = null;   // emp_id being edited
+let CURRENT_RESET = null;  // emp_id being reset
+
+const $ = (id) => document.getElementById(id);
+
+function roleLabel(r){
+  if(r === "admin") return ["Admin","p-admin"];
+  if(r === "instructor") return ["Instructor","p-instructor"];
+  return ["Learner","p-learner"];
+}
+
+function clock(){
+  const now = new Date();
+  const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  $("todayDate").textContent = days[now.getDay()] + ", " + now.getDate() + " " + months[now.getMonth()] + " " + now.getFullYear();
+  let h = now.getHours(), m = now.getMinutes();
+  const ap = h >= 12 ? "PM" : "AM";
+  h = h % 12; if(h === 0) h = 12;
+  $("todayTime").textContent = (h<10?"0":"")+h + ":" + (m<10?"0":"")+m + " " + ap;
+}
+
+function fmtWhen(iso){
+  if(!iso) return "";
+  try{
+    const d = new Date(iso + (iso.endsWith("Z")?"":"Z"));
+    return d.toLocaleString();
+  }catch(e){ return ""; }
+}
+
+// Date only (no time) — for the "Enrolled" column, e.g. "25 Aug 2026"
+function fmtDate(iso){
+  if(!iso) return "—";
+  try{
+    const d = new Date(iso + (iso.endsWith("Z")?"":"Z"));
+    return d.toLocaleDateString(undefined, { day:"numeric", month:"short", year:"numeric" });
+  }catch(e){ return "—"; }
+}
+
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(()=>t.classList.remove("show"), 2600);
+}
+
+async function api(url, body){
+  const opt = { method: body ? "POST" : "GET", headers:{ "Content-Type":"application/json" } };
+  if(body) opt.body = JSON.stringify(body);
+  const res = await fetch(url, opt);
+  return res.json();
+}
+
+async function loadDashboard(){
+  const data = await api("/api/admin/dashboard");
+  if(!data.ok){ toast("Could not load dashboard."); return; }
+
+  loadPendingRequests();
+
+  $("cTotal").textContent = data.stats.total;
+  $("cPending").textContent = data.stats.pending;
+  $("cCompletion").textContent = data.stats.completion + "%";
+  $("cAvg").textContent = data.stats.avg + "%";
+
+  if(data.me){
+    $("whoName").textContent = data.me.name || "Administrator";
+    $("whoId").textContent = data.me.emp_id || "ADMIN";
+    const init = (data.me.name || "AD").trim().slice(0,2).toUpperCase();
+    $("whoPic").textContent = init;
+    if(data.me.last_login){
+      $("whoLast").textContent = " · last login " + fmtWhen(data.me.last_login);
+    }
   }
-  function getJ(u) {
-    return fetch(u, { credentials: "same-origin" }).then(function (r) { return r.json(); })
-      .catch(function () { return { ok: false }; });
+
+  EMPLOYEES = data.employees || [];
+  // Always clear any leftover/auto-filled search text on reload, so the full
+  // employee list is shown (a stray value here would hide most rows).
+  var _sb = $("searchBox");
+  if(_sb && _sb.value){ _sb.value = ""; }
+  renderTable();
+}
+
+function renderTable(){
+  const q = ($("searchBox").value || "").toLowerCase().trim();
+  const statusFilter = ($("empStatusFilter") && $("empStatusFilter").value) || "active";
+  const body = $("empBody");
+  const list = EMPLOYEES.filter(e=>{
+    // status filter: active = everyone except resigned; resigned = only resigned; all = everyone
+    if(statusFilter === "active" && e.status === "resigned") return false;
+    if(statusFilter === "resigned" && e.status !== "resigned") return false;
+    if(!q) return true;
+    return (e.name||"").toLowerCase().includes(q)
+        || (e.emp_id||"").toLowerCase().includes(q)
+        || (e.designation||"").toLowerCase().includes(q);
+  });
+
+  if(list.length === 0){
+    body.innerHTML = '<tr><td colspan="8" class="empty">No employees found.</td></tr>';
+    return;
   }
 
-  var css = document.createElement("style");
-  css.textContent = [
-    "#myTeam .mt-hero{background:linear-gradient(135deg,#12284B,#1F5FA9);color:#fff;border-radius:16px;padding:18px 20px;margin-bottom:14px}",
-    "#myTeam .mt-hero h2{margin:0;font-size:19px}",
-    "#myTeam .mt-hero p{margin:4px 0 0;font-size:13px;opacity:.9}",
-    "#myTeam .mt-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}",
-    "#myTeam .mt-card{background:#fff;border:1px solid var(--mg-line,#e3e8ee);border-radius:14px;padding:14px 16px}",
-    "#myTeam .mt-card .v{font-size:26px;font-weight:800;color:#12284B;line-height:1.1}",
-    "#myTeam .mt-card .l{font-size:12px;color:#62707a;margin-top:3px}",
-    "#myTeam .mt-bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}",
-    "#myTeam .mt-search{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--mg-line,#e3e8ee);border-radius:9px;font-size:14px;font-family:inherit}",
-    "#myTeam .mt-btn{padding:9px 14px;border-radius:9px;border:none;font-size:13px;font-weight:700;cursor:pointer;background:#1d9e75;color:#fff}",
-    "#myTeam table{width:100%;border-collapse:collapse;font-size:12.5px;background:#fff;border-radius:12px;overflow:hidden}",
-    "#myTeam th{background:#12284B;color:#fff;padding:9px 8px;text-align:left;font-size:11.5px;white-space:nowrap}",
-    "#myTeam td{border-bottom:1px solid #f0f0f0;padding:8px;vertical-align:middle}",
-    "#myTeam tr.mt-row{cursor:pointer}",
-    "#myTeam tr.mt-row:hover td{background:#f5f9fe}",
-    "#myTeam .prog{height:9px;background:#eef2f5;border-radius:6px;overflow:hidden;min-width:70px;margin-top:3px}",
-    "#myTeam .prog i{display:block;height:100%}",
-    "#myTeam .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}",
-    "#myTeam .chip{display:inline-block;background:#eef5fc;color:#0c447c;border:1px solid #cddff0;border-radius:20px;padding:2px 9px;font-size:11.5px;margin:2px 3px 2px 0}",
-    "#myTeam .mt-back{background:none;border:none;color:#1F5FA9;font-weight:700;cursor:pointer;font-size:13px;padding:6px 0;font-family:inherit}",
-    "#myTeam .mt-sec{background:#fff;border:1px solid var(--mg-line,#e3e8ee);border-radius:14px;padding:16px;margin-bottom:12px}",
-    "#myTeam .mt-sec h4{margin:0 0 10px;font-size:14px;color:#12284B}"
-  ].join("\n");
-  document.head.appendChild(css);
+  body.innerHTML = list.map(e=>{
+    const [rl, rc] = roleLabel(e.role);
+    const isAdmin = e.role === "admin";
+    const statusPill = e.status === "approved"
+      ? '<span class="pill p-approved">Approved</span>'
+      : (e.status === "resigned"
+          ? '<span class="pill" style="background:#f3e0e0;color:#a33">Resigned</span>'
+          : '<span class="pill p-pending">Pending</span>');
 
-  var DATA = null;   // cached /api/team response
-
-  function pct(a, b) { return b ? Math.round(a * 100 / b) : 0; }
-  function bar(a, b) {
-    var p = pct(a, b), c = p >= 100 ? "#1d9e75" : (p >= 50 ? "#c9a227" : "#d64545");
-    return '<div class="prog"><i style="width:' + p + '%;background:' + c + '"></i></div>';
-  }
-
-  // reveal the tab button if this person has a team (called once on load)
-  function revealIfManager() {
-    getJ("/api/team").then(function (d) {
-      if (d && d.ok && ((d.rows && d.rows.length) || d.is_admin)) {
-        var btn = document.querySelector('.pt-tab[data-tab="myteam"]');
-        if (btn) btn.style.display = "";
+    let actions = "";
+    if(window.IS_ADMIN === false){
+      // instructors: can REQUEST a delete or a resignation (both go for admin
+      // approval), but not approve/edit/reset/reactivate — those stay with admins
+      if(e.status === "pending" || e.role === "admin"){
+        actions = '<span style="font-size:11px;color:#9aa6ae">view only</span>';
+      } else if(e.status === "resigned"){
+        actions = '<span style="font-size:11px;color:#9aa6ae">resigned</span>';
+      } else {
+        actions =
+          `<button class="act" title="Edit (changes need admin approval)" onclick="openEdit('${e.emp_id}')">✎</button>`+
+          `<button class="act" title="Request resignation (needs admin approval)" onclick="resignEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`+
+          `<button class="act del" title="Request delete (needs admin approval)" onclick="del('${e.emp_id}')">🗑</button>`;
       }
-    });
-  }
-
-  async function render() {
-    var box = $("myTeam");
-    if (!box) return;
-    box.innerHTML = '<div class="empty">Loading your team…</div>';
-    var d = await getJ("/api/team");
-    DATA = d;
-    if (!d || !d.ok) { box.innerHTML = '<div class="empty">Could not load your team.</div>'; return; }
-    if (!d.rows || !d.rows.length) {
-      box.innerHTML = '<div class="empty">No team members are assigned under you yet.</div>';
-      return;
+    } else if(e.status === "pending"){
+      actions =
+        `<button class="act ok" title="Approve" onclick="approve('${e.emp_id}')">✔</button>`+
+        `<button class="act no" title="Reject" onclick="reject('${e.emp_id}')">✖</button>`;
+    } else if(e.status === "resigned"){
+      // resigned people: offer reactivate, keep edit, allow delete (non-admin)
+      actions =
+        `<button class="act" title="Reactivate (allow login again)" onclick="reactivateEmp('${e.emp_id}')">♻</button>`+
+        `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
+        (isAdmin ? "" : `<button class="act del" title="Delete" onclick="del('${e.emp_id}')">🗑</button>`);
+    } else {
+      actions =
+        `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
+        `<button class="act" title="Reset password" onclick="openReset('${e.emp_id}')">⟳</button>`+
+        (isAdmin ? "" : `<button class="act" title="Mark as resigned (block login, keep history)" onclick="resignEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`)+
+        (isAdmin ? "" : `<button class="act del" title="Delete" onclick="del('${e.emp_id}')">🗑</button>`);
     }
-    drawList();
+
+    return `<tr>
+      <td>${escapeHtml(e.name||"")}</td>
+      <td>${escapeHtml(e.emp_id||"")}</td>
+      <td>${escapeHtml(e.designation||"")}</td>
+      <td>${escapeHtml(e.phone||"")}</td>
+      <td><span class="pill ${rc}">${rl}</span></td>
+      <td>${statusPill}</td>
+      <td style="white-space:nowrap;color:var(--mg-muted);font-size:12px">${fmtDate(e.created_at)}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join("");
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+/* ---- approve / reject ---- */
+async function approve(emp_id){
+  const r = await api("/api/approve", { emp_id });
+  if(r.ok){ toast("Approved."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+async function reject(emp_id){
+  if(!confirm("Reject and remove this signup request?")) return;
+  const r = await api("/api/reject", { emp_id });
+  if(r.ok){ toast("Removed."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+async function resignEmp(emp_id, name){
+  const isReq = (window.IS_ADMIN === false);
+  const msg = isReq
+    ? "Send a request to mark " + (name||"this employee") + " as resigned?\n\nAn admin will need to approve it. Their training history and certificates are kept."
+    : "Mark " + (name||"this employee") + " as resigned?\n\nThey will no longer be able to log in, but all their training history and certificates are kept. You can reactivate them later if they rejoin.";
+  if(!confirm(msg)) return;
+  const r = await api("/api/admin/set-employment-status", { emp_id, action: "resign" });
+  if(r.ok){ toast(r.msg||"Done."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+async function reactivateEmp(emp_id){
+  if(!confirm("Reactivate this employee so they can log in again?")) return;
+  const r = await api("/api/admin/set-employment-status", { emp_id, action: "reactivate" });
+  if(r.ok){ toast(r.msg||"Reactivated."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+/* ---- edit ---- */
+let MANAGERS = [];   // cached list of possible managers for the "Reports to" dropdown
+
+async function loadManagers(){
+  try{
+    const d = await api("/api/team/managers");
+    MANAGERS = (d && d.ok && d.managers) ? d.managers : [];
+  }catch(e){ MANAGERS = []; }
+}
+
+function fillManagerDropdown(selfEmpId, selectedEmpId){
+  const sel = $("eReportsTo");
+  if(!sel) return;
+  // "None" + every approved person except the person being edited (can't report to self)
+  let html = '<option value="">— None —</option>';
+  MANAGERS.filter(m => m.emp_id !== selfEmpId).forEach(m=>{
+    const label = (m.name || m.emp_id) + (m.designation ? " · " + m.designation : "");
+    const selAttr = (m.emp_id === selectedEmpId) ? " selected" : "";
+    html += `<option value="${escapeHtml(m.emp_id)}"${selAttr}>${escapeHtml(label)}</option>`;
+  });
+  sel.innerHTML = html;
+}
+
+async function openEdit(emp_id){
+  const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
+  if(!e) return;
+  CURRENT_EDIT = emp_id;
+  $("editSub").textContent = e.name + " · " + e.emp_id;
+  $("eName").value = e.name || "";
+  $("ePhone").value = e.phone || "";
+  $("eDesg").value = e.designation || "";
+  $("eRole").value = e.role || "staff";
+  // reporting fields
+  if(!MANAGERS.length) await loadManagers();
+  fillManagerDropdown(emp_id, e.reports_to || "");
+  if($("eRegion")) $("eRegion").value = e.region || "";
+  // instructors: show a note that changes go for admin approval
+  var note = $("editApprovalNote");
+  if(note) note.style.display = (window.IS_ADMIN === false) ? "block" : "none";
+  openModal("editOv");
+}
+async function saveEdit(){
+  if(!CURRENT_EDIT) return;
+  const r = await api("/api/admin/update-user", {
+    emp_id: CURRENT_EDIT,
+    name: $("eName").value.trim(),
+    phone: $("ePhone").value.trim(),
+    designation: $("eDesg").value.trim(),
+    role: $("eRole").value,
+    reports_to: ($("eReportsTo") ? $("eReportsTo").value : ""),
+    region: ($("eRegion") ? $("eRegion").value : "")
+  });
+  if(r.ok){
+    closeModal("editOv");
+    toast(r.applied === false ? "Sent to admin for approval." : "Saved.");
+    loadDashboard();
+  } else toast(r.msg || "Could not save.");
+}
+
+/* ---- reset password ---- */
+function openReset(emp_id){
+  const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
+  if(!e) return;
+  CURRENT_RESET = emp_id;
+  $("resetSub").textContent = e.name + " · " + e.emp_id;
+  $("rPw").value = "Golisoda@123";
+  openModal("resetOv");
+}
+async function saveReset(){
+  if(!CURRENT_RESET) return;
+  const pw = $("rPw").value;
+  const r = await api("/api/admin/reset-password", { emp_id: CURRENT_RESET, new_password: pw });
+  if(r.ok){ closeModal("resetOv"); toast("Password reset. Share: " + pw); }
+  else toast(r.msg || "Could not reset.");
+}
+
+/* ---- delete ---- */
+// ---- Pending action requests (instructor delete requests) — admin only ----
+async function loadPendingRequests(){
+  if(window.IS_ADMIN === false) return;  // only admins see these
+  const panel = document.getElementById("pendingReqPanel");
+  const list = document.getElementById("pendingReqList");
+  if(!panel || !list) return;
+  let d;
+  try { d = await api("/api/admin/pending-actions"); } catch(e){ return; }
+  if(!d || !d.ok || !d.actions || d.actions.length === 0){
+    panel.style.display = "none";
+    return;
   }
-
-  function drawList() {
-    var d = DATA;
-    var s = d.summary || {};
-    var hero = '<div class="mt-hero"><h2>My Team</h2><p>' +
-      esc(d.scope || "") + ' · ' + (s.people || 0) + ' people</p></div>';
-
-    var cards = '<div class="mt-cards">' +
-      card((s.people || 0), "People") +
-      card((s.induction_rate || 0) + "%", "Induction done") +
-      card((s.training_rate || 0) + "%", "Training done") +
-      card((s.assessment_rate || 0) + "%", "Assessments passed") +
-      card((s.team_avg != null ? s.team_avg + "%" : "—"), "Team avg score") +
-      '</div>';
-
-    var bar2 = '<div class="mt-bar">' +
-      '<input class="mt-search" id="mtSearch" placeholder="Search name, designation, region…" oninput="window.__mtFilter()">' +
-      '<button class="mt-btn" onclick="window.__mtExport()">⬇ Export to Excel</button>' +
-      '</div>';
-
-    var table = '<div style="overflow-x:auto"><table><thead><tr>' +
-      '<th>Name</th><th>Designation</th><th>Region</th>' +
-      '<th>Induction</th><th>Training</th><th>Assessments</th><th>OJT</th><th>Avg</th>' +
-      '</tr></thead><tbody id="mtBody">' + rowsHtml(d.rows) + '</tbody></table></div>';
-
-    $("myTeam").innerHTML = hero + cards + bar2 + table;
-  }
-
-  function card(v, l) {
-    return '<div class="mt-card"><div class="v">' + v + '</div><div class="l">' + l + '</div></div>';
-  }
-
-  function ojtCell(r) {
-    if (!r.ojt_status) return '<span style="color:#aaa">—</span>';
-    var col = r.ojt_status === "completed" ? "#0f6b45"
-            : (r.ojt_status === "failed" ? "#9e2b2b" : "#0c447c");
-    var bg = r.ojt_status === "completed" ? "#eaf7f0"
-           : (r.ojt_status === "failed" ? "#fdeaea" : "#eef5fc");
-    var label = r.ojt_status.charAt(0).toUpperCase() + r.ojt_status.slice(1);
-    return '<span class="pill" style="background:' + bg + ';color:' + col + '">' + esc(label) + '</span>' +
-           '<div style="font-size:11px;color:#62707a;margin-top:2px">' + r.ojt_done + '/' + r.ojt_total +
-           (r.ojt_pct != null ? ' · ' + r.ojt_pct + '%' : '') + '</div>';
-  }
-
-  function rowsHtml(rows) {
-    return rows.map(function (r) {
-      var avg = (r.avg_score != null)
-        ? '<span class="pill" style="background:#eaf7f0;color:#0f6b45">' + r.avg_score + '%</span>'
-        : '<span style="color:#aaa">—</span>';
-      return '<tr class="mt-row" data-emp="' + esc(r.emp_id) + '" onclick="window.__mtOpen(\'' + esc(r.emp_id) + '\')">' +
-        '<td><b>' + esc(r.name) + '</b><div style="font-size:11px;color:#8a97a1">' + esc(r.emp_id) + '</div></td>' +
-        '<td>' + esc(r.designation || "—") + '</td>' +
-        '<td>' + esc(r.region || "—") + '</td>' +
-        '<td>' + r.ind_done + '/' + r.ind_total + bar(r.ind_done, r.ind_total) + '</td>' +
-        '<td>' + r.trn_done + '/' + r.trn_total + bar(r.trn_done, r.trn_total) + '</td>' +
-        '<td>' + r.ass_passed + '/' + r.ass_total + bar(r.ass_passed, r.ass_total) + '</td>' +
-        '<td>' + ojtCell(r) + '</td>' +
-        '<td>' + avg + '</td>' +
-        '</tr>';
-    }).join("");
-  }
-
-  window.__mtFilter = function () {
-    var q = ($("mtSearch").value || "").toLowerCase().trim();
-    var rows = (DATA.rows || []).filter(function (r) {
-      if (!q) return true;
-      return (r.name + " " + r.designation + " " + r.region + " " + r.emp_id).toLowerCase().indexOf(q) >= 0;
-    });
-    $("mtBody").innerHTML = rowsHtml(rows);
-  };
-
-  window.__mtExport = function () {
-    window.location.href = "/api/team/export.xlsx?x=" + Date.now();
-  };
-
-  window.__mtOpen = async function (emp) {
-    var box = $("myTeam");
-    box.innerHTML = '<div class="empty">Loading…</div>';
-    var d = await getJ("/api/team/member?emp_id=" + encodeURIComponent(emp));
-    if (!d || !d.ok) { box.innerHTML = '<div class="empty">Could not load. </div><button class="mt-back" onclick="window.__mtBack()">‹ Back to team</button>'; return; }
-    var p = d.person || {};
-    function who(arr) {
-      return (arr && arr.length)
-        ? arr.map(function (x) { return '<span class="chip">👤 ' + esc(x) + '</span>'; }).join("")
-        : '<span style="color:#aaa;font-size:12.5px">Not recorded</span>';
+  const typeLabel = { user:"Employee", assessment:"Assessment", module:"Module", video:"Video" };
+  list.innerHTML = d.actions.map(a=>{
+    // headline + approve-button label depend on the kind of request
+    let headline, approveLabel;
+    if(a.action_type === "user_edit"){
+      headline = "<b>Employee edit:</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve edit";
+    } else if(a.action_type === "assign_manager"){
+      headline = "<b>Reporting change:</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve change";
+    } else if(a.action_type === "resign"){
+      headline = "<b>Resignation:</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve resignation";
+    } else {
+      headline = "<b>Delete " + (typeLabel[a.target_type]||a.target_type) + ":</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve delete";
     }
-    var aRows = (d.assessments || []).map(function (a) {
-      var st = a.pass_attempt
-        ? '<span style="color:#0f6b45;font-weight:700">Passed on attempt ' + a.pass_attempt + '</span>'
-        : (a.attempts ? '<span style="color:#9e2b2b">Not passed (' + a.attempts + ')</span>' : '<span style="color:#aaa">Not attempted</span>');
-      return '<tr><td><b>' + esc(a.title) + '</b></td><td style="text-align:center">' + a.attempts + '</td><td>' + st + '</td></tr>';
-    }).join("");
+    return `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #e7dcc0;flex-wrap:wrap">
+      <div style="font-size:13px">
+        ${headline}
+        <div style="font-size:11.5px;color:#8a6d1a">requested by ${escH(a.requested_by_name||a.requested_by||"")}</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="resolveAction(${a.id},'approve')">${approveLabel}</button>
+        <button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="resolveAction(${a.id},'reject')">Reject</button>
+      </div>
+    </div>`;
+  }).join("");
+  panel.style.display = "block";
+}
 
-    box.innerHTML =
-      '<button class="mt-back" onclick="window.__mtBack()">‹ Back to team</button>' +
-      '<div class="mt-hero"><h2>' + esc(p.name) + '</h2><p>' + esc(p.emp_id) +
-        (p.designation ? ' · ' + esc(p.designation) : '') +
-        (p.region ? ' · ' + esc(p.region) : '') +
-        (p.manager_name ? ' · reports to ' + esc(p.manager_name) : '') + '</p></div>' +
-      '<div class="mt-cards">' +
-        card(d.ind_done + '/' + d.ind_total, "Induction done") +
-        card(d.trn_done + '/' + d.trn_total, "Training done") +
-        card(d.ass_passed + '/' + d.ass_total, "Assessments passed") +
-        card((d.avg_score != null ? d.avg_score + '%' : '—'), "Average score") +
-        (d.ojt_status
-          ? card((d.ojt_pct != null ? d.ojt_pct + '%' : (d.ojt_done + '/' + d.ojt_total)),
-                 "OJT (" + esc(d.ojt_status) + ")")
-          : '') +
-      '</div>' +
-      '<div class="mt-sec"><h4>Who trained them</h4>' +
-        '<div style="font-size:12px;color:#62707a;margin-bottom:3px">Induction</div>' + who(d.induction_by) +
-        '<div style="font-size:12px;color:#62707a;margin:10px 0 3px">Training</div>' + who(d.training_by) +
-      '</div>' +
-      (aRows
-        ? '<div class="mt-sec"><h4>Assessments</h4><div style="overflow-x:auto"><table><thead><tr><th>Assessment</th><th style="text-align:center">Attempts</th><th>Result</th></tr></thead><tbody>' + aRows + '</tbody></table></div></div>'
-        : '');
-  };
+async function resolveAction(id, decision){
+  if(decision === "approve" && !confirm("Approve this request?")) return;
+  const r = await api("/api/admin/resolve-action", { id, decision });
+  if(r.ok){ toast(r.msg || "Done."); loadDashboard(); }
+  else toast(r.msg || "Failed.");
+}
 
-  window.__mtBack = function () { drawList(); };
+function escH(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-  // self-wire into showTab + reveal the tab for managers
-  function wire() {
-    var prev = window.showTab;
-    window.showTab = function (w) {
-      if (prev) prev(w);
-      if (w === "myteam") render();
-    };
+async function del(emp_id){
+  const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
+  const who = e?e.name:emp_id;
+  const msg = window.IS_ADMIN
+    ? "Delete " + who + " permanently? Their scores are removed too."
+    : "Send a request to delete " + who + "? An admin must approve before they are removed.";
+  if(!confirm(msg)) return;
+  const r = await api("/api/admin/delete-user", { emp_id });
+  if(r.ok){ toast(r.msg || (window.IS_ADMIN?"Deleted.":"Request sent.")); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+/* ---- bulk add ---- */
+function openBulk(){ openModal("bulkOv"); }
+async function saveBulk(){
+  const csv = $("bulkText").value;
+  const auto = $("bulkApprove").checked;
+  if(!csv.trim()){ toast("Paste some CSV rows first."); return; }
+  const r = await api("/api/admin/bulk-add", { csv, auto_approve: auto });
+  if(r.ok){
+    closeModal("bulkOv");
+    let m = r.msg;
+    if(r.errors && r.errors.length) m += " (" + r.errors.length + " row error(s))";
+    toast(m);
+    loadDashboard();
+  } else toast(r.msg || "Could not add.");
+}
+
+/* ---- modal + signout helpers ---- */
+function openModal(id){ $(id).classList.add("show"); }
+function closeModal(id){ $(id).classList.remove("show"); }
+async function signOut(){
+  await api("/api/logout", {});
+  window.location.href = "/";
+}
+
+/* close modal on backdrop click */
+document.addEventListener("click", (ev)=>{
+  if(ev.target.classList && ev.target.classList.contains("ov")){
+    ev.target.classList.remove("show");
   }
-  if (document.readyState !== "loading") { wire(); revealIfManager(); }
-  else document.addEventListener("DOMContentLoaded", function () { wire(); revealIfManager(); });
-})();
+});
+
+/* boot */
+clock();
+setInterval(clock, 30000);
+loadDashboard();
