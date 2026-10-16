@@ -188,7 +188,29 @@ async function reactivateEmp(emp_id){
 }
 
 /* ---- edit ---- */
-function openEdit(emp_id){
+let MANAGERS = [];   // cached list of possible managers for the "Reports to" dropdown
+
+async function loadManagers(){
+  try{
+    const d = await api("/api/team/managers");
+    MANAGERS = (d && d.ok && d.managers) ? d.managers : [];
+  }catch(e){ MANAGERS = []; }
+}
+
+function fillManagerDropdown(selfEmpId, selectedEmpId){
+  const sel = $("eReportsTo");
+  if(!sel) return;
+  // "None" + every approved person except the person being edited (can't report to self)
+  let html = '<option value="">— None —</option>';
+  MANAGERS.filter(m => m.emp_id !== selfEmpId).forEach(m=>{
+    const label = (m.name || m.emp_id) + (m.designation ? " · " + m.designation : "");
+    const selAttr = (m.emp_id === selectedEmpId) ? " selected" : "";
+    html += `<option value="${escapeHtml(m.emp_id)}"${selAttr}>${escapeHtml(label)}</option>`;
+  });
+  sel.innerHTML = html;
+}
+
+async function openEdit(emp_id){
   const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
   if(!e) return;
   CURRENT_EDIT = emp_id;
@@ -197,6 +219,10 @@ function openEdit(emp_id){
   $("ePhone").value = e.phone || "";
   $("eDesg").value = e.designation || "";
   $("eRole").value = e.role || "staff";
+  // reporting fields
+  if(!MANAGERS.length) await loadManagers();
+  fillManagerDropdown(emp_id, e.reports_to || "");
+  if($("eRegion")) $("eRegion").value = e.region || "";
   openModal("editOv");
 }
 async function saveEdit(){
@@ -206,7 +232,9 @@ async function saveEdit(){
     name: $("eName").value.trim(),
     phone: $("ePhone").value.trim(),
     designation: $("eDesg").value.trim(),
-    role: $("eRole").value
+    role: $("eRole").value,
+    reports_to: ($("eReportsTo") ? $("eReportsTo").value : ""),
+    region: ($("eRegion") ? $("eRegion").value : "")
   });
   if(r.ok){ closeModal("editOv"); toast("Saved."); loadDashboard(); }
   else toast(r.msg || "Could not save.");
@@ -243,22 +271,36 @@ async function loadPendingRequests(){
     return;
   }
   const typeLabel = { user:"Employee", assessment:"Assessment", module:"Module", video:"Video" };
-  list.innerHTML = d.actions.map(a=>`
+  list.innerHTML = d.actions.map(a=>{
+    // headline + approve-button label depend on the kind of request
+    let headline, approveLabel;
+    if(a.action_type === "assign_manager"){
+      headline = "<b>Reporting change:</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve change";
+    } else if(a.action_type === "resign"){
+      headline = "<b>Resignation:</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve resignation";
+    } else {
+      headline = "<b>Delete " + (typeLabel[a.target_type]||a.target_type) + ":</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve delete";
+    }
+    return `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #e7dcc0;flex-wrap:wrap">
       <div style="font-size:13px">
-        <b>Delete ${typeLabel[a.target_type]||a.target_type}:</b> ${escH(a.target_label||a.target_id)}
+        ${headline}
         <div style="font-size:11.5px;color:#8a6d1a">requested by ${escH(a.requested_by_name||a.requested_by||"")}</div>
       </div>
       <div style="display:flex;gap:6px">
-        <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="resolveAction(${a.id},'approve')">Approve delete</button>
+        <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="resolveAction(${a.id},'approve')">${approveLabel}</button>
         <button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="resolveAction(${a.id},'reject')">Reject</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   panel.style.display = "block";
 }
 
 async function resolveAction(id, decision){
-  if(decision === "approve" && !confirm("Approve this delete? The item will be permanently removed.")) return;
+  if(decision === "approve" && !confirm("Approve this request?")) return;
   const r = await api("/api/admin/resolve-action", { id, decision });
   if(r.ok){ toast(r.msg || "Done."); loadDashboard(); }
   else toast(r.msg || "Failed.");
