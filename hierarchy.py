@@ -191,6 +191,43 @@ def _avg_scores(db):
     return out
 
 
+def _ojt_summary(db):
+    """emp_id -> {status, done, total, pct} for their latest OJT enrollment.
+    done = tasks the trainer signed off; total = tasks in that role's template."""
+    out = {}
+    # total tasks per role (template size)
+    role_total = {}
+    try:
+        for r in db.execute("SELECT role, COUNT(*) c FROM ojt_tasks GROUP BY role").fetchall():
+            role_total[(r["role"] or "").strip()] = _rowget(r, "c", 0)
+    except Exception:
+        pass
+    # latest enrollment per emp
+    enr = {}   # emp_id -> (enrollment_id, role, status)
+    try:
+        for r in db.execute(
+            "SELECT id, emp_id, role, status FROM ojt_enrollments ORDER BY id"
+        ).fetchall():
+            enr[r["emp_id"]] = (r["id"], (r["role"] or "").strip(), (r["status"] or "").strip())
+    except Exception:
+        return out
+    # signed-off count per enrollment
+    signed = {}
+    try:
+        for r in db.execute(
+            "SELECT enrollment_id, COUNT(*) c FROM ojt_signoffs GROUP BY enrollment_id"
+        ).fetchall():
+            signed[r["enrollment_id"]] = _rowget(r, "c", 0)
+    except Exception:
+        pass
+    for eid, (enr_id, role, status) in enr.items():
+        total = role_total.get(role, 0)
+        done = signed.get(enr_id, 0)
+        pct = round(done * 100 / total) if total else 0
+        out[eid] = {"status": status or "—", "done": done, "total": total, "pct": pct}
+    return out
+
+
 def _trainer_names(db):
     """emp_id -> who trained them (induction + training), from training_delivery
     if present. Best-effort: missing table just yields no names."""
@@ -259,6 +296,7 @@ def api_team():
     mod_done, attempts = _completion_maps(db)
     avg = _avg_scores(db)
     ind_by, trn_by = _trainer_names(db)
+    ojt = _ojt_summary(db)
 
     rows = []
     for eid in ids:
@@ -266,6 +304,7 @@ def api_team():
         if not p:
             continue
         prog = _person_progress(p, ind, trn, ass, mod_done, attempts)
+        o = ojt.get(eid)
         rows.append({
             "emp_id": eid,
             "name": p.get("name") or eid,
@@ -278,6 +317,10 @@ def api_team():
             "ass_passed": prog["ass_passed"], "ass_total": prog["ass_total"],
             "avg_score": avg.get(eid),
             "trained_by": sorted((ind_by.get(eid, set()) | trn_by.get(eid, set()))),
+            "ojt_status": (o["status"] if o else None),
+            "ojt_done": (o["done"] if o else 0),
+            "ojt_total": (o["total"] if o else 0),
+            "ojt_pct": (o["pct"] if o else None),
         })
     rows.sort(key=lambda r: (r["designation"], r["name"]))
 
@@ -326,6 +369,7 @@ def api_team_member():
     avg = _avg_scores(db)
     ind_by, trn_by = _trainer_names(db)
     prog = _person_progress(p, ind, trn, ass, mod_done, attempts)
+    o = _ojt_summary(db).get(emp_id)
 
     return jsonify(
         ok=True,
@@ -336,6 +380,10 @@ def api_team_member():
         avg_score=avg.get(emp_id),
         induction_by=sorted(ind_by.get(emp_id, set())),
         training_by=sorted(trn_by.get(emp_id, set())),
+        ojt_status=(o["status"] if o else None),
+        ojt_done=(o["done"] if o else 0),
+        ojt_total=(o["total"] if o else 0),
+        ojt_pct=(o["pct"] if o else None),
         **prog,
     )
 
@@ -357,13 +405,15 @@ def api_team_export():
     ind, trn, ass = _live_catalog(db)
     mod_done, attempts = _completion_maps(db)
     avg = _avg_scores(db)
+    ojt = _ojt_summary(db)
 
     wb = Workbook()
     ws = wb.active
     ws.title = "My Team"
     headers = ["Emp ID", "Name", "Designation", "Region", "Manager",
                "Induction done", "Induction total", "Training done", "Training total",
-               "Assessments passed", "Assessments total", "Avg score %"]
+               "Assessments passed", "Assessments total", "Avg score %",
+               "OJT status", "OJT tasks done", "OJT tasks total", "OJT %"]
     ws.append(headers)
     navy = PatternFill("solid", fgColor="12284B")
     for c in ws[1]:
@@ -381,6 +431,7 @@ def api_team_export():
     rows.sort(key=lambda t: ((t[0].get("designation") or ""), (t[0].get("name") or "")))
 
     for p, prog in rows:
+        o = ojt.get(p["emp_id"])
         ws.append([
             p["emp_id"], p.get("name") or "", p.get("designation") or "",
             p.get("region") or "",
@@ -389,10 +440,13 @@ def api_team_export():
             prog["trn_done"], prog["trn_total"],
             prog["ass_passed"], prog["ass_total"],
             avg.get(p["emp_id"], ""),
+            (o["status"] if o else ""), (o["done"] if o else ""),
+            (o["total"] if o else ""), (o["pct"] if o else ""),
         ])
-    widths = [12, 22, 20, 10, 20, 13, 14, 12, 13, 17, 17, 11]
+    widths = [12, 22, 20, 10, 20, 13, 14, 12, 13, 17, 17, 11, 12, 13, 14, 8]
     for i, w in enumerate(widths, 1):
-        ws.column_dimensions[chr(64 + i) if i <= 26 else "A"].width = w
+        col = chr(64 + i) if i <= 26 else ("A" + chr(64 + i - 26))
+        ws.column_dimensions[col].width = w
 
     bio = io.BytesIO()
     wb.save(bio)
