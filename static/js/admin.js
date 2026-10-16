@@ -123,6 +123,7 @@ function renderTable(){
         actions = '<span style="font-size:11px;color:#9aa6ae">resigned</span>';
       } else {
         actions =
+          `<button class="act" title="Edit (changes need admin approval)" onclick="openEdit('${e.emp_id}')">✎</button>`+
           `<button class="act" title="Request resignation (needs admin approval)" onclick="resignEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`+
           `<button class="act del" title="Request delete (needs admin approval)" onclick="del('${e.emp_id}')">🗑</button>`;
       }
@@ -223,6 +224,9 @@ async function openEdit(emp_id){
   if(!MANAGERS.length) await loadManagers();
   fillManagerDropdown(emp_id, e.reports_to || "");
   if($("eRegion")) $("eRegion").value = e.region || "";
+  // instructors: show a note that changes go for admin approval
+  var note = $("editApprovalNote");
+  if(note) note.style.display = (window.IS_ADMIN === false) ? "block" : "none";
   openModal("editOv");
 }
 async function saveEdit(){
@@ -236,8 +240,11 @@ async function saveEdit(){
     reports_to: ($("eReportsTo") ? $("eReportsTo").value : ""),
     region: ($("eRegion") ? $("eRegion").value : "")
   });
-  if(r.ok){ closeModal("editOv"); toast("Saved."); loadDashboard(); }
-  else toast(r.msg || "Could not save.");
+  if(r.ok){
+    closeModal("editOv");
+    toast(r.applied === false ? "Sent to admin for approval." : "Saved.");
+    loadDashboard();
+  } else toast(r.msg || "Could not save.");
 }
 
 /* ---- reset password ---- */
@@ -274,7 +281,10 @@ async function loadPendingRequests(){
   list.innerHTML = d.actions.map(a=>{
     // headline + approve-button label depend on the kind of request
     let headline, approveLabel;
-    if(a.action_type === "assign_manager"){
+    if(a.action_type === "user_edit"){
+      headline = "<b>Employee edit:</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve edit";
+    } else if(a.action_type === "assign_manager"){
       headline = "<b>Reporting change:</b> " + escH(a.target_label||a.target_id);
       approveLabel = "Approve change";
     } else if(a.action_type === "resign"){
