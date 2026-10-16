@@ -600,6 +600,19 @@ def web_manifest():
     return resp
 
 
+@app.route("/favicon.ico")
+def favicon():
+    """Browsers auto-request /favicon.ico. We don't ship one, so return
+    204 No Content instead of a noisy 404 in the console. If a favicon.ico
+    is later added to the static folder, this will serve it instead."""
+    try:
+        resp = send_from_directory(app.static_folder, "favicon.ico")
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        return resp
+    except Exception:
+        return ("", 204)
+
+
 @app.route("/")
 def login_page():
     u = current_user()
