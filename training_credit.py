@@ -214,11 +214,14 @@ def api_training_productivity():
     _ensure()
     db = _get_db()
 
-    # approved deliveries -> trainer -> set(learner), counts by kind
+    # approved deliveries -> trainer -> set(learner), counts by kind.
+    # Exclude resigned learners so they don't affect a trainer's productivity.
     deliveries = []
     try:
         deliveries = db.execute(
-            "SELECT trainer_id, learner_id, kind FROM training_delivery WHERE status='approved'").fetchall()
+            "SELECT d.trainer_id, d.learner_id, d.kind FROM training_delivery d "
+            "LEFT JOIN users lr ON lr.emp_id=d.learner_id "
+            "WHERE d.status='approved' AND COALESCE(lr.status,'') <> 'resigned'").fetchall()
     except Exception:
         deliveries = []
 

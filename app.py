@@ -542,6 +542,32 @@ def log_activity(action, target_type=None, target_label=None, details=None, acto
         pass
 
 
+def _close_ojt_for_resigned(db, emp_id):
+    """When an employee resigns, close any ACTIVE OJT enrollment they have so
+    they drop out of OJT follow-up, counts and trainer productivity. Uses a
+    distinct status 'resigned' (not 'completed') so the data stays honest.
+    Best-effort: never let this break the resignation itself."""
+    try:
+        db.execute(
+            "UPDATE ojt_enrollments SET status='resigned' WHERE emp_id=? AND status='active'",
+            (emp_id,)
+        )
+    except Exception:
+        pass
+
+
+def _reopen_ojt_for_reactivated(db, emp_id):
+    """Symmetric to the above: if a resigned employee is reactivated (rejoins),
+    reopen the OJT we auto-closed, so their follow-up resumes where it was."""
+    try:
+        db.execute(
+            "UPDATE ojt_enrollments SET status='active' WHERE emp_id=? AND status='resigned'",
+            (emp_id,)
+        )
+    except Exception:
+        pass
+
+
 def login_required(view):
     from functools import wraps
     @wraps(view)
@@ -1234,6 +1260,7 @@ def api_admin_resolve_action():
         tgt = db.execute("SELECT role FROM users WHERE emp_id=?", (act["target_id"],)).fetchone()
         if tgt and tgt["role"] != "admin":
             db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (act["target_id"],))
+            _close_ojt_for_resigned(db, act["target_id"])
         db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
         db.commit()
         log_activity("approved resignation", "user", act["target_label"] or act["target_id"],
@@ -1493,11 +1520,13 @@ def api_admin_set_employment_status():
             if other_admins == 0:
                 return jsonify(ok=False, msg="This is the last active admin — reassign admin rights first."), 400
         db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (emp_id,))
+        _close_ojt_for_resigned(db, emp_id)
         db.commit()
         log_activity("marked resigned", "user", target["name"])
         return jsonify(ok=True, msg=f"{target['name']} marked as resigned. Their history and certificates are kept.")
     else:
         db.execute("UPDATE users SET status='approved' WHERE emp_id=?", (emp_id,))
+        _reopen_ojt_for_reactivated(db, emp_id)
         db.commit()
         log_activity("reactivated employee", "user", target["name"])
         return jsonify(ok=True, msg=f"{target['name']} reactivated — they can log in again.")

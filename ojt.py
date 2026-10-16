@@ -855,6 +855,9 @@ def api_trainees():
     sql = ("SELECT e.*, us.name, us.designation, tr.name AS trainer_name FROM ojt_enrollments e "
            "LEFT JOIN users us ON us.emp_id=e.emp_id LEFT JOIN users tr ON tr.emp_id=e.trainer_id WHERE 1=1")
     params = []
+    # Hide resigned employees from OJT follow-up (they no longer count toward
+    # a trainer's active trainees or productivity).
+    sql += " AND COALESCE(us.status,'') <> 'resigned'"
     if role:
         sql += " AND e.role=?"
         params.append(role)
@@ -880,13 +883,15 @@ def api_trainees():
             "done": tl["done"], "total": tl["total"], "overdue": tl["overdue"],
         })
 
-    # per-role active counts for the tab badges
-    csql = "SELECT role, COUNT(*) c FROM ojt_enrollments WHERE status='active'"
+    # per-role active counts for the tab badges (exclude resigned employees)
+    csql = ("SELECT e.role, COUNT(*) c FROM ojt_enrollments e "
+            "LEFT JOIN users us ON us.emp_id=e.emp_id "
+            "WHERE e.status='active' AND COALESCE(us.status,'') <> 'resigned'")
     cparams = []
     if u["role"] != "admin":
-        csql += " AND trainer_id=?"
+        csql += " AND e.trainer_id=?"
         cparams.append(u["emp_id"])
-    csql += " GROUP BY role"
+    csql += " GROUP BY e.role"
     counts = {r: 0 for r in OJT_ROLES}
     for r in db.execute(csql, tuple(cparams)).fetchall():
         counts[r["role"]] = r["c"]
