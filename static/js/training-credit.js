@@ -13,8 +13,10 @@
   var css = document.createElement("style");
   css.textContent = [
     "#tcRoot{width:100%;box-sizing:border-box}",
-    "#tcRoot #tcBody{width:100%}",
+    "#tcRoot #tcBody{width:100%;box-sizing:border-box}",
+    "#tcRoot .pcards{width:100%;box-sizing:border-box}",
     "#tcRoot .card{width:100%;box-sizing:border-box}",
+    "#tcRoot .card>div{width:100%;box-sizing:border-box}",
     "#tcRoot table{width:100%}",
     "#tcRoot .subtabs{display:flex;gap:4px;border-bottom:1px solid var(--mg-line,#e3e8ee);margin-bottom:14px;flex-wrap:wrap}",
     "#tcRoot .subtab{border:none;background:none;padding:10px 14px;font-size:13.5px;font-weight:600;color:#62707a;cursor:pointer;border-bottom:3px solid transparent;font-family:inherit}",
@@ -242,7 +244,7 @@
 
     shell(
       cards + chart +
-      '<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto"><table style="min-width:680px">'+
+      '<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto;width:100%"><table style="width:100%">'+
       '<thead><tr><th>Trainer</th><th style="text-align:center">Trained</th><th style="text-align:center">Ind / Trn</th>'+
       '<th style="text-align:center">Avg score</th><th style="text-align:center">1st-try rate</th><th>Pass split</th><th>Breakdown</th></tr></thead>'+
       '<tbody>'+rows+'</tbody></table></div></div>'+
@@ -261,7 +263,7 @@
         '<td>'+(x.induction_by.length?x.induction_by.map(esc).join(", "):'<span style="color:#aaa">—</span>')+'</td>'+
         '<td>'+(x.training_by.length?x.training_by.map(esc).join(", "):'<span style="color:#aaa">—</span>')+'</td></tr>';
     }).join("");
-    shell('<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto"><table>'+
+    shell('<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto;width:100%"><table style="width:100%">'+
       '<thead><tr><th>Learner</th><th>Induction by</th><th>Training by</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>');
   }
 
