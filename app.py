@@ -1178,10 +1178,10 @@ def api_admin_all_approvals():
 @app.route("/api/admin/pending-actions")
 @admin_required
 def api_admin_pending_actions():
-    """All pending action requests (instructor delete/resign/assign-manager)."""
+    """All pending action requests (instructor delete/resign/assign-manager/user-edit)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager') ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit') ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -1266,6 +1266,41 @@ def api_admin_resolve_action():
         log_activity("approved resignation", "user", act["target_label"] or act["target_id"],
                      details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
         return jsonify(ok=True, msg="Approved — the employee is now marked resigned.")
+
+    # An employee-edit request (from an instructor) applies the staged fields.
+    if act["action_type"] == "user_edit":
+        import json as _json
+        try:
+            pay = _json.loads(act["payload"] or "{}")
+        except Exception:
+            pay = {}
+        tgt_emp = (pay.get("emp_id") or act["target_id"] or "").strip()
+        if tgt_emp:
+            cur = db.execute("SELECT * FROM users WHERE emp_id=?", (tgt_emp,)).fetchone()
+            if cur is not None:
+                name = (pay.get("name") or cur["name"] or "").strip()
+                phone = (pay.get("phone") or cur["phone"] or "").strip()
+                desg = (pay.get("designation") or cur["designation"] or "").strip()
+                role = (pay.get("role") or cur["role"] or "staff").strip()
+                if role not in VALID_ROLES:
+                    role = cur["role"]
+                rt = (pay.get("reports_to") or "").strip() or None
+                rg = (pay.get("region") or "").strip() or None
+                if rt == tgt_emp:
+                    rt = None
+                # lockout protection: don't demote the last admin
+                if cur["role"] == "admin" and role != "admin":
+                    ac = db.execute("SELECT COUNT(*) c FROM users WHERE role='admin'").fetchone()["c"]
+                    if ac <= 1:
+                        role = "admin"
+                db.execute(
+                    "UPDATE users SET name=?, phone=?, designation=?, role=?, reports_to=?, region=? WHERE emp_id=?",
+                    (name, phone, desg, role, rt, rg, tgt_emp))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+        db.commit()
+        log_activity("approved employee edit", "user", act["target_label"] or tgt_emp,
+                     details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
+        return jsonify(ok=True, msg="Approved — employee updated.")
 
     # An assign-manager request (from an instructor) sets reports_to + region.
     if act["action_type"] == "assign_manager":
@@ -1396,9 +1431,12 @@ def api_admin_dashboard():
 
 
 @app.route("/api/admin/update-user", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_update_user():
-    """Edit an employee's name, phone, designation, or role."""
+    """Edit an employee's name, phone, designation, role, manager, region.
+    Admin: applies live. Instructor: queued as a pending 'user_edit' for an
+    admin to approve (nothing changes until approved)."""
+    import json as _json
     d = request.get_json(force=True)
     emp_id = (d.get("emp_id") or "").strip()
     if not emp_id:
@@ -1416,9 +1454,9 @@ def api_admin_update_user():
     if role not in VALID_ROLES:
         return jsonify(ok=False, msg="Invalid role."), 400
 
-    # Reporting hierarchy fields. These keys are only sent when the admin
-    # edits them, so fall back to the current value if a key is absent.
-    # An explicitly empty string clears the field (set to NULL).
+    # Reporting hierarchy fields. These keys are only sent when edited, so fall
+    # back to the current value if a key is absent. An explicitly empty string
+    # clears the field (set to NULL).
     def _curget(key):
         try:
             return target[key] if key in target.keys() else None
@@ -1431,6 +1469,30 @@ def api_admin_update_user():
     if reports_to == emp_id:
         return jsonify(ok=False, msg="A person cannot report to themselves."), 400
 
+    me = current_user()
+
+    # Instructor -> queue for admin approval (nothing applied yet).
+    if me and me["role"] == "instructor":
+        payload = _json.dumps({
+            "emp_id": emp_id, "name": name, "phone": phone,
+            "designation": desg, "role": role,
+            "reports_to": reports_to, "region": region,
+        })
+        try:
+            db.execute(
+                "INSERT INTO pending_actions (action_type, target_type, target_id, target_label, "
+                "payload, requested_by, requested_by_name, status, created_at) "
+                "VALUES ('user_edit','user',?,?,?,?,?, 'pending', ?)",
+                (emp_id, (target["name"] or emp_id), payload, me["emp_id"], me["name"],
+                 datetime.utcnow().isoformat())
+            )
+            db.commit()
+        except Exception:
+            return jsonify(ok=False, msg="Could not submit for approval."), 500
+        log_activity("requested employee edit", "user", target["name"] or emp_id)
+        return jsonify(ok=True, msg="Changes sent to admin for approval.", applied=False)
+
+    # Admin -> apply live.
     # Safety: never allow the last admin to be demoted (lockout protection)
     if target["role"] == "admin" and role != "admin":
         admin_count = db.execute("SELECT COUNT(*) c FROM users WHERE role='admin'").fetchone()["c"]
@@ -1440,7 +1502,7 @@ def api_admin_update_user():
     db.execute("UPDATE users SET name=?, phone=?, designation=?, role=?, reports_to=?, region=? WHERE emp_id=?",
                (name, phone, desg, role, reports_to, region, emp_id))
     db.commit()
-    return jsonify(ok=True, msg="Employee updated.")
+    return jsonify(ok=True, msg="Employee updated.", applied=True)
 
 
 @app.route("/api/admin/reset-password", methods=["POST"])
