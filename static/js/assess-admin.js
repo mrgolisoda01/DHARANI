@@ -295,17 +295,18 @@ async function openEditAssess(id){
   $a("editAssessOv").classList.add("show");
 }
 
-function renderEditScreen(){
-  const a = EDIT_A;
-  const roleChecks = A_ROLES.map(role=>{
-    const on = (a.roles||"all").toLowerCase().split(",").map(s=>s.trim()).includes(role.toLowerCase());
-    return `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12px"><input type="checkbox" class="ea-role" value="${role}" ${on?"checked":""} style="width:auto"> ${role}</label>`;
-  }).join("");
-
-  const qrows = EDIT_A_QS.map((q,i)=>`
+// Build the HTML for a list of question rows. Each row keeps its ORIGINAL
+// number (its position in the full EDIT_A_QS list) so "Q3" stays "Q3" even
+// when the list is filtered by the search box.
+function questionRowsHtml(list){
+  if(!list || !list.length) return '<div class="empty" style="font-size:12.5px">No questions match your search.</div>';
+  return list.map(q=>{
+    const i = EDIT_A_QS.indexOf(q);           // original index -> stable Q number
+    const n = (i >= 0 ? i : 0) + 1;
+    return `
     <div style="border:1px solid var(--mg-line);border-radius:8px;padding:10px;margin-bottom:8px;background:#fafdff">
       <div style="display:flex;justify-content:space-between;gap:8px">
-        <div style="font-size:13px"><b>Q${i+1}.</b> ${escA(q.question)}</div>
+        <div style="font-size:13px"><b>Q${n}.</b> ${escA(q.question)}</div>
         <div style="white-space:nowrap">
           <button class="btn" style="padding:3px 8px" onclick="editOneQ(${q.id})">Edit</button>
           <button class="btn" style="padding:3px 8px;color:var(--mg-red)" onclick="delOneQ(${q.id})">✕</button>
@@ -315,7 +316,40 @@ function renderEditScreen(){
         A) ${escA(q.opt_a)} &nbsp; B) ${escA(q.opt_b)} ${q.opt_c?"&nbsp; C) "+escA(q.opt_c):""} ${q.opt_d?"&nbsp; D) "+escA(q.opt_d):""}
         &nbsp; · <b style="color:var(--mg-green)">Ans: ${q.correct}</b>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
+}
+
+// Live-filter the question list as the admin types. Matches the question
+// text, any option, the correct letter, or the category.
+function filterQuestions(){
+  const inp = $a("eaQSearch");
+  const listBox = $a("eaQList");
+  const countEl = $a("eaQCount");
+  if(!inp || !listBox) return;
+  const q = inp.value.toLowerCase().trim();
+  let list = EDIT_A_QS;
+  if(q){
+    list = EDIT_A_QS.filter(x=>{
+      const hay = [(x.question||""), (x.opt_a||""), (x.opt_b||""), (x.opt_c||""),
+                   (x.opt_d||""), (x.correct||""), (x.category||"")].join(" ").toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+  }
+  listBox.innerHTML = questionRowsHtml(list);
+  if(countEl) countEl.textContent = q ? (list.length + " of " + EDIT_A_QS.length) : String(EDIT_A_QS.length);
+}
+
+function renderEditScreen(){
+  const a = EDIT_A;
+  const roleChecks = A_ROLES.map(role=>{
+    const on = (a.roles||"all").toLowerCase().split(",").map(s=>s.trim()).includes(role.toLowerCase());
+    return `<label style="display:inline-flex;align-items:center;gap:5px;margin:3px 10px 3px 0;font-size:12px"><input type="checkbox" class="ea-role" value="${role}" ${on?"checked":""} style="width:auto"> ${role}</label>`;
+  }).join("");
+
+  // question rows are built by a reusable function so the search box can
+  // re-render just the filtered list without rebuilding the whole screen.
+  const qrows = questionRowsHtml(EDIT_A_QS);
 
   $a("editAssessBody").innerHTML = `
     <h3 style="margin:0 0 12px">Edit assessment</h3>
@@ -333,11 +367,13 @@ function renderEditScreen(){
     </div>
 
     <div style="background:#fff;border:1px solid var(--mg-line);border-radius:10px;padding:14px;margin-bottom:14px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <h4 style="margin:0;font-size:14px">Questions (${EDIT_A_QS.length})</h4>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+        <h4 style="margin:0;font-size:14px">Questions (<span id="eaQCount">${EDIT_A_QS.length}</span>)</h4>
         <button class="btn primary" onclick="editOneQ(0)">＋ Add question</button>
       </div>
-      ${qrows || '<div class="empty">No questions yet.</div>'}
+      <input id="eaQSearch" oninput="filterQuestions()" placeholder="🔍 Search questions (text, options, or category)…"
+        style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px;margin-bottom:10px;font-family:inherit">
+      <div id="eaQList">${qrows || '<div class="empty">No questions yet.</div>'}</div>
     </div>
 
     <details style="background:#fff;border:1px solid var(--mg-line);border-radius:10px;padding:14px">
