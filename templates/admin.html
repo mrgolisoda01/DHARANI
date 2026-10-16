@@ -615,6 +615,22 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
           <option value="admin">Admin (full control)</option>
         </select>
       </div>
+      <div class="fld"><label>Reports to (manager)</label>
+        <select id="eReportsTo">
+          <option value="">— None —</option>
+        </select>
+        <div style="font-size:11.5px;color:var(--mg-muted);margin-top:3px">This person's manager. Managers see everyone below them in the chain.</div>
+      </div>
+      <div class="fld"><label>Region</label>
+        <select id="eRegion">
+          <option value="">— None —</option>
+          <option value="East">East</option>
+          <option value="West">West</option>
+          <option value="North">North</option>
+          <option value="South">South</option>
+        </select>
+        <div style="font-size:11.5px;color:var(--mg-muted);margin-top:3px">Used for the RSM (regional) view.</div>
+      </div>
       <div class="modal-foot">
         <button class="btn" onclick="closeModal('editOv')">Cancel</button>
         <button class="btn primary" onclick="saveEdit()">Save changes</button>
