@@ -175,6 +175,10 @@
           <option value="resigned">Resigned only</option>
           <option value="all">All (incl. resigned)</option>
         </select>
+        <select id="empManagerFilter" onchange="renderTable()" style="padding:8px 10px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px">
+          <option value="">All managers</option>
+          <option value="__none__">⚠ No manager set</option>
+        </select>
         <button class="btn admin-only" onclick="openBulk()">＋ Bulk add (CSV)</button>
         <button class="btn" onclick="window.location.href='/api/admin/enrolment-report.xlsx'">⬇ Enrolment report</button>
       </div>
@@ -184,12 +188,12 @@
       <table>
         <thead>
           <tr>
-            <th>Name</th><th>Emp ID</th><th>Designation</th><th>Phone</th>
+            <th>Name</th><th>Emp ID</th><th>Designation</th><th>Reports to</th><th>Phone</th>
             <th>Role</th><th>Status</th><th>Enrolled</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="empBody">
-          <tr><td colspan="7" class="empty">Loading…</td></tr>
+          <tr><td colspan="9" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
