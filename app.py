@@ -1333,7 +1333,8 @@ def api_admin_dashboard():
 
     # full employee list (include admins too, marked, so all accounts are visible)
     rows = db.execute(
-        "SELECT emp_id,name,phone,designation,role,status,created_at,last_login "
+        "SELECT emp_id,name,phone,designation,role,status,created_at,last_login,"
+        "COALESCE(reports_to,'') reports_to, COALESCE(region,'') region "
         "FROM users ORDER BY (status='pending') DESC, name"
     ).fetchall()
     employees = [dict(r) for r in rows]
