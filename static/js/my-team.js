@@ -101,7 +101,7 @@
 
     var table = '<div style="overflow-x:auto"><table><thead><tr>' +
       '<th>Name</th><th>Designation</th><th>Region</th>' +
-      '<th>Induction</th><th>Training</th><th>Assessments</th><th>Avg</th>' +
+      '<th>Induction</th><th>Training</th><th>Assessments</th><th>OJT</th><th>Avg</th>' +
       '</tr></thead><tbody id="mtBody">' + rowsHtml(d.rows) + '</tbody></table></div>';
 
     $("myTeam").innerHTML = hero + cards + bar2 + table;
@@ -109,6 +109,18 @@
 
   function card(v, l) {
     return '<div class="mt-card"><div class="v">' + v + '</div><div class="l">' + l + '</div></div>';
+  }
+
+  function ojtCell(r) {
+    if (!r.ojt_status) return '<span style="color:#aaa">—</span>';
+    var col = r.ojt_status === "completed" ? "#0f6b45"
+            : (r.ojt_status === "failed" ? "#9e2b2b" : "#0c447c");
+    var bg = r.ojt_status === "completed" ? "#eaf7f0"
+           : (r.ojt_status === "failed" ? "#fdeaea" : "#eef5fc");
+    var label = r.ojt_status.charAt(0).toUpperCase() + r.ojt_status.slice(1);
+    return '<span class="pill" style="background:' + bg + ';color:' + col + '">' + esc(label) + '</span>' +
+           '<div style="font-size:11px;color:#62707a;margin-top:2px">' + r.ojt_done + '/' + r.ojt_total +
+           (r.ojt_pct != null ? ' · ' + r.ojt_pct + '%' : '') + '</div>';
   }
 
   function rowsHtml(rows) {
@@ -123,6 +135,7 @@
         '<td>' + r.ind_done + '/' + r.ind_total + bar(r.ind_done, r.ind_total) + '</td>' +
         '<td>' + r.trn_done + '/' + r.trn_total + bar(r.trn_done, r.trn_total) + '</td>' +
         '<td>' + r.ass_passed + '/' + r.ass_total + bar(r.ass_passed, r.ass_total) + '</td>' +
+        '<td>' + ojtCell(r) + '</td>' +
         '<td>' + avg + '</td>' +
         '</tr>';
     }).join("");
@@ -170,6 +183,10 @@
         card(d.trn_done + '/' + d.trn_total, "Training done") +
         card(d.ass_passed + '/' + d.ass_total, "Assessments passed") +
         card((d.avg_score != null ? d.avg_score + '%' : '—'), "Average score") +
+        (d.ojt_status
+          ? card((d.ojt_pct != null ? d.ojt_pct + '%' : (d.ojt_done + '/' + d.ojt_total)),
+                 "OJT (" + esc(d.ojt_status) + ")")
+          : '') +
       '</div>' +
       '<div class="mt-sec"><h4>Who trained them</h4>' +
         '<div style="font-size:12px;color:#62707a;margin-bottom:3px">Induction</div>' + who(d.induction_by) +
