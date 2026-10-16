@@ -1139,10 +1139,10 @@ def api_admin_all_approvals():
 @app.route("/api/admin/pending-actions")
 @admin_required
 def api_admin_pending_actions():
-    """All pending action requests (currently: instructor delete requests)."""
+    """All pending action requests (instructor delete/resign/assign-manager)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign') ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager') ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -1226,6 +1226,27 @@ def api_admin_resolve_action():
         log_activity("approved resignation", "user", act["target_label"] or act["target_id"],
                      details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
         return jsonify(ok=True, msg="Approved — the employee is now marked resigned.")
+
+    # An assign-manager request (from an instructor) sets reports_to + region.
+    if act["action_type"] == "assign_manager":
+        import json as _json
+        try:
+            pay = _json.loads(act["payload"] or "{}")
+        except Exception:
+            pay = {}
+        tgt_emp = (pay.get("emp_id") or act["target_id"] or "").strip()
+        rt = (pay.get("reports_to") or "").strip() or None
+        rg = (pay.get("region") or "").strip() or None
+        if tgt_emp and rt == tgt_emp:
+            rt = None  # safety: never self-report
+        if tgt_emp:
+            db.execute("UPDATE users SET reports_to=?, region=? WHERE emp_id=?",
+                       (rt, rg, tgt_emp))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+        db.commit()
+        log_activity("approved reporting change", "user", act["target_label"] or tgt_emp,
+                     details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
+        return jsonify(ok=True, msg="Approved — reporting updated.")
 
     # perform the delete that was requested
     tt = act["target_type"]
@@ -1354,14 +1375,29 @@ def api_admin_update_user():
     if role not in VALID_ROLES:
         return jsonify(ok=False, msg="Invalid role."), 400
 
+    # Reporting hierarchy fields. These keys are only sent when the admin
+    # edits them, so fall back to the current value if a key is absent.
+    # An explicitly empty string clears the field (set to NULL).
+    def _curget(key):
+        try:
+            return target[key] if key in target.keys() else None
+        except Exception:
+            return None
+    reports_to = d.get("reports_to", _curget("reports_to"))
+    region = d.get("region", _curget("region"))
+    reports_to = (reports_to or "").strip() or None
+    region = (region or "").strip() or None
+    if reports_to == emp_id:
+        return jsonify(ok=False, msg="A person cannot report to themselves."), 400
+
     # Safety: never allow the last admin to be demoted (lockout protection)
     if target["role"] == "admin" and role != "admin":
         admin_count = db.execute("SELECT COUNT(*) c FROM users WHERE role='admin'").fetchone()["c"]
         if admin_count <= 1:
             return jsonify(ok=False, msg="Cannot change role: this is the only admin account."), 400
 
-    db.execute("UPDATE users SET name=?, phone=?, designation=?, role=? WHERE emp_id=?",
-               (name, phone, desg, role, emp_id))
+    db.execute("UPDATE users SET name=?, phone=?, designation=?, role=?, reports_to=?, region=? WHERE emp_id=?",
+               (name, phone, desg, role, reports_to, region, emp_id))
     db.commit()
     return jsonify(ok=True, msg="Employee updated.")
 
@@ -3968,6 +4004,12 @@ init_dashboard(app, get_db, current_user)
 # ---------------------------------------------------------------
 from training_credit import init_training_credit
 init_training_credit(app, get_db, current_user)
+
+# ---------------------------------------------------------------
+#  Reporting hierarchy / "My Team" visibility (hierarchy.py)
+# ---------------------------------------------------------------
+from hierarchy import init_hierarchy
+init_hierarchy(app, get_db, current_user)
 
 
 # ---------------------------------------------------------------
