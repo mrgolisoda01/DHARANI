@@ -77,7 +77,7 @@ def _ensure():
 def _modules(db, kind):
     try:
         return [dict(r) for r in db.execute(
-            "SELECT id, title, kind FROM content_modules WHERE kind=? AND status='live' ORDER BY sort_order, id", (kind,)).fetchall()]
+            "SELECT id, title, kind, COALESCE(roles,'all') roles FROM content_modules WHERE kind=? AND status='live' ORDER BY sort_order, id", (kind,)).fetchall()]
     except Exception:
         return []
 
