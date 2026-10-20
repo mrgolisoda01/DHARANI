@@ -27,7 +27,7 @@
   :root{
     --mg-blue:#00AEEF; --mg-yellow:#FFD600; --mg-ink:#0b2733;
     --mg-bg:#f4f7f9; --mg-card:#fff; --mg-line:#e6ebf0; --muted:#62707a;
-    --mg-green:#1d9e75; --mg-red:#e24b4a;
+    --mg-green:#1d9e75; --mg-red:#e24b4a; --mg-navy:#12284B;
   }
   .pt-tabs{background:#fff;border-bottom:1px solid var(--mg-line);position:sticky;top:0;z-index:20;overflow-x:auto;white-space:nowrap}
   .pt-tabs .inner{max-width:1000px;margin:0 auto;display:flex;gap:2px;padding:0 12px}
@@ -36,11 +36,27 @@
   .tabpane{display:none}
   .tabpane.show{display:block}
   /* home stats */
-  .home-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}
+  .home-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0}
   @media(max-width:640px){.home-cards{grid-template-columns:1fr}}
-  .hcard{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px;text-align:center}
+  .hcard{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}
   .hcard .n{font-size:30px;font-weight:700;margin:4px 0}
   .hcard .l{font-size:13px;color:var(--muted)}
+  .hcard.mgr-card{background:linear-gradient(135deg,#f7f9fc,#eef3fb);border-color:#d6e2f2}
+  .hcard.mgr-card:hover{border-color:var(--mg-blue);box-shadow:0 2px 10px rgba(0,0,0,.06)}
+  /* induction progress ring */
+  .ring{position:relative;width:72px;height:72px;margin:0 auto 4px}
+  .ring svg{width:72px;height:72px;transform:rotate(-90deg)}
+  .ring circle{fill:none;stroke-width:7}
+  .ring .ring-bg{stroke:#e9eef3}
+  .ring .ring-fg{stroke:var(--mg-blue);stroke-linecap:round;stroke-dasharray:188.5;stroke-dashoffset:188.5;transition:stroke-dashoffset .6s ease}
+  .ring .ring-txt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;color:var(--mg-ink)}
+  /* overall onboarding bar */
+  .onb{margin-top:16px;max-width:520px}
+  .onb-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+  .onb-label{font-size:12.5px;color:rgba(255,255,255,.85);font-weight:600;letter-spacing:.02em}
+  .onb-pct{font-size:15px;font-weight:700;color:#fff}
+  .onb-bar{height:9px;background:rgba(255,255,255,.22);border-radius:6px;overflow:hidden}
+  .onb-fill{height:100%;background:var(--mg-yellow);border-radius:6px;width:0;transition:width .7s ease}
   /* assessment cards */
   .as-card{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:16px;margin-bottom:12px}
   .as-card h4{margin:0 0 4px;font-size:15px}
@@ -135,13 +151,32 @@
       <div class="hero">
         <h2>Welcome, {{ user['name'].split(' ')[0] }}</h2>
         <p>Your training home. Complete Induction modules, take assessments, and collect your certificates — all in one place.</p>
+        <div id="onbWrap" class="onb" style="display:none">
+          <div class="onb-top">
+            <span class="onb-label">Overall onboarding progress</span>
+            <span class="onb-pct" id="onbPct">0%</span>
+          </div>
+          <div class="onb-bar"><div class="onb-fill" id="onbFill" style="width:0%"></div></div>
+        </div>
       </div>
       <div class="home-cards">
-        <div class="hcard"><div class="l">Induction passed</div><div class="n" style="color:var(--mg-blue)" id="hInd">—</div></div>
+        <div class="hcard">
+          <div class="ring" id="indRing"><svg viewBox="0 0 72 72"><circle class="ring-bg" cx="36" cy="36" r="30"/><circle class="ring-fg" id="indRingFg" cx="36" cy="36" r="30"/></svg><div class="ring-txt" id="indRingTxt">—</div></div>
+          <div class="l">Induction modules</div>
+        </div>
         <div class="hcard"><div class="l">Assessments passed</div><div class="n" style="color:var(--mg-green)" id="hAss">—</div></div>
         <div class="hcard"><div class="l">Certificates earned</div><div class="n" style="color:#534ab7" id="hCert">—</div></div>
+        <div class="hcard mgr-card" id="teamCard" style="display:none;cursor:pointer" onclick="showTab('myteam')">
+          <div class="l">My team</div>
+          <div class="n" style="color:var(--mg-navy, #12284B)" id="hTeam">—</div>
+          <div class="l" id="hTeamOjt" style="margin-top:2px">—</div>
+        </div>
       </div>
       <div class="sectiontitle">Quick start</div>
+      <div id="continueBox" style="display:none;margin:8px 0 10px">
+        <button class="btn btn-pri" id="continueBtn" style="font-size:14px">▶ Continue where you left off</button>
+        <div class="meta" id="continueSub" style="margin-top:6px"></div>
+      </div>
       <p class="meta">Use the tabs above to move between Induction Modules, Assessments, Videos, and your Certificates.</p>
     </div>
 
