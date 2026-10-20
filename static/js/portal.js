@@ -177,24 +177,112 @@ async function markVideoWatched(id){
 }
 
 /* ---------------- HOME STATS ---------------- */
+// set the induction progress ring (r=30 => circumference ≈ 188.5)
+function setIndRing(done, total){
+  const C = 188.5;
+  const pct = total > 0 ? done/total : 0;
+  const fg = $('indRingFg');
+  if(fg) fg.style.strokeDashoffset = String(C - C*pct);
+  if($('indRingTxt')) $('indRingTxt').textContent = done + ' / ' + total;
+}
+
 async function loadHomeStats(){
-  // induction passed
-  let indPassed = 0;
+  // ----- induction modules: count completed + find next pending -----
+  let indDone = 0, indTotal = 0, nextMod = null;
   try{
-    Object.keys(progress).forEach(k=>{ if(progress[k] && progress[k].passed) indPassed++; });
+    const d = await (await fetch('/api/content/induction')).json();
+    const list = (d && d.modules) || [];
+    indTotal = list.length;
+    list.forEach(m=>{ if(m.completed) indDone++; });
+    nextMod = list.find(m=>!m.completed) || null;
   }catch(e){}
-  $('hInd').textContent = indPassed;
-  // assessments + certs
+  setIndRing(indDone, indTotal);
+
+  // ----- "Continue where you left off" -----
+  const cbox = $('continueBox'), cbtn = $('continueBtn'), csub = $('continueSub');
+  if(cbox && cbtn){
+    if(nextMod){
+      cbox.style.display = 'block';
+      cbtn.textContent = '▶ Continue: ' + (nextMod.title || 'Next module');
+      if(csub) csub.textContent = 'Your next induction module is waiting.';
+      cbtn.onclick = function(){
+        showTab('induction');
+        // open the module directly after the tab renders
+        setTimeout(function(){
+          try{
+            openFileModule(nextMod.id, nextMod.title, nextMod.link,
+                           nextMod.min_minutes||0, nextMod.completed?1:0);
+          }catch(e){}
+        }, 350);
+      };
+    } else if(indTotal > 0){
+      cbox.style.display = 'block';
+      cbtn.textContent = '✓ All induction modules completed';
+      cbtn.onclick = function(){ showTab('induction'); };
+      if(csub) csub.textContent = 'Great work — your induction is fully done.';
+    } else {
+      cbox.style.display = 'none';
+    }
+  }
+
+  // ----- certificates -----
+  let certCount = 0;
   try{
     const r = await (await fetch('/api/my-certificates')).json();
-    const certs = (r && r.certificates) || [];
-    $('hCert').textContent = certs.length;
-  }catch(e){ $('hCert').textContent = 0; }
+    certCount = ((r && r.certificates) || []).length;
+  }catch(e){}
+  if($('hCert')) $('hCert').textContent = certCount;
+
+  // ----- assessments -----
+  let assPassed = 0, assTotal = 0;
   try{
     const r = await (await fetch('/api/my-assessments')).json();
     const list = (r && r.assessments) || [];
-    $('hAss').textContent = list.filter(a=>a.passed).length;
-  }catch(e){ $('hAss').textContent = 0; }
+    assTotal = list.length;
+    assPassed = list.filter(a=>a.passed).length;
+  }catch(e){}
+  if($('hAss')) $('hAss').textContent = assPassed;
+
+  // ----- overall onboarding % (induction modules + assessments combined) -----
+  const totUnits = indTotal + assTotal;
+  const doneUnits = indDone + assPassed;
+  const onbPct = totUnits > 0 ? Math.round(doneUnits*100/totUnits) : 0;
+  const ow = $('onbWrap');
+  if(ow){
+    if(totUnits > 0){
+      ow.style.display = 'block';
+      if($('onbPct')) $('onbPct').textContent = onbPct + '%';
+      if($('onbFill')) $('onbFill').style.width = onbPct + '%';
+    } else {
+      ow.style.display = 'none';
+    }
+  }
+
+  // ----- manager Team card (only if viewer manages people) -----
+  loadHomeTeamCard();
+}
+
+async function loadHomeTeamCard(){
+  const card = $('teamCard');
+  if(!card) return;
+  try{
+    const d = await (await fetch('/api/team')).json();
+    if(!d || !d.ok){ card.style.display='none'; return; }
+    const rows = d.rows || [];
+    const n = (d.summary && d.summary.people) || rows.length;
+    // show only if this person actually has a team (managers/admin)
+    if(n <= 0){ card.style.display='none'; return; }
+    // count people with an active OJT (status not done/resigned/—)
+    const activeStates = ['in_progress','active','ongoing','started','open'];
+    let inOjt = 0;
+    rows.forEach(r=>{
+      const s = (r.ojt_status||'').toString().toLowerCase().trim();
+      if(s && activeStates.indexOf(s) >= 0) inOjt++;
+    });
+    if($('hTeam')) $('hTeam').textContent = n;
+    if($('hTeamOjt')) $('hTeamOjt').textContent = inOjt + ' in OJT';
+    card.style.display = 'flex';
+  }catch(e){ card.style.display='none'; }
 }
 
 /* ---------------- INDUCTION (original system) ---------------- */
