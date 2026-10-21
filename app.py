@@ -1770,6 +1770,8 @@ def api_admin_quick_add_user():
     role = (d.get("role") or "staff").strip()
     pw = d.get("password") or ""
     auto_approve = d.get("auto_approve", True)
+    reports_to = (d.get("reports_to") or "").strip() or None
+    region = (d.get("region") or "").strip() or None
 
     if not name or not emp_id:
         return jsonify(ok=False, msg="Name and Employee ID are required."), 400
@@ -1787,6 +1789,13 @@ def api_admin_quick_add_user():
     if db.execute("SELECT 1 FROM users WHERE emp_id=?", (emp_id,)).fetchone():
         return jsonify(ok=False, msg="This Employee ID already exists."), 400
 
+    # validate reports_to: must be an existing, non-self employee (else ignore it)
+    if reports_to:
+        if reports_to == emp_id:
+            reports_to = None
+        elif not db.execute("SELECT 1 FROM users WHERE emp_id=?", (reports_to,)).fetchone():
+            reports_to = None
+
     # instructor-added users are ALWAYS pending, regardless of the checkbox
     if is_instructor:
         status = "pending"
@@ -1795,10 +1804,10 @@ def api_admin_quick_add_user():
     must_reset = 1 if pw == "Golisoda@123" else 0
     added_by = u["emp_id"] if is_instructor else None
     db.execute(
-        "INSERT INTO users (emp_id,name,phone,designation,password_hash,status,role,created_at,must_reset,added_by) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO users (emp_id,name,phone,designation,password_hash,status,role,created_at,must_reset,added_by,reports_to,region) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (emp_id, name, phone, desg, generate_password_hash(pw), status, role,
-         datetime.utcnow().isoformat(), must_reset, added_by)
+         datetime.utcnow().isoformat(), must_reset, added_by, reports_to, region)
     )
     db.commit()
     if is_instructor:
