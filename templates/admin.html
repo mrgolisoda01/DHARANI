@@ -449,6 +449,14 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
           </div>
           <div class="fld"><label>Password (blank = Golisoda@123)</label><input id="quPw" placeholder="Golisoda@123" /></div>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="fld"><label>Reports to <span style="color:var(--mg-muted);font-weight:400">(optional)</span></label>
+            <select id="quReportsTo"><option value="">— None —</option></select>
+          </div>
+          <div class="fld"><label>Region <span style="color:var(--mg-muted);font-weight:400">(optional)</span></label>
+            <select id="quRegion"><option value="">— None —</option><option value="East">East</option><option value="West">West</option><option value="North">North</option><option value="South">South</option></select>
+          </div>
+        </div>
         <div style="text-align:right"><button class="btn primary" onclick="quickAddUser()">Add user</button></div>
       </div>
 
@@ -851,7 +859,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       if(which === 'crt') loadTracks();
       if(which === 'prog'){ loadPersonProgress(); }
       if(which === 'appr'){ if(window.IS_ADMIN) loadApprovals(); else loadMySubmissions(); loadHistory(); }
-      if(which === 'set'){ loadSettings(); loadDesignations(); }
+      if(which === 'set'){ loadSettings(); loadDesignations(); if(typeof fillAddUserManagers==='function') fillAddUserManagers(); }
     }
 
     // ---- Instructor read-only "My Submissions" view ----
@@ -1247,6 +1255,8 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         designation: document.getElementById('quDesg').value.trim(),
         role: document.getElementById('quRole').value,
         password: document.getElementById('quPw').value,
+        reports_to: (document.getElementById('quReportsTo') ? document.getElementById('quReportsTo').value : ''),
+        region: (document.getElementById('quRegion') ? document.getElementById('quRegion').value : ''),
         auto_approve: true
       };
       if(!body.name || !body.emp_id){ toast('Name and Employee ID are required.'); return; }
@@ -1261,7 +1271,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       const r = await resp.json();
       if(r.ok){
         toast(r.msg);
-        ['quName','quEmp','quPhone','quDesg','quPw'].forEach(id=>document.getElementById(id).value='');
+        ['quName','quEmp','quPhone','quDesg','quPw','quReportsTo','quRegion'].forEach(id=>{var el=document.getElementById(id); if(el) el.value='';});
         loadSettings();
         if(typeof loadDashboard==='function') loadDashboard();
       } else toast(r.msg||'Could not add.');
