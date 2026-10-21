@@ -212,6 +212,7 @@
         <input class="search" id="searchBox" type="search" placeholder="Search name, ID, designation…" oninput="renderTable()" autocomplete="new-password" autocorrect="off" autocapitalize="off" spellcheck="false" name="q_emp_search_x" readonly onfocus="this.removeAttribute('readonly')" data-lpignore="true" data-form-type="other" />
         <select id="empStatusFilter" onchange="renderTable()" style="padding:8px 10px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px">
           <option value="active">Active employees</option>
+          <option value="untrained">Not trained (pending activation)</option>
           <option value="resigned">Resigned only</option>
           <option value="removed">Removed only</option>
           <option value="all">All (incl. resigned & removed)</option>

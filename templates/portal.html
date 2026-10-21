@@ -334,5 +334,62 @@
 <script src="{{ url_for('static', filename='js/audit-portal.js') }}"></script>
 <script src="{{ url_for('static', filename='js/my-record.js') }}"></script>
 <script src="{{ url_for('static', filename='js/my-team.js') }}"></script>
+
+<!-- ============ ACTIVATION GATE ============ -->
+<!-- Employees must be "activated" (training complete) before the field tabs
+     (Certificates, My OJT, Route Audit) unlock. Online training tabs
+     (Induction / Training / Assessments / Videos) stay open so they can train. -->
+<script>
+  (function(){
+    window.IS_ACTIVATED = {{ 'true' if (user['activated'] if 'activated' in user.keys() else 0) else 'false' }};
+    window.IS_STAFF = {{ 'false' if user['role'] in ('admin','instructor') else 'true' }};
+    // admins/instructors are never gated
+    var GATED = (window.IS_STAFF && !window.IS_ACTIVATED);
+    var LOCKED = ['certs','ojt','audit'];
+
+    if(!GATED) return; // activated (or admin/instructor) — nothing to lock
+
+    // 1) put a small lock mark on the locked tab buttons
+    function markLocks(){
+      LOCKED.forEach(function(name){
+        var btn = document.querySelector('.pt-tab[data-tab="'+name+'"]');
+        if(btn && btn.textContent.indexOf('🔒')<0){ btn.setAttribute('data-locked','1'); }
+      });
+    }
+
+    // 2) a friendly lock message shown in place of a locked tab's pane
+    function lockMessage(){
+      return '<div style="max-width:560px;margin:40px auto;text-align:center;'+
+        'background:#fff;border:1px solid var(--mg-line);border-radius:14px;padding:34px 26px">'+
+        '<div style="font-size:40px;margin-bottom:10px">🔒</div>'+
+        '<h3 style="margin:0 0 8px;color:var(--mg-ink)">Complete your training to unlock</h3>'+
+        '<p style="margin:0;color:var(--muted);font-size:14px;line-height:1.6">'+
+        'This section opens once your training is completed and your account is activated by the L&amp;D team. '+
+        'Meanwhile, please finish your <b>Induction</b>, <b>Training</b> and <b>Assessments</b> from the tabs above.</p>'+
+        '</div>';
+    }
+
+    // 3) wrap showTab: if a locked tab is requested, show the message instead
+    var _showTab = window.showTab;
+    window.showTab = function(name){
+      if(LOCKED.indexOf(name) >= 0){
+        // switch the tab visually but replace its content with the lock message
+        try{
+          document.querySelectorAll('.tabpane').forEach(function(p){p.classList.remove('show');});
+          document.querySelectorAll('.pt-tab').forEach(function(t){t.classList.remove('active');});
+          var pane = document.getElementById('tab-'+name);
+          var btn = document.querySelector('.pt-tab[data-tab="'+name+'"]');
+          if(btn) btn.classList.add('active');
+          if(pane){ pane.classList.add('show'); pane.innerHTML = lockMessage(); }
+        }catch(e){}
+        return;
+      }
+      if(typeof _showTab === 'function') return _showTab(name);
+    };
+
+    if(document.readyState !== 'loading') markLocks();
+    else document.addEventListener('DOMContentLoaded', markLocks);
+  })();
+</script>
 </body>
 </html>
