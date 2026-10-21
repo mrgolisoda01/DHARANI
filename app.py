@@ -1329,7 +1329,12 @@ def api_admin_resolve_action():
     if tt == "user":
         tgt = db.execute("SELECT role FROM users WHERE emp_id=?", (tid,)).fetchone()
         if tgt and tgt["role"] != "admin":
-            db.execute("DELETE FROM users WHERE emp_id=?", (tid,))
+            # SOFT delete (recoverable) instead of destroying the row
+            db.execute("UPDATE users SET status='deleted' WHERE emp_id=?", (tid,))
+            try:
+                _close_ojt_for_resigned(db, tid)
+            except Exception:
+                pass
     elif tt == "assessment":
         db.execute("DELETE FROM questions WHERE assessment_id=?", (tid,))
         db.execute("DELETE FROM assessment_results WHERE assessment_id=?", (tid,))
@@ -1619,8 +1624,10 @@ def _queue_delete_request(target_type, target_id, target_label):
 @app.route("/api/admin/delete-user", methods=["POST"])
 @view_admin_required
 def api_admin_delete_user():
-    """Delete an employee (and their scores). Admin accounts are protected.
-    Instructors can request a delete — it goes pending until an admin approves."""
+    """Soft-delete an employee: mark status='deleted' so they are hidden but
+    fully recoverable (nothing is destroyed; all history is kept). Admin
+    accounts are protected. Instructors can request a delete — it goes pending
+    until an admin approves."""
     u = current_user()
     d = request.get_json(force=True)
     emp_id = (d.get("emp_id") or "").strip()
@@ -1640,11 +1647,90 @@ def api_admin_delete_user():
         log_activity("requested delete", "user", target["name"])
         return jsonify(ok=True, msg="Delete request sent for admin approval.")
 
+    # SOFT delete: hide the person, keep everything. Also close any active OJT
+    # so they drop out of follow-up & trainer productivity (same as resign).
+    db.execute("UPDATE users SET status='deleted' WHERE emp_id = ?", (emp_id,))
+    try:
+        _close_ojt_for_resigned(db, emp_id)
+    except Exception:
+        pass
+    db.commit()
+    log_activity("removed employee", "user", target["name"])
+    return jsonify(ok=True, msg="Employee removed. You can restore them from the Removed list.")
+
+
+@app.route("/api/admin/restore-user", methods=["POST"])
+@view_admin_required
+def api_admin_restore_user():
+    """Restore a removed/resigned employee back to active (status='approved').
+    All their history is still intact because the row was never destroyed."""
+    d = request.get_json(force=True)
+    emp_id = (d.get("emp_id") or "").strip()
+    if not emp_id:
+        return jsonify(ok=False, msg="Missing employee ID."), 400
+    db = get_db()
+    target = db.execute("SELECT * FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
+    if target is None:
+        return jsonify(ok=False, msg="Employee not found."), 404
+    db.execute("UPDATE users SET status='approved' WHERE emp_id = ?", (emp_id,))
+    # reopen any OJT that was auto-closed on remove/resign
+    try:
+        _reopen_ojt_for_reactivated(db, emp_id)
+    except Exception:
+        pass
+    db.commit()
+    log_activity("restored employee", "user", target["name"])
+    return jsonify(ok=True, msg="Employee restored to active.")
+
+
+@app.route("/api/admin/resign-user", methods=["POST"])
+@view_admin_required
+def api_admin_resign_user():
+    """Mark an employee as resigned (also used to convert a mistaken delete
+    into a proper resignation). Closes their OJT."""
+    d = request.get_json(force=True)
+    emp_id = (d.get("emp_id") or "").strip()
+    if not emp_id:
+        return jsonify(ok=False, msg="Missing employee ID."), 400
+    db = get_db()
+    target = db.execute("SELECT * FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
+    if target is None:
+        return jsonify(ok=False, msg="Employee not found."), 404
+    if target["role"] == "admin":
+        return jsonify(ok=False, msg="Admin accounts cannot be changed here."), 400
+    db.execute("UPDATE users SET status='resigned' WHERE emp_id = ?", (emp_id,))
+    try:
+        _close_ojt_for_resigned(db, emp_id)
+    except Exception:
+        pass
+    db.commit()
+    log_activity("marked resigned", "user", target["name"])
+    return jsonify(ok=True, msg="Employee marked as resigned.")
+
+
+@app.route("/api/admin/purge-user", methods=["POST"])
+@admin_required
+def api_admin_purge_user():
+    """PERMANENTLY delete an employee and their scores. Admin-only, last resort.
+    This cannot be undone — use the soft delete (remove) for normal cases."""
+    d = request.get_json(force=True)
+    emp_id = (d.get("emp_id") or "").strip()
+    confirm = d.get("confirm")
+    if not emp_id:
+        return jsonify(ok=False, msg="Missing employee ID."), 400
+    if confirm != emp_id:
+        return jsonify(ok=False, msg="Confirmation did not match."), 400
+    db = get_db()
+    target = db.execute("SELECT * FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
+    if target is None:
+        return jsonify(ok=False, msg="Employee not found."), 404
+    if target["role"] == "admin":
+        return jsonify(ok=False, msg="Admin accounts cannot be deleted."), 400
     db.execute("DELETE FROM users WHERE emp_id = ?", (emp_id,))
     db.execute("DELETE FROM scores WHERE emp_id = ?", (emp_id,))
     db.commit()
-    log_activity("deleted employee", "user", target["name"])
-    return jsonify(ok=True, msg="Employee deleted.")
+    log_activity("permanently deleted employee", "user", target["name"])
+    return jsonify(ok=True, msg="Employee permanently deleted.")
 
 
 # ---------- SETTINGS: team overview, admins/instructors, quick add, backup ----------
