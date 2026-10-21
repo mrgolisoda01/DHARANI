@@ -118,13 +118,16 @@ function renderTable(){
   buildManagerFilter();
   const list = EMPLOYEES.filter(e=>{
     // status filter:
-    //   active   = everyone except resigned & removed
-    //   resigned = only resigned
-    //   removed  = only soft-deleted
-    //   all      = everyone
+    //   active    = everyone except resigned & removed
+    //   resigned  = only resigned
+    //   removed   = only soft-deleted
+    //   untrained = active staff who are NOT activated (training pending)
+    //   all       = everyone
+    const eActivated = String(e.activated) === "1" || e.activated === 1 || e.activated === true;
     if(statusFilter === "active" && (e.status === "resigned" || e.status === "deleted")) return false;
     if(statusFilter === "resigned" && e.status !== "resigned") return false;
     if(statusFilter === "removed" && e.status !== "deleted") return false;
+    if(statusFilter === "untrained" && !(e.status === "approved" && e.role !== "admin" && !eActivated)) return false;
     // manager filter
     if(mgrFilter === "__none__" && (e.reports_to || "")) return false;
     if(mgrFilter && mgrFilter !== "__none__" && (e.reports_to || "") !== mgrFilter) return false;
@@ -142,13 +145,20 @@ function renderTable(){
   body.innerHTML = list.map(e=>{
     const [rl, rc] = roleLabel(e.role);
     const isAdmin = e.role === "admin";
-    const statusPill = e.status === "approved"
+    let statusPill = e.status === "approved"
       ? '<span class="pill p-approved">Approved</span>'
       : (e.status === "resigned"
           ? '<span class="pill" style="background:#f3e0e0;color:#a33">Resigned</span>'
           : (e.status === "deleted"
               ? '<span class="pill" style="background:#e9edf1;color:#687079">Removed</span>'
               : '<span class="pill p-pending">Pending</span>'));
+    // activation tag — only for active, non-admin staff
+    const isActivated = String(e.activated) === "1" || e.activated === 1 || e.activated === true;
+    if(!isAdmin && e.status === "approved"){
+      statusPill += isActivated
+        ? ' <span class="pill" style="background:#e1f5ee;color:#0a7d4f" title="Training complete — full access">✓ Trained</span>'
+        : ' <span class="pill" style="background:#fdecea;color:#b4231d" title="Training not complete — field tabs locked">⏳ Not trained</span>';
+    }
 
     // "Reports to" cell: manager name + region tag, or a subtle flag if unset.
     // Admins/resigned people don't need a manager, so no flag for them.
@@ -181,6 +191,7 @@ function renderTable(){
         actions = muted("Removed");
       } else {
         actions =
+          (isActivated ? "" : ab("ok", "✅", "Activate", `activateEmp('${e.emp_id}','${nm}',1)`, "Request activation (needs admin approval)"))+
           ab("", "✎", "Edit", `openEdit('${e.emp_id}')`, "Edit (needs admin approval)")+
           ab("warn", "🚪", "Resign", `resignEmp('${e.emp_id}','${nm}')`, "Request resignation (needs admin approval)")+
           ab("del", "🗑", "Remove", `del('${e.emp_id}')`, "Request remove (needs admin approval)");
@@ -202,7 +213,15 @@ function renderTable(){
         ab("", "✎", "Edit", `openEdit('${e.emp_id}')`)+
         (isAdmin ? "" : ab("del", "🗑", "Remove", `del('${e.emp_id}')`));
     } else {
+      // activate/deactivate button (admin only, non-admin staff)
+      let actBtn = "";
+      if(!isAdmin){
+        actBtn = isActivated
+          ? ab("warn", "⏻", "Deactivate", `activateEmp('${e.emp_id}','${nm}',0)`, "Lock field tabs again (training not complete)")
+          : ab("ok", "✅", "Activate", `activateEmp('${e.emp_id}','${nm}',1)`, "Mark training complete — unlock field tabs");
+      }
       actions =
+        actBtn +
         ab("", "✎", "Edit", `openEdit('${e.emp_id}')`)+
         ab("", "⟳", "Reset", `openReset('${e.emp_id}')`, "Reset password")+
         (isAdmin ? "" : ab("warn", "🚪", "Resign", `resignEmp('${e.emp_id}','${nm}')`, "Mark as resigned (block login, keep history)"))+
@@ -369,6 +388,9 @@ async function loadPendingRequests(){
     } else if(a.action_type === "resign"){
       headline = "<b>Resignation:</b> " + escH(a.target_label||a.target_id);
       approveLabel = "Approve resignation";
+    } else if(a.action_type === "activate"){
+      headline = "<b>Activation:</b> " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve activation";
     } else {
       headline = "<b>Delete " + (typeLabel[a.target_type]||a.target_type) + ":</b> " + escH(a.target_label||a.target_id);
       approveLabel = "Approve delete";
@@ -406,6 +428,24 @@ async function del(emp_id){
   if(!confirm(msg)) return;
   const r = await api("/api/admin/delete-user", { emp_id });
   if(r.ok){ toast(r.msg || (window.IS_ADMIN?"Removed.":"Request sent.")); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+// Activate (training complete) or deactivate an employee
+async function activateEmp(emp_id, name, want){
+  const who = name || emp_id;
+  const on = (want === 1 || want === true || want === undefined);
+  let msg;
+  if(window.IS_ADMIN === false){
+    msg = "Send a request to activate " + who + "?\n\nAn admin will approve it. Once activated, their field tabs (OJT, Route Audit, Certificates) unlock.";
+  } else if(on){
+    msg = "Activate " + who + "?\n\nThis marks their training complete and unlocks their field tabs (OJT, Route Audit, Certificates).";
+  } else {
+    msg = "Deactivate " + who + "?\n\nTheir field tabs will be locked again until re-activated. (Login and online training stay available.)";
+  }
+  if(!confirm(msg)) return;
+  const r = await api("/api/admin/activate-user", { emp_id, activated: on });
+  if(r.ok){ toast(r.msg || (r.applied === false ? "Request sent." : "Done.")); loadDashboard(); }
+  else toast(r.msg || "Failed.");
 }
 
 // Restore a removed/resigned employee back to active
