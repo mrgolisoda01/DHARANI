@@ -117,9 +117,14 @@ function renderTable(){
   const body = $("empBody");
   buildManagerFilter();
   const list = EMPLOYEES.filter(e=>{
-    // status filter: active = everyone except resigned; resigned = only resigned; all = everyone
-    if(statusFilter === "active" && e.status === "resigned") return false;
+    // status filter:
+    //   active   = everyone except resigned & removed
+    //   resigned = only resigned
+    //   removed  = only soft-deleted
+    //   all      = everyone
+    if(statusFilter === "active" && (e.status === "resigned" || e.status === "deleted")) return false;
     if(statusFilter === "resigned" && e.status !== "resigned") return false;
+    if(statusFilter === "removed" && e.status !== "deleted") return false;
     // manager filter
     if(mgrFilter === "__none__" && (e.reports_to || "")) return false;
     if(mgrFilter && mgrFilter !== "__none__" && (e.reports_to || "") !== mgrFilter) return false;
@@ -141,7 +146,9 @@ function renderTable(){
       ? '<span class="pill p-approved">Approved</span>'
       : (e.status === "resigned"
           ? '<span class="pill" style="background:#f3e0e0;color:#a33">Resigned</span>'
-          : '<span class="pill p-pending">Pending</span>');
+          : (e.status === "deleted"
+              ? '<span class="pill" style="background:#e9edf1;color:#687079">Removed</span>'
+              : '<span class="pill p-pending">Pending</span>'));
 
     // "Reports to" cell: manager name + region tag, or a subtle flag if unset.
     // Admins/resigned people don't need a manager, so no flag for them.
@@ -175,6 +182,14 @@ function renderTable(){
       actions =
         `<button class="act ok" title="Approve" onclick="approve('${e.emp_id}')">✔</button>`+
         `<button class="act no" title="Reject" onclick="reject('${e.emp_id}')">✖</button>`;
+    } else if(e.status === "deleted"){
+      // REMOVED (soft-deleted) people: restore, convert to resigned, edit,
+      // and (admin only) permanently delete.
+      actions =
+        `<button class="act ok" title="Restore to active" onclick="restoreEmp('${e.emp_id}')">↩</button>`+
+        `<button class="act" title="Mark as resigned instead" onclick="resignNow('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`+
+        `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
+        `<button class="act del" title="Delete permanently (cannot be undone)" onclick="purgeEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🗑</button>`;
     } else if(e.status === "resigned"){
       // resigned people: offer reactivate, keep edit, allow delete (non-admin)
       actions =
@@ -367,11 +382,37 @@ async function del(emp_id){
   const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
   const who = e?e.name:emp_id;
   const msg = window.IS_ADMIN
-    ? "Delete " + who + " permanently? Their scores are removed too."
-    : "Send a request to delete " + who + "? An admin must approve before they are removed.";
+    ? "Remove " + who + "?\n\nThey will be hidden and blocked from login, but ALL their history is kept. You can restore them anytime from the 'Removed' list."
+    : "Send a request to remove " + who + "? An admin must approve before they are removed.";
   if(!confirm(msg)) return;
   const r = await api("/api/admin/delete-user", { emp_id });
-  if(r.ok){ toast(r.msg || (window.IS_ADMIN?"Deleted.":"Request sent.")); loadDashboard(); } else toast(r.msg||"Failed.");
+  if(r.ok){ toast(r.msg || (window.IS_ADMIN?"Removed.":"Request sent.")); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+// Restore a removed/resigned employee back to active
+async function restoreEmp(emp_id){
+  const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
+  const who = e?e.name:emp_id;
+  if(!confirm("Restore " + who + " to active?\n\nThey will be able to log in again and will reappear in the active list.")) return;
+  const r = await api("/api/admin/restore-user", { emp_id });
+  if(r.ok){ toast(r.msg||"Restored."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+// Convert a removed employee into a proper resignation
+async function resignNow(emp_id, name){
+  if(!confirm("Mark " + (name||"this employee") + " as resigned?\n\nTheir history is kept; they stay blocked from login. This is the right choice if they actually left the company.")) return;
+  const r = await api("/api/admin/resign-user", { emp_id });
+  if(r.ok){ toast(r.msg||"Marked as resigned."); loadDashboard(); } else toast(r.msg||"Failed.");
+}
+
+// Permanently delete — admin only, last resort, double confirm
+async function purgeEmp(emp_id, name){
+  const who = name||emp_id;
+  if(!confirm("⚠ PERMANENTLY delete " + who + "?\n\nThis CANNOT be undone. Their account and scores will be erased for good.\n\nUse 'Restore' or 'Mark resigned' instead if you might need them later.")) return;
+  const typed = prompt("To confirm permanent deletion, type the Employee ID exactly:\n\n" + emp_id);
+  if(typed !== emp_id){ toast("Confirmation did not match — nothing deleted."); return; }
+  const r = await api("/api/admin/purge-user", { emp_id, confirm: emp_id });
+  if(r.ok){ toast(r.msg||"Permanently deleted."); loadDashboard(); } else toast(r.msg||"Failed.");
 }
 
 /* ---- bulk add ---- */
