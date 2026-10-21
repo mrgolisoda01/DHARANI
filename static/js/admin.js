@@ -277,6 +277,19 @@ function fillManagerDropdown(selfEmpId, selectedEmpId){
   sel.innerHTML = html;
 }
 
+// Fill the "Reports to" dropdown on the Add-user form (Settings tab).
+async function fillAddUserManagers(){
+  const sel = $("quReportsTo");
+  if(!sel) return;
+  if(!MANAGERS.length) await loadManagers();
+  let html = '<option value="">— None —</option>';
+  MANAGERS.forEach(m=>{
+    const label = (m.name || m.emp_id) + (m.designation ? " · " + m.designation : "");
+    html += `<option value="${escapeHtml(m.emp_id)}">${escapeHtml(label)}</option>`;
+  });
+  sel.innerHTML = html;
+}
+
 async function openEdit(emp_id){
   const e = EMPLOYEES.find(x=>x.emp_id===emp_id);
   if(!e) return;
