@@ -111,11 +111,11 @@ VALID_ROLES = ("staff", "instructor", "admin")
 # ---------------------------------------------------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://mpcsvagagbhimjloumgx.supabase.co").rstrip("/")
 SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "training-files")
-# Secret key used server-side to upload files. Set via env var on Render.
-# Reads SUPABASE_SERVICE_KEY first (Syed's env var name), then SUPABASE_SECRET, then a hardcoded fallback.
+# Secret key used server-side to upload files. Set via env var on Render only.
+# Reads SUPABASE_SERVICE_KEY first (Render env var), then SUPABASE_SECRET.
+# No hardcoded fallback — a secret key must never live in source control.
 SUPABASE_SECRET = (os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
-                   or os.environ.get("SUPABASE_SECRET", "").strip()
-                   or "sb_secret_eyD_5ueAuZ8N-BsyRIP6Ag_q42qjTxv")
+                   or os.environ.get("SUPABASE_SECRET", "").strip())
 
 # File types allowed for direct upload (everything the user asked for)
 ALLOWED_UPLOAD_EXT = {
