@@ -164,45 +164,51 @@ function renderTable(){
       reportsCell = `<span style="color:#c98a00;font-size:11.5px;font-weight:600">⚠ not set</span>${regionTag}`;
     }
 
+    // small labelled action button; variant = "" | "ok" | "warn" | "del" | "muted"
+    const nm = escapeHtml((e.name||'').replace(/'/g,"\\'"));
+    const ab = (variant, icon, label, onclick, title) =>
+      `<button class="abtn${variant?' b-'+variant:''}" title="${title||label}" onclick="${onclick}"><span aria-hidden="true">${icon}</span><span class="lbl">${label}</span></button>`;
+    const muted = (txt) => `<span class="abtn b-muted"><span class="lbl">${txt}</span></span>`;
+
     let actions = "";
     if(window.IS_ADMIN === false){
-      // instructors: can REQUEST a delete or a resignation (both go for admin
-      // approval), but not approve/edit/reset/reactivate — those stay with admins
+      // instructors: can REQUEST a delete or a resignation (both go for admin approval)
       if(e.status === "pending" || e.role === "admin"){
-        actions = '<span style="font-size:11px;color:#9aa6ae">view only</span>';
+        actions = muted("View only");
       } else if(e.status === "resigned"){
-        actions = '<span style="font-size:11px;color:#9aa6ae">resigned</span>';
+        actions = muted("Resigned");
+      } else if(e.status === "deleted"){
+        actions = muted("Removed");
       } else {
         actions =
-          `<button class="act" title="Edit (changes need admin approval)" onclick="openEdit('${e.emp_id}')">✎</button>`+
-          `<button class="act" title="Request resignation (needs admin approval)" onclick="resignEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`+
-          `<button class="act del" title="Request delete (needs admin approval)" onclick="del('${e.emp_id}')">🗑</button>`;
+          ab("", "✎", "Edit", `openEdit('${e.emp_id}')`, "Edit (needs admin approval)")+
+          ab("warn", "🚪", "Resign", `resignEmp('${e.emp_id}','${nm}')`, "Request resignation (needs admin approval)")+
+          ab("del", "🗑", "Remove", `del('${e.emp_id}')`, "Request remove (needs admin approval)");
       }
     } else if(e.status === "pending"){
       actions =
-        `<button class="act ok" title="Approve" onclick="approve('${e.emp_id}')">✔</button>`+
-        `<button class="act no" title="Reject" onclick="reject('${e.emp_id}')">✖</button>`;
+        ab("ok", "✔", "Approve", `approve('${e.emp_id}')`)+
+        ab("del", "✖", "Reject", `reject('${e.emp_id}')`);
     } else if(e.status === "deleted"){
-      // REMOVED (soft-deleted) people: restore, convert to resigned, edit,
-      // and (admin only) permanently delete.
+      // REMOVED (soft-deleted): restore, convert to resigned, edit, permanent delete
       actions =
-        `<button class="act ok" title="Restore to active" onclick="restoreEmp('${e.emp_id}')">↩</button>`+
-        `<button class="act" title="Mark as resigned instead" onclick="resignNow('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`+
-        `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
-        `<button class="act del" title="Delete permanently (cannot be undone)" onclick="purgeEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🗑</button>`;
+        ab("ok", "↩", "Restore", `restoreEmp('${e.emp_id}')`, "Restore to active")+
+        ab("warn", "🚪", "Resign", `resignNow('${e.emp_id}','${nm}')`, "Mark as resigned instead")+
+        ab("", "✎", "Edit", `openEdit('${e.emp_id}')`)+
+        ab("del", "🗑", "Delete", `purgeEmp('${e.emp_id}','${nm}')`, "Delete permanently (cannot be undone)");
     } else if(e.status === "resigned"){
-      // resigned people: offer reactivate, keep edit, allow delete (non-admin)
       actions =
-        `<button class="act" title="Reactivate (allow login again)" onclick="reactivateEmp('${e.emp_id}')">♻</button>`+
-        `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
-        (isAdmin ? "" : `<button class="act del" title="Delete" onclick="del('${e.emp_id}')">🗑</button>`);
+        ab("ok", "♻", "Reactivate", `reactivateEmp('${e.emp_id}')`, "Reactivate (allow login again)")+
+        ab("", "✎", "Edit", `openEdit('${e.emp_id}')`)+
+        (isAdmin ? "" : ab("del", "🗑", "Remove", `del('${e.emp_id}')`));
     } else {
       actions =
-        `<button class="act" title="Edit" onclick="openEdit('${e.emp_id}')">✎</button>`+
-        `<button class="act" title="Reset password" onclick="openReset('${e.emp_id}')">⟳</button>`+
-        (isAdmin ? "" : `<button class="act" title="Mark as resigned (block login, keep history)" onclick="resignEmp('${e.emp_id}','${escapeHtml((e.name||'').replace(/'/g,"\\'"))}')">🚪</button>`)+
-        (isAdmin ? "" : `<button class="act del" title="Delete" onclick="del('${e.emp_id}')">🗑</button>`);
+        ab("", "✎", "Edit", `openEdit('${e.emp_id}')`)+
+        ab("", "⟳", "Reset", `openReset('${e.emp_id}')`, "Reset password")+
+        (isAdmin ? "" : ab("warn", "🚪", "Resign", `resignEmp('${e.emp_id}','${nm}')`, "Mark as resigned (block login, keep history)"))+
+        (isAdmin ? "" : ab("del", "🗑", "Remove", `del('${e.emp_id}')`));
     }
+    actions = `<div class="act-row">${actions}</div>`;
 
     return `<tr>
       <td>${escapeHtml(e.name||"")}</td>
@@ -213,7 +219,7 @@ function renderTable(){
       <td><span class="pill ${rc}">${rl}</span></td>
       <td>${statusPill}</td>
       <td style="white-space:nowrap;color:var(--mg-muted);font-size:12px">${fmtDate(e.created_at)}</td>
-      <td>${actions}</td>
+      <td class="actions-cell">${actions}</td>
     </tr>`;
   }).join("");
 }
