@@ -1181,7 +1181,7 @@ def api_admin_pending_actions():
     """All pending action requests (instructor delete/resign/assign-manager/user-edit)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit') ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit','activate') ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -1323,6 +1323,22 @@ def api_admin_resolve_action():
                      details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
         return jsonify(ok=True, msg="Approved — reporting updated.")
 
+    if act["action_type"] == "activate":
+        import json as _json
+        try:
+            pay = _json.loads(act["payload"] or "{}")
+        except Exception:
+            pay = {}
+        want = 1 if pay.get("activated", 1) else 0
+        tgt_emp = (act["target_id"] or "").strip()
+        if tgt_emp:
+            db.execute("UPDATE users SET activated=? WHERE emp_id=?", (want, tgt_emp))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+        db.commit()
+        log_activity("approved activation", "user", act["target_label"] or tgt_emp,
+                     details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
+        return jsonify(ok=True, msg="Approved — employee activated.")
+
     # perform the delete that was requested
     tt = act["target_type"]
     tid = act["target_id"]
@@ -1414,7 +1430,8 @@ def api_admin_dashboard():
     # full employee list (include admins too, marked, so all accounts are visible)
     rows = db.execute(
         "SELECT emp_id,name,phone,designation,role,status,created_at,last_login,"
-        "COALESCE(reports_to,'') reports_to, COALESCE(region,'') region "
+        "COALESCE(reports_to,'') reports_to, COALESCE(region,'') region, "
+        "COALESCE(activated,0) activated "
         "FROM users ORDER BY (status='pending') DESC, name"
     ).fetchall()
     employees = [dict(r) for r in rows]
@@ -1681,6 +1698,50 @@ def api_admin_restore_user():
     db.commit()
     log_activity("restored employee", "user", target["name"])
     return jsonify(ok=True, msg="Employee restored to active.")
+
+
+@app.route("/api/admin/activate-user", methods=["POST"])
+@view_admin_required
+def api_admin_activate_user():
+    """Activate an employee (training complete) so their field tabs (OJT,
+    Route Audit, Certificates) unlock. Admins activate directly; instructors
+    send a request that an admin must approve."""
+    u = current_user()
+    d = request.get_json(force=True)
+    emp_id = (d.get("emp_id") or "").strip()
+    want = 1 if d.get("activated", True) else 0  # allow deactivate too
+    if not emp_id:
+        return jsonify(ok=False, msg="Missing employee ID."), 400
+    db = get_db()
+    target = db.execute("SELECT * FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
+    if target is None:
+        return jsonify(ok=False, msg="Employee not found."), 404
+
+    # instructor -> queue for admin approval instead of applying
+    if u["role"] == "instructor":
+        import json as _json
+        label = target["name"] or emp_id
+        # avoid duplicate pending activate requests for the same person
+        dup = db.execute(
+            "SELECT 1 FROM pending_actions WHERE action_type='activate' AND target_id=? AND status='pending'",
+            (emp_id,)
+        ).fetchone()
+        if not dup:
+            db.execute(
+                "INSERT INTO pending_actions (action_type,target_type,target_id,target_label,payload,requested_by,requested_by_name,status,created_at) "
+                "VALUES ('activate','user',?,?,?,?,?,'pending',?)",
+                (emp_id, label, _json.dumps({"activated": want}),
+                 u["emp_id"], u["name"], datetime.utcnow().isoformat())
+            )
+            db.commit()
+        log_activity("requested activation", "user", label)
+        return jsonify(ok=True, applied=False, msg="Activation request sent for admin approval.")
+
+    db.execute("UPDATE users SET activated=? WHERE emp_id=?", (want, emp_id))
+    db.commit()
+    log_activity("activated employee" if want else "deactivated employee", "user", target["name"])
+    return jsonify(ok=True, applied=True,
+                   msg="Employee activated." if want else "Employee deactivated.")
 
 
 @app.route("/api/admin/resign-user", methods=["POST"])
