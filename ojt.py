@@ -34,7 +34,7 @@ from flask import Blueprint, request, jsonify, Response
 
 ojt_bp = Blueprint("ojt", __name__)
 
-OJT_ROLES = ["BDE", "BDM", "State Head"]
+OJT_ROLES = ["BDE", "BDM", "State Head", "TLE"]
 OJT_DAYS = 30
 REVIEW_DAYS = (29, 30)          # final review / evaluation days
 MAX_TASKS_PER_DAY = 25
@@ -56,7 +56,7 @@ def _now():
 
 
 def _role_from_designation(desg):
-    """Map an employee's designation to one of the three OJT roles."""
+    """Map an employee's designation to one of the OJT roles."""
     d = (desg or "").strip().lower()
     if "state head" in d or d == "sh":
         return "State Head"
@@ -64,6 +64,9 @@ def _role_from_designation(desg):
         return "BDM"
     if "bde" in d:
         return "BDE"
+    # Territory Launch Executive (also matches "launch executive" / "TLE")
+    if "territory launch" in d or "launch executive" in d or d == "tle":
+        return "TLE"
     return None
 
 
