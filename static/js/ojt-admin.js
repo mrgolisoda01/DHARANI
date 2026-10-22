@@ -7,7 +7,7 @@
 (function(){
   "use strict";
 
-  var ROLES = ["BDE", "BDM", "State Head"];
+  var ROLES = ["BDE", "BDM", "State Head", "TLE"];
   var S = { role: "BDE", view: "trainees", show: "active", openDay: null,
             days: [], counts: {}, pendingCount: 0, isAdmin: !!window.IS_ADMIN, current: null };
 
