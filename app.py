@@ -3479,6 +3479,32 @@ def api_submit_assessment():
     qids = [int(k) for k in answers.keys()] if answers else []
     score = 0
     total = len(answers)
+
+    # ---- Partial-submission guard ----
+    # The result must contain a full set of answers. A glitched or premature
+    # submit (network hiccup, questions not fully loaded, double-tap) can arrive
+    # with only 1-2 answers; scoring that would let someone "pass" a 1-question
+    # quiz at 100%. We work out how many questions this attempt SHOULD have had
+    # (num_questions, capped at the actual pool) and reject anything short of it,
+    # without saving a row — the learner simply retakes.
+    try:
+        _pool = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (aid,)).fetchone()["c"]
+    except Exception:
+        _pool = 0
+    try:
+        _want = int(a["num_questions"] or 0)
+    except (ValueError, TypeError):
+        _want = 0
+    expected = min(_want, _pool) if (_want > 0 and _pool > 0) else (_pool or _want)
+    # allow a tiny tolerance of 0 (must answer all served questions); if we
+    # couldn't determine an expected count, fall back to a sane floor of 5.
+    min_required = expected if expected > 0 else 5
+    if total < min_required:
+        return jsonify(ok=False, incomplete=True,
+                       msg=("This attempt didn't record all your answers "
+                            "(received %d of %d). Nothing was saved — please "
+                            "take the assessment again." % (total, min_required))), 400
+
     qinfo = {}   # qid -> full question row (for saving details)
     if qids:
         placeholders = ",".join("?" * len(qids))
