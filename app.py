@@ -4298,6 +4298,9 @@ init_training_credit(app, get_db, current_user)
 from hierarchy import init_hierarchy
 init_hierarchy(app, get_db, current_user)
 
+from analytics import init_analytics
+init_analytics(app, get_db, current_user)
+
 
 # ---------------------------------------------------------------
 #  Start
