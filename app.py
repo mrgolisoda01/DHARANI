@@ -1168,11 +1168,30 @@ def api_admin_all_approvals():
     except Exception:
         edits = []
 
+    # 4) question add/replace/clear requests (from instructors)
+    import json as _json
+    question_changes = []
+    try:
+        for r in db.execute(
+            "SELECT * FROM pending_actions WHERE status='pending' AND action_type='question_replace' ORDER BY created_at DESC"
+        ).fetchall():
+            row = dict(r)
+            try:
+                p = _json.loads(row.get("payload") or "{}")
+            except Exception:
+                p = {}
+            row["mode"] = p.get("mode", "add")
+            row["count"] = p.get("count", "")
+            question_changes.append(row)
+    except Exception:
+        question_changes = []
+
     total = (len(employees) + len(modules) + len(videos) + len(assessments)
-             + len(certs) + len(deletes) + len(edits))
+             + len(certs) + len(deletes) + len(edits) + len(question_changes))
     return jsonify(ok=True, total=total,
                    employees=employees, modules=modules, videos=videos,
-                   assessments=assessments, certs=certs, deletes=deletes, edits=edits)
+                   assessments=assessments, certs=certs, deletes=deletes, edits=edits,
+                   question_changes=question_changes)
 
 
 @app.route("/api/admin/pending-actions")
