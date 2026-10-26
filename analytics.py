@@ -450,6 +450,92 @@ def api_rating_trainers():
     return jsonify(ok=True, trainers=trainers, suggested=suggested)
 
 
+@analytics_bp.route("/api/rating/my-rated")
+@_login_only
+def api_rating_my_rated():
+    """IDs of modules (and course-assessments) the current learner has already
+    rated — used to show 'Rate' vs '✓ Rated' on the module cards."""
+    u = _current_user()
+    db = _get_db()
+    mods, courses = [], []
+    if _table_exists(db, "training_ratings"):
+        mods = [r["module_id"] for r in db.execute(
+            "SELECT DISTINCT module_id FROM training_ratings WHERE emp_id=? AND module_id IS NOT NULL",
+            (u["emp_id"],)).fetchall()]
+        courses = [r["assessment_id"] for r in db.execute(
+            "SELECT DISTINCT assessment_id FROM training_ratings WHERE emp_id=? AND assessment_id IS NOT NULL",
+            (u["emp_id"],)).fetchall()]
+    return jsonify(ok=True, modules=mods, courses=courses)
+
+
+@analytics_bp.route("/api/rating/pending")
+@_login_only
+def api_rating_pending():
+    """For the current learner: completed modules and passed courses that
+    have NOT been rated yet. Returns a capped list (for the login catch-up)
+    plus the full remaining count. Only meaningful for staff learners."""
+    u = _current_user()
+    db = _get_db()
+    try:
+        limit = int(request.args.get("limit") or 3)
+    except (ValueError, TypeError):
+        limit = 3
+    if limit < 1:
+        limit = 3
+
+    emp = u["emp_id"]
+    desg = (u["designation"] or "").strip().lower()
+
+    def _roles_match(roles_field):
+        roles = (roles_field or "all").strip().lower()
+        if roles in ("", "all"):
+            return True
+        return any(a.strip() and a.strip() in desg for a in roles.split(","))
+
+    pending = []
+
+    # ----- completed modules without a rating -----
+    rated_modules = set()
+    if _table_exists(db, "training_ratings"):
+        rated_modules = {r["module_id"] for r in db.execute(
+            "SELECT module_id FROM training_ratings WHERE emp_id=? AND module_id IS NOT NULL", (emp,)
+        ).fetchall()}
+    done_modules = {r["module_id"] for r in db.execute(
+        "SELECT module_id FROM module_completions WHERE emp_id=?", (emp,)
+    ).fetchall()}
+    if done_modules:
+        ph = ",".join("?" * len(done_modules))
+        for m in db.execute(
+            "SELECT id, title, kind, roles FROM content_modules "
+            "WHERE id IN (" + ph + ") AND status='live' ORDER BY kind, sort_order, id",
+            list(done_modules)
+        ).fetchall():
+            if m["id"] in rated_modules:
+                continue
+            if not _roles_match(m["roles"]):
+                continue
+            pending.append({"type": "module", "id": m["id"], "title": m["title"]})
+
+    # ----- passed assessments (courses) without a course rating -----
+    rated_courses = set()
+    if _table_exists(db, "training_ratings"):
+        rated_courses = {r["assessment_id"] for r in db.execute(
+            "SELECT assessment_id FROM training_ratings WHERE emp_id=? AND assessment_id IS NOT NULL", (emp,)
+        ).fetchall()}
+    for r in db.execute(
+        "SELECT DISTINCT r.assessment_id, a.title FROM assessment_results r "
+        "JOIN assessments a ON a.id=r.assessment_id "
+        "WHERE r.emp_id=? AND r.passed=1", (emp,)
+    ).fetchall():
+        if r["assessment_id"] in rated_courses:
+            continue
+        pending.append({"type": "course", "id": r["assessment_id"], "title": r["title"]})
+
+    total = len(pending)
+    return jsonify(ok=True, total=total, items=pending[:limit],
+                   is_staff=(u["role"] == "staff"))
+
+
 @analytics_bp.route("/api/rating/submit", methods=["POST"])
 @_login_only
 def api_rating_submit():
