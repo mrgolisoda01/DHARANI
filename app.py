@@ -1181,7 +1181,7 @@ def api_admin_pending_actions():
     """All pending action requests (instructor delete/resign/assign-manager/user-edit)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit','activate') ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit','activate','question_replace') ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -1338,6 +1338,42 @@ def api_admin_resolve_action():
         log_activity("approved activation", "user", act["target_label"] or tgt_emp,
                      details=f"requested by {act['requested_by_name'] or act['requested_by'] or ''}")
         return jsonify(ok=True, msg="Approved — employee activated.")
+
+    if act["action_type"] == "question_replace":
+        import json as _json
+        try:
+            pay = _json.loads(act["payload"] or "{}")
+        except Exception:
+            pay = {}
+        a_id = (act["target_id"] or "").strip()
+        mode = pay.get("mode", "add")
+        # re-parse the stored CSV now, at approval time
+        parsed2 = []
+        if mode in ("add", "replace"):
+            reader2 = csv.DictReader(io.StringIO(pay.get("csv") or ""))
+            for raw in reader2:
+                row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+                q = row.get("question", "")
+                aa = row.get("option_a") or row.get("opt_a") or row.get("a", "")
+                bb = row.get("option_b") or row.get("opt_b") or row.get("b", "")
+                cc = row.get("option_c") or row.get("opt_c") or row.get("c", "")
+                dd = row.get("option_d") or row.get("opt_d") or row.get("d", "")
+                correct = (row.get("correct") or row.get("answer") or "").strip().upper()
+                cat = row.get("category", "")
+                if not q or not aa or not bb or correct not in ("A", "B", "C", "D"):
+                    continue
+                parsed2.append((q, aa, bb, cc, dd, correct, cat))
+        # apply: clear only for 'clear' or 'replace'; keep assessment & results
+        if mode in ("clear", "replace"):
+            db.execute("DELETE FROM questions WHERE assessment_id=?", (a_id,))
+        for (q, aa, bb, cc, dd, correct, cat) in parsed2:
+            db.execute("INSERT INTO questions (assessment_id,question,opt_a,opt_b,opt_c,opt_d,correct,category) VALUES (?,?,?,?,?,?,?,?)",
+                       (a_id, q, aa, bb, cc, dd, correct, cat))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+        db.commit()
+        log_activity("approved question change", "assessment", act["target_label"] or a_id,
+                     details=f"{mode}; requested by {act['requested_by_name'] or act['requested_by'] or ''}")
+        return jsonify(ok=True, msg="Approved — questions updated.")
 
     # perform the delete that was requested
     tt = act["target_type"]
@@ -2944,10 +2980,7 @@ def api_admin_add_questions_csv():
     a = db.execute("SELECT * FROM assessments WHERE id=?", (aid,)).fetchone()
     if not a:
         return jsonify(ok=False, msg="Not found."), 404
-    # Instructors can only add questions to a still-pending assessment.
     _u = current_user()
-    if _u["role"] == "instructor" and a["status"] == "live":
-        return jsonify(ok=False, msg="This assessment is already live. Ask an admin to add questions."), 403
     reader = csv.DictReader(io.StringIO(csv_text))
     parsed, errors = [], []
     for i, raw in enumerate(reader, start=2):
@@ -2966,12 +2999,37 @@ def api_admin_add_questions_csv():
         parsed.append((q, aa, bb, cc, dd, correct, cat))
     if not parsed:
         return jsonify(ok=False, msg="No valid questions found.", errors=errors), 400
+
+    import json as _json
+    want_replace = bool(d.get("replace"))
+
+    # Instructor editing a LIVE assessment -> queue for admin approval instead
+    # of applying. The whole change (CSV + mode) is stored in the pending action
+    # and applied only when an admin approves.
+    if _u["role"] == "instructor" and a["status"] == "live":
+        payload = _json.dumps({"mode": ("replace" if want_replace else "add"),
+                               "csv": csv_text, "count": len(parsed)})
+        label = a["title"]
+        db.execute(
+            "INSERT INTO pending_actions (action_type,target_type,target_id,target_label,"
+            "payload,requested_by,requested_by_name,status,created_at) "
+            "VALUES ('question_replace','assessment',?,?,?,?,?,'pending',?)",
+            (str(aid), label, payload, _u["emp_id"], _u["name"], datetime.utcnow().isoformat())
+        )
+        db.commit()
+        log_activity("requested question change", "assessment", label,
+                     details=f"{'replace all' if want_replace else 'add'} {len(parsed)} questions")
+        verb = "replace all questions with" if want_replace else "add"
+        return jsonify(ok=True, applied=False,
+                       msg=f"Request sent for admin approval ({verb} {len(parsed)} questions).")
+
+    # Admin -> apply now.
     # If "replace all" was requested, clear the existing question pool FIRST —
     # but only now that we have valid new questions to put in its place, so we
     # never leave the assessment empty. We delete ONLY questions; the
     # assessment row and all assessment_results (who passed) are untouched.
     replaced = False
-    if d.get("replace"):
+    if want_replace:
         db.execute("DELETE FROM questions WHERE assessment_id=?", (aid,))
         replaced = True
     for (q, aa, bb, cc, dd, correct, cat) in parsed:
@@ -2982,7 +3040,44 @@ def api_admin_add_questions_csv():
         msg = f"Replaced all questions — the assessment now has {len(parsed)} questions."
     else:
         msg = f"Added {len(parsed)} more questions."
-    return jsonify(ok=True, msg=msg, added=len(parsed), replaced=replaced, errors=errors)
+    return jsonify(ok=True, applied=True, msg=msg, added=len(parsed), replaced=replaced, errors=errors)
+
+
+@app.route("/api/admin/pending-questions-preview")
+@view_admin_required
+def api_admin_pending_questions_preview():
+    """Preview the questions in a pending 'question_replace' request so the
+    admin can review before approving."""
+    import json as _json
+    rid = request.args.get("id")
+    db = get_db()
+    act = db.execute(
+        "SELECT * FROM pending_actions WHERE id=? AND action_type='question_replace' AND status='pending'",
+        (rid,)
+    ).fetchone()
+    if not act:
+        return jsonify(ok=False, msg="Request not found."), 404
+    try:
+        pay = _json.loads(act["payload"] or "{}")
+    except Exception:
+        pay = {}
+    mode = pay.get("mode", "add")
+    items = []
+    if mode in ("add", "replace"):
+        reader = csv.DictReader(io.StringIO(pay.get("csv") or ""))
+        for raw in reader:
+            row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+            q = row.get("question", "")
+            aa = row.get("option_a") or row.get("opt_a") or row.get("a", "")
+            bb = row.get("option_b") or row.get("opt_b") or row.get("b", "")
+            cc = row.get("option_c") or row.get("opt_c") or row.get("c", "")
+            dd = row.get("option_d") or row.get("opt_d") or row.get("d", "")
+            correct = (row.get("correct") or row.get("answer") or "").strip().upper()
+            if not q or not aa or not bb or correct not in ("A", "B", "C", "D"):
+                continue
+            items.append({"question": q, "a": aa, "b": bb, "c": cc, "d": dd, "correct": correct})
+    return jsonify(ok=True, mode=mode, count=len(items),
+                   assessment=act["target_label"], items=items[:200])
 
 
 @app.route("/api/admin/clear-questions", methods=["POST"])
@@ -3000,14 +3095,29 @@ def api_admin_clear_questions():
     if not a:
         return jsonify(ok=False, msg="Assessment not found."), 404
     _u = current_user()
-    if _u["role"] == "instructor" and a["status"] == "live":
-        return jsonify(ok=False, msg="This assessment is already live. Ask an admin."), 403
     n = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (aid,)).fetchone()["c"]
+
+    # Instructor clearing a LIVE assessment -> queue for admin approval.
+    if _u["role"] == "instructor" and a["status"] == "live":
+        import json as _json
+        payload = _json.dumps({"mode": "clear", "count": n})
+        db.execute(
+            "INSERT INTO pending_actions (action_type,target_type,target_id,target_label,"
+            "payload,requested_by,requested_by_name,status,created_at) "
+            "VALUES ('question_replace','assessment',?,?,?,?,?,'pending',?)",
+            (str(aid), a["title"], payload, _u["emp_id"], _u["name"], datetime.utcnow().isoformat())
+        )
+        db.commit()
+        log_activity("requested question clear", "assessment", a["title"],
+                     details=f"clear all {n} questions")
+        return jsonify(ok=True, applied=False,
+                       msg=f"Request sent for admin approval (clear all {n} questions).")
+
     db.execute("DELETE FROM questions WHERE assessment_id=?", (aid,))
     db.commit()
     log_activity("cleared assessment questions", "assessment", a["title"],
                  details=f"{n} questions removed; assessment & results kept")
-    return jsonify(ok=True, msg=f"Cleared {n} questions. The assessment and all pass records are kept.")
+    return jsonify(ok=True, applied=True, msg=f"Cleared {n} questions. The assessment and all pass records are kept.")
 
 
 @app.route("/api/admin/assessment-results")
