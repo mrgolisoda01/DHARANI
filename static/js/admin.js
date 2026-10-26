@@ -391,10 +391,21 @@ async function loadPendingRequests(){
     } else if(a.action_type === "activate"){
       headline = "<b>Activation:</b> " + escH(a.target_label||a.target_id);
       approveLabel = "Approve activation";
+    } else if(a.action_type === "question_replace"){
+      let mode = "add", cnt = "";
+      try{ const p = JSON.parse(a.payload||"{}"); mode = p.mode||"add"; cnt = p.count||""; }catch(e){}
+      const verb = mode==="clear" ? ("Clear all "+cnt+" questions in")
+                 : mode==="replace" ? ("Replace ALL questions ("+cnt+" new) in")
+                 : ("Add "+cnt+" questions to");
+      headline = "<b>Question change:</b> " + verb + " " + escH(a.target_label||a.target_id);
+      approveLabel = "Approve change";
     } else {
       headline = "<b>Delete " + (typeLabel[a.target_type]||a.target_type) + ":</b> " + escH(a.target_label||a.target_id);
       approveLabel = "Approve delete";
     }
+    const previewBtn = (a.action_type === "question_replace")
+      ? `<button class="btn" style="padding:4px 12px;font-size:12px" onclick="previewQuestions(${a.id})">Preview</button>`
+      : "";
     return `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #e7dcc0;flex-wrap:wrap">
       <div style="font-size:13px">
@@ -402,6 +413,7 @@ async function loadPendingRequests(){
         <div style="font-size:11.5px;color:#8a6d1a">requested by ${escH(a.requested_by_name||a.requested_by||"")}</div>
       </div>
       <div style="display:flex;gap:6px">
+        ${previewBtn}
         <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="resolveAction(${a.id},'approve')">${approveLabel}</button>
         <button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="resolveAction(${a.id},'reject')">Reject</button>
       </div>
@@ -415,6 +427,42 @@ async function resolveAction(id, decision){
   const r = await api("/api/admin/resolve-action", { id, decision });
   if(r.ok){ toast(r.msg || "Done."); loadDashboard(); }
   else toast(r.msg || "Failed.");
+}
+
+// Preview the questions in a pending question-replace request
+async function previewQuestions(id){
+  let d;
+  try{ d = await (await fetch("/api/admin/pending-questions-preview?id="+id,{cache:"no-store"})).json(); }
+  catch(e){ toast("Could not load preview."); return; }
+  if(!d || !d.ok){ toast((d&&d.msg)||"Could not load."); return; }
+  let ov = document.getElementById("qPrevOv");
+  if(!ov){
+    ov = document.createElement("div");
+    ov.id = "qPrevOv";
+    ov.style = "position:fixed;inset:0;background:rgba(8,30,40,.5);display:flex;align-items:flex-start;justify-content:center;padding:20px;z-index:90;overflow-y:auto";
+    document.body.appendChild(ov);
+  }
+  const head = d.mode==="clear"
+    ? ("Clear all questions in " + escapeHtml(d.assessment||""))
+    : ("Preview " + d.count + " questions for " + escapeHtml(d.assessment||"") + (d.mode==="replace"?" (replaces all existing)":" (added to existing)"));
+  let rows = "";
+  if(d.mode==="clear"){
+    rows = '<div style="padding:16px;color:var(--mg-muted)">This request only clears the existing questions — no new questions. The assessment and all pass records are kept.</div>';
+  } else if(!d.items.length){
+    rows = '<div style="padding:16px;color:var(--mg-muted)">No valid questions found in the request.</div>';
+  } else {
+    rows = d.items.map(function(q,i){
+      return '<div style="border:1px solid var(--mg-line);border-radius:8px;padding:10px;margin-bottom:8px;background:#fafdff">'+
+        '<div style="font-size:13px"><b>Q'+(i+1)+'.</b> '+escapeHtml(q.question)+'</div>'+
+        '<div style="font-size:12px;color:var(--mg-muted);margin-top:4px">A) '+escapeHtml(q.a)+' &nbsp; B) '+escapeHtml(q.b)+
+        (q.c?' &nbsp; C) '+escapeHtml(q.c):'')+(q.d?' &nbsp; D) '+escapeHtml(q.d):'')+
+        ' &nbsp; · <b style="color:#1d9e75">Ans: '+escapeHtml(q.correct)+'</b></div></div>';
+    }).join("");
+  }
+  ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:680px;width:100%;padding:20px;max-height:88vh;overflow-y:auto;box-shadow:0 18px 50px rgba(0,0,0,.25)">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0;font-size:15px">'+head+'</h3>'+
+    '<button class="btn" onclick="document.getElementById(\'qPrevOv\').remove()">Close</button></div>'+
+    rows + '</div>';
 }
 
 function escH(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
