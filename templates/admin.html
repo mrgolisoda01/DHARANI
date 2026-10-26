@@ -1057,6 +1057,24 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         html += card('🗑 Delete / resign requests ('+d.deletes.length+')', '#e24b4a', rows);
       }
 
+      // Question add / replace / clear requests (instructor -> admin)
+      if(d.question_changes && d.question_changes.length){
+        const rows = d.question_changes.map(a=>{
+          const verb = a.mode==='clear' ? ('Clear all '+(a.count||'')+' questions in')
+                     : a.mode==='replace' ? ('Replace ALL questions ('+(a.count||'')+' new) in')
+                     : ('Add '+(a.count||'')+' questions to');
+          const left = `<b>Question change:</b> ${verb} ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>`;
+          let btns = '';
+          if(a.mode!=='clear' && typeof previewQuestions==='function'){
+            btns += `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="previewQuestions(${a.id})">Preview</button>`;
+          }
+          btns += `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprResolveDelete(${a.id},'approve')">Approve</button>`
+                + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
+          return rowWrap(left, btns);
+        }).join('');
+        html += card('📝 Question change requests ('+d.question_changes.length+')', '#c9a227', rows);
+      }
+
       box.innerHTML = html;
     }
 
@@ -1091,7 +1109,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       if(r.ok){ toast('Declined — kept but not live.'); loadApprovals(); } else toast(r.msg||'Failed.');
     }
     async function apprResolveDelete(id, decision){
-      if(decision==='approve' && !confirm('Approve this delete? The item will be permanently removed.')) return;
+      if(decision==='approve' && !confirm('Approve this request?')) return;
       const r = await (await fetch('/api/admin/resolve-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,decision})})).json();
       if(r.ok){ toast(r.msg||'Done.'); loadApprovals(); } else toast(r.msg||'Failed.');
     }
