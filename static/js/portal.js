@@ -721,18 +721,25 @@ function rtPick(key, v){
 
 async function openModuleRating(moduleId, title){
   RT = { mode:'module', moduleId:moduleId, assessmentId:null, trainerId:null, stars:{content:0,trainer:0,course:0} };
-  // find the trainer who delivered this module (to label it)
-  let trainerName = '';
+  // fetch all trainers for the dropdown (+ the suggested one for this module)
+  let trainers = [], suggested = null;
   try{
-    const r = await (await fetch('/api/rating/trainer-for-module?module_id='+encodeURIComponent(moduleId),{cache:'no-store'})).json();
-    if(r && r.ok){ RT.trainerId = r.trainer_id || null; trainerName = r.trainer_name || ''; }
+    const r = await (await fetch('/api/rating/trainers?module_id='+encodeURIComponent(moduleId),{cache:'no-store'})).json();
+    if(r && r.ok){ trainers = r.trainers || []; suggested = r.suggested || null; }
   }catch(e){}
+  let opts = '<option value="">— Select the trainer who took this module —</option>' +
+    trainers.map(function(t){
+      const lbl = esc(t.name) + (t.designation ? ' · ' + esc(t.designation) : '');
+      return '<option value="'+esc(t.emp_id)+'"'+(t.emp_id===suggested?' selected':'')+'>'+lbl+'</option>';
+    }).join('');
   $('rtTitle').textContent = 'Rate: ' + (title||'this module');
   $('rtBody').innerHTML =
+    '<div style="margin:4px 0 12px"><div style="font-size:13px;font-weight:600;margin-bottom:4px">Who took this training? ★</div>'+
+    '<select id="rtTrainer" style="width:100%;box-sizing:border-box;border:1px solid var(--mg-line,#ccc);border-radius:8px;padding:9px;font-family:inherit;font-size:13px">'+opts+'</select></div>' +
+    starRow('trainer','Rate this trainer ★') +
     starRow('content','How good was the training content? ★') +
-    starRow('trainer','Rate your trainer' + (trainerName? ' ('+esc(trainerName)+')':'') + ' ★') +
     '<div style="margin-top:10px"><div style="font-size:13px;font-weight:600;margin-bottom:4px">Comments (optional)</div>'+
-    '<textarea id="rtComment" rows="3" style="width:100%;box-sizing:border-box;border:1px solid var(--mg-line,#ccc);border-radius:8px;padding:8px;font-family:inherit;font-size:13px" placeholder="Anything you\'d like to add…"></textarea></div>';
+    '<textarea id="rtComment" rows="3" style="width:100%;box-sizing:border-box;border:1px solid var(--mg-line,#ccc);border-radius:8px;padding:8px;font-family:inherit;font-size:13px" placeholder="What went well / what could improve?"></textarea></div>';
   $('rtModal').classList.add('show');
 }
 
@@ -750,8 +757,11 @@ async function submitRating(){
   const comment = ($('rtComment') && $('rtComment').value || '').trim();
   let body;
   if(RT.mode === 'module'){
-    if(!RT.stars.content || !RT.stars.trainer){ alert('Please give a star rating for both content and trainer.'); return; }
-    body = { target_type:'module', module_id:RT.moduleId, trainer_id:RT.trainerId,
+    const chosenTrainer = ($('rtTrainer') && $('rtTrainer').value || '').trim();
+    if(!chosenTrainer){ alert('Please select the trainer who took this module.'); return; }
+    if(!RT.stars.trainer){ alert('Please give a star rating for the trainer.'); return; }
+    if(!RT.stars.content){ alert('Please give a star rating for the content.'); return; }
+    body = { target_type:'module', module_id:RT.moduleId, trainer_id:chosenTrainer,
              content_rating:RT.stars.content, trainer_rating:RT.stars.trainer, comment:comment };
   } else if(RT.mode === 'course'){
     if(!RT.stars.course){ alert('Please give the course a star rating.'); return; }
