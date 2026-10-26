@@ -422,6 +422,34 @@ def api_rating_trainer_for_module():
     return jsonify(ok=True, trainer_id=tid, trainer_name=(names.get(tid, "") if tid else ""))
 
 
+@analytics_bp.route("/api/rating/trainers")
+@_login_only
+def api_rating_trainers():
+    """All trainers (instructors + admins) a learner can pick when rating a
+    module, plus the likely one for this module (shown pre-selected)."""
+    u = _current_user()
+    db = _get_db()
+    rows = db.execute(
+        "SELECT emp_id, name, designation FROM users "
+        "WHERE role IN ('instructor','admin') AND status='approved' ORDER BY name"
+    ).fetchall()
+    trainers = [{"emp_id": r["emp_id"], "name": r["name"],
+                 "designation": r["designation"] or ""} for r in rows]
+    # suggest the recorded trainer for this module, if any
+    suggested = None
+    mid = request.args.get("module_id")
+    if mid:
+        row = db.execute(
+            "SELECT trainer_id FROM training_delivery "
+            "WHERE learner_id=? AND module_id=? AND status='approved' "
+            "ORDER BY approved_at DESC, created_at DESC LIMIT 1",
+            (u["emp_id"], mid)
+        ).fetchone()
+        if row:
+            suggested = row["trainer_id"]
+    return jsonify(ok=True, trainers=trainers, suggested=suggested)
+
+
 @analytics_bp.route("/api/rating/submit", methods=["POST"])
 @_login_only
 def api_rating_submit():
@@ -451,6 +479,14 @@ def api_rating_submit():
         if content is None or trainer is None:
             return jsonify(ok=False, msg="Please rate both content and trainer (1-5)."), 400
         tid = (d.get("trainer_id") or "").strip() or None
+        # trainer must be chosen from the dropdown (required) and must be real
+        if not tid:
+            return jsonify(ok=False, msg="Please select the trainer who took this module."), 400
+        valid = db.execute(
+            "SELECT 1 FROM users WHERE emp_id=? AND role IN ('instructor','admin')", (tid,)
+        ).fetchone()
+        if not valid:
+            return jsonify(ok=False, msg="Please select a valid trainer."), 400
         # upsert: one rating per learner per module
         existing = db.execute(
             "SELECT id FROM training_ratings WHERE emp_id=? AND module_id=?",
