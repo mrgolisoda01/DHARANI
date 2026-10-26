@@ -377,10 +377,26 @@ function renderEditScreen(){
     </div>
 
     <details style="background:#fff;border:1px solid var(--mg-line);border-radius:10px;padding:14px">
-      <summary style="cursor:pointer;font-weight:600;font-size:14px">Add many questions at once (paste CSV)</summary>
-      <p style="font-size:12px;color:var(--mg-muted);margin:8px 0">Same format as before. These get added to the existing questions.</p>
-      <textarea id="eaCsv" rows="5" style="width:100%;font-family:monospace;font-size:12px" placeholder="question,option_a,option_b,option_c,option_d,correct,category"></textarea>
-      <div style="text-align:right;margin-top:8px"><button class="btn primary" onclick="addQsCsv()">Add these questions</button></div>
+      <summary style="cursor:pointer;font-weight:600;font-size:14px">Add / replace questions (paste CSV)</summary>
+      <p style="font-size:12px;color:var(--mg-muted);margin:8px 0">Format: question,option_a,option_b,option_c,option_d,correct,category</p>
+      <textarea id="eaCsv" rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="question,option_a,option_b,option_c,option_d,correct,category"></textarea>
+      <label style="display:flex;align-items:center;gap:7px;margin:10px 0;font-size:13px;color:#b4231d;font-weight:600">
+        <input type="checkbox" id="eaReplaceAll" style="width:auto">
+        Replace ALL existing questions with these (clears the current ${EDIT_A_QS.length} first)
+      </label>
+      <p style="font-size:11.5px;color:var(--mg-muted);margin:0 0 8px">
+        ✓ Safe: this only changes the question pool. The assessment and everyone who already passed (scores &amp; certificates) are <b>kept</b>.
+      </p>
+      <div style="text-align:right;margin-top:8px"><button class="btn primary" onclick="addQsCsv()">Upload questions</button></div>
+    </details>
+
+    <details style="background:#fff;border:1px solid #f0c9c9;border-radius:10px;padding:14px;margin-top:10px">
+      <summary style="cursor:pointer;font-weight:600;font-size:14px;color:#b4231d">Danger zone — clear all questions</summary>
+      <p style="font-size:12px;color:var(--mg-muted);margin:8px 0">
+        Deletes every question in this assessment (currently ${EDIT_A_QS.length}). The assessment itself and all pass records stay.
+        Use this to start fresh before pasting a new set above.
+      </p>
+      <div style="text-align:right"><button class="btn" style="color:#b4231d;border-color:#f0c9c9" onclick="clearAllQs()">Clear all questions</button></div>
     </details>
 
     <div style="text-align:right;margin-top:14px">
@@ -451,8 +467,20 @@ async function delOneQ(qid){
 async function addQsCsv(){
   const csv = $a("eaCsv").value.trim();
   if(!csv){ toastA("Paste some CSV first."); return; }
-  const r = await (await fetch("/api/admin/add-questions-csv",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:EDIT_A.id,csv})})).json();
+  const replace = !!($a("eaReplaceAll") && $a("eaReplaceAll").checked);
+  if(replace){
+    if(!confirm("Replace ALL existing questions with the pasted ones?\n\nThe current questions will be deleted first, then the new ones added.\n\n(The assessment and everyone who already passed are kept.)")) return;
+  }
+  const r = await (await fetch("/api/admin/add-questions-csv",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:EDIT_A.id,csv,replace})})).json();
   if(r.ok){ toastA(r.msg); openEditAssess(EDIT_A.id); } else toastA(r.msg||"Failed.");
+}
+
+async function clearAllQs(){
+  if(!confirm("Delete ALL questions in this assessment?\n\nThe assessment itself and all pass records (scores & certificates) are kept — only the questions are removed.\n\nYou can then paste a new set.")) return;
+  const typed = prompt("To confirm, type:  CLEAR");
+  if((typed||"").trim().toUpperCase() !== "CLEAR"){ toastA("Cancelled — nothing deleted."); return; }
+  const r = await (await fetch("/api/admin/clear-questions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:EDIT_A.id,confirm:"CLEAR"})})).json();
+  if(r.ok){ toastA(r.msg||"All questions cleared."); openEditAssess(EDIT_A.id); } else toastA(r.msg||"Failed.");
 }
 
 function escAttr(s){ return String(s||"").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
