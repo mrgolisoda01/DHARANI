@@ -81,7 +81,7 @@ async function loadFileModules(kind){
 }
 
 function openFileModule(id, title, link, minMins, alreadyDone){
-  MOD_VIEWING = { id, minMins, alreadyDone };
+  MOD_VIEWING = { id, title, minMins, alreadyDone };
   $('fmTitle').textContent = title;
   // embed Drive/PDF link; convert /view links to /preview for embedding
   let embed = link;
@@ -119,6 +119,8 @@ function openFileModule(id, title, link, minMins, alreadyDone){
 
 async function completeFileModule(){
   if(!MOD_VIEWING) return;
+  const wasDone = MOD_VIEWING.alreadyDone;
+  const modId = MOD_VIEWING.id, modTitle = MOD_VIEWING.title || 'this module';
   let newCerts = [];
   try{
     const r = await (await fetch('/api/content/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({module_id:MOD_VIEWING.id})})).json();
@@ -133,6 +135,8 @@ async function completeFileModule(){
   if(active==='training') loadFileModules('training');
   loadHomeStats();
   loadPendingBadges();
+  // Ask for a rating the FIRST time they complete this module (required)
+  if(!wasDone){ openModuleRating(modId, modTitle); }
 }
 
 function closeFileModule(){
@@ -526,6 +530,8 @@ async function submitAssessment(){
       </div>
     </div>`;
   showAsView('result');
+  // After PASSING, ask for a course rating (required, once per course).
+  if(d.passed && !d.duplicate){ openCourseRating(AS_CUR.id, AS_CUR.title); }
 }
 
 function viewCertFromResult(){
@@ -693,6 +699,69 @@ function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 async function doSignOut(){
   try{ await fetch('/api/logout', {method:'POST'}); }catch(e){}
   location.href = '/';
+}
+
+/* ---------------- RATINGS / FEEDBACK (required) ---------------- */
+let RT = { mode:null, moduleId:null, assessmentId:null, trainerId:null, stars:{content:0,trainer:0,course:0} };
+
+function starRow(key, label){
+  let s = '<div style="margin:10px 0"><div style="font-size:13px;font-weight:600;margin-bottom:4px">'+label+'</div><div class="rt-stars" data-key="'+key+'">';
+  for(let i=1;i<=5;i++){
+    s += '<span class="rt-star" data-key="'+key+'" data-v="'+i+'" onclick="rtPick(\''+key+'\','+i+')" style="font-size:30px;cursor:pointer;color:#d6dde3;line-height:1">★</span>';
+  }
+  return s + '</div></div>';
+}
+
+function rtPick(key, v){
+  RT.stars[key] = v;
+  document.querySelectorAll('.rt-star[data-key="'+key+'"]').forEach(el=>{
+    el.style.color = (parseInt(el.getAttribute('data-v'),10) <= v) ? '#f5a623' : '#d6dde3';
+  });
+}
+
+async function openModuleRating(moduleId, title){
+  RT = { mode:'module', moduleId:moduleId, assessmentId:null, trainerId:null, stars:{content:0,trainer:0,course:0} };
+  // find the trainer who delivered this module (to label it)
+  let trainerName = '';
+  try{
+    const r = await (await fetch('/api/rating/trainer-for-module?module_id='+encodeURIComponent(moduleId),{cache:'no-store'})).json();
+    if(r && r.ok){ RT.trainerId = r.trainer_id || null; trainerName = r.trainer_name || ''; }
+  }catch(e){}
+  $('rtTitle').textContent = 'Rate: ' + (title||'this module');
+  $('rtBody').innerHTML =
+    starRow('content','How good was the training content? ★') +
+    starRow('trainer','Rate your trainer' + (trainerName? ' ('+esc(trainerName)+')':'') + ' ★') +
+    '<div style="margin-top:10px"><div style="font-size:13px;font-weight:600;margin-bottom:4px">Comments (optional)</div>'+
+    '<textarea id="rtComment" rows="3" style="width:100%;box-sizing:border-box;border:1px solid var(--mg-line,#ccc);border-radius:8px;padding:8px;font-family:inherit;font-size:13px" placeholder="Anything you\'d like to add…"></textarea></div>';
+  $('rtModal').classList.add('show');
+}
+
+function openCourseRating(assessmentId, title){
+  RT = { mode:'course', moduleId:null, assessmentId:assessmentId, trainerId:null, stars:{content:0,trainer:0,course:0} };
+  $('rtTitle').textContent = 'Rate the course: ' + (title||'');
+  $('rtBody').innerHTML =
+    starRow('course','How would you rate this course overall? ★') +
+    '<div style="margin-top:10px"><div style="font-size:13px;font-weight:600;margin-bottom:4px">Comments (optional)</div>'+
+    '<textarea id="rtComment" rows="3" style="width:100%;box-sizing:border-box;border:1px solid var(--mg-line,#ccc);border-radius:8px;padding:8px;font-family:inherit;font-size:13px" placeholder="Anything you\'d like to add…"></textarea></div>';
+  $('rtModal').classList.add('show');
+}
+
+async function submitRating(){
+  const comment = ($('rtComment') && $('rtComment').value || '').trim();
+  let body;
+  if(RT.mode === 'module'){
+    if(!RT.stars.content || !RT.stars.trainer){ alert('Please give a star rating for both content and trainer.'); return; }
+    body = { target_type:'module', module_id:RT.moduleId, trainer_id:RT.trainerId,
+             content_rating:RT.stars.content, trainer_rating:RT.stars.trainer, comment:comment };
+  } else if(RT.mode === 'course'){
+    if(!RT.stars.course){ alert('Please give the course a star rating.'); return; }
+    body = { target_type:'course', assessment_id:RT.assessmentId, course_rating:RT.stars.course, comment:comment };
+  } else { return; }
+  let r;
+  try{ r = await (await fetch('/api/rating/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json(); }
+  catch(e){ alert('Could not save — please try again.'); return; }
+  if(r && r.ok){ $('rtModal').classList.remove('show'); }
+  else { alert((r && r.msg) || 'Could not save your rating.'); }
 }
 
 /* start */

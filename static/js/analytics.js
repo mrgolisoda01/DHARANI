@@ -58,6 +58,7 @@
         '<button class="an-pill" id="anTabEmp" onclick="window.__anView(\'employee\')">👤 Employee</button>' +
         '<button class="an-pill" id="anTabAct" onclick="window.__anView(\'activity\')">🕒 Activity</button>' +
         '<button class="an-pill" id="anTabTr" onclick="window.__anView(\'trainers\')">🧑‍🏫 Trainers</button>' +
+        '<button class="an-pill" id="anTabFb" onclick="window.__anView(\'feedback\')">💬 Feedback</button>' +
       '</div>' +
       '<div id="anViewBox"></div>';
   }
@@ -80,11 +81,11 @@
   }
 
   function setActivePill() {
-    ["Emp", "Act", "Tr"].forEach(function (s) {
+    ["Emp", "Act", "Tr", "Fb"].forEach(function (s) {
       var b = $an("anTab" + s);
       if (b) b.classList.remove("on");
     });
-    var map = { employee: "Emp", activity: "Act", trainers: "Tr" };
+    var map = { employee: "Emp", activity: "Act", trainers: "Tr", feedback: "Fb" };
     var b = $an("anTab" + map[AN.view]);
     if (b) b.classList.add("on");
   }
@@ -96,6 +97,7 @@
     if (AN.view === "employee") return renderEmployee();
     if (AN.view === "activity") return renderActivity();
     if (AN.view === "trainers") return renderTrainers();
+    if (AN.view === "feedback") return renderFeedback();
   }
 
   // ===================== EMPLOYEE =====================
@@ -243,18 +245,55 @@
       var body = $an("anTrBody");
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
       if (!d.trainers.length) { body.innerHTML = '<div class="an-empty">No trainer deliveries recorded yet.</div>'; return; }
-      var h = '<div class="an-sect"><h4>Trainer performance (from approved deliveries)</h4>' +
-        '<table><thead><tr><th>Trainer</th><th>Learners</th><th>Modules delivered</th><th>Total deliveries</th>' +
-        '<th>Learners\' avg score</th><th>Learners\' pass rate</th></tr></thead><tbody>';
+      var stars = function (v, n) {
+        if (v == null) return '<span class="an-muted">—</span>';
+        return '<b>' + v + '</b> ★' + (n ? ' <span class="an-muted">(' + n + ')</span>' : '');
+      };
+      var h = '<div class="an-sect"><h4>Trainer performance &amp; ratings</h4>' +
+        '<table><thead><tr><th>Trainer</th><th>Learners</th><th>Modules</th><th>Deliveries</th>' +
+        '<th>Avg score</th><th>Pass rate</th><th>Trainer rating</th><th>Content rating</th></tr></thead><tbody>';
       d.trainers.forEach(function (t) {
         h += '<tr><td><b>' + escAn(t.trainer) + '</b></td>' +
           '<td>' + t.learners + '</td><td>' + t.modules + '</td><td>' + t.deliveries + '</td>' +
           '<td>' + (t.avg_score == null ? '<span class="an-muted">—</span>' : t.avg_score + "%") + '</td>' +
           '<td>' + (t.pass_rate == null ? '<span class="an-muted">—</span>' :
-            '<span class="bar" style="width:80px"><i style="width:' + t.pass_rate + '%"></i></span> ' + t.pass_rate + "%") + '</td></tr>';
+            '<span class="bar" style="width:70px"><i style="width:' + t.pass_rate + '%"></i></span> ' + t.pass_rate + "%") + '</td>' +
+          '<td>' + stars(t.trainer_rating, t.trainer_rating_n) + '</td>' +
+          '<td>' + stars(t.content_rating, 0) + '</td></tr>';
       });
       body.innerHTML = h + '</tbody></table>' +
-        '<div class="an-muted" style="margin-top:10px">Trainer &amp; course ratings will be added here once learner feedback is enabled (Phase B).</div></div>';
+        '<div class="an-muted" style="margin-top:10px">Ratings are collected from learners after they complete a module (content + trainer) or pass a course.</div></div>';
+    });
+  }
+
+  // ===================== FEEDBACK =====================
+  function renderFeedback() {
+    var box = $an("anViewBox");
+    box.innerHTML = '<div id="anFbBody"><div class="an-empty">Loading…</div></div>';
+    getJAn("/api/analytics/feedback").then(function (d) {
+      var body = $an("anFbBody");
+      if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
+      if (!d.feedback.length) {
+        body.innerHTML = '<div class="an-empty">No learner feedback yet. It appears here once learners rate modules/courses.</div>';
+        return;
+      }
+      var starTxt = function (v) { return v == null ? "" : (v + "★"); };
+      var h = '<div class="an-sect"><h4>Learner feedback &amp; comments' +
+        (d.is_admin ? '' : ' (your trainings)') + '</h4>' +
+        '<table><thead><tr><th>Date</th><th>Learner</th><th>About</th><th>Trainer</th>' +
+        '<th>Ratings</th><th>Comment</th></tr></thead><tbody>';
+      d.feedback.forEach(function (f) {
+        var ratings = [];
+        if (f.trainer_rating != null) ratings.push("Trainer " + starTxt(f.trainer_rating));
+        if (f.content_rating != null) ratings.push("Content " + starTxt(f.content_rating));
+        if (f.course_rating != null) ratings.push("Course " + starTxt(f.course_rating));
+        h += '<tr><td>' + escAn(f.when) + '</td><td>' + escAn(f.learner) + '</td>' +
+          '<td>' + escAn(f.about || "") + '</td>' +
+          '<td>' + (f.trainer ? escAn(f.trainer) : '<span class="an-muted">—</span>') + '</td>' +
+          '<td>' + escAn(ratings.join(" · ")) + '</td>' +
+          '<td>' + (f.comment ? escAn(f.comment) : '<span class="an-muted">—</span>') + '</td></tr>';
+      });
+      body.innerHTML = h + '</tbody></table></div>';
     });
   }
 
