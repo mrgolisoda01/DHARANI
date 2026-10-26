@@ -66,15 +66,32 @@ async function loadFileModules(kind){
         : '<div class="empty">No document modules yet.</div>';
       return;
     }
+    // which modules has this learner already rated? (to show Rate vs ✓ Rated)
+    let ratedSet = {};
+    try{
+      const rr = await (await fetch('/api/rating/my-rated',{cache:'no-store'})).json();
+      if(rr && rr.ok){ (rr.modules||[]).forEach(id=>{ ratedSet[id]=1; }); }
+    }catch(e){}
     box.innerHTML = list.map(m=>{
       const done = m.completed ? '<span class="badge b-pass">✓ Completed</span>' : '';
       const t = m.min_minutes>0 ? `Min viewing: ${m.min_minutes} min` : 'No minimum time';
+      const safeTitle = esc(m.title).replace(/'/g,"&#39;");
+      // rating button: only for completed modules
+      let rateBtn = '';
+      if(m.completed){
+        rateBtn = ratedSet[m.id]
+          ? '<button class="btn btn-sec" disabled style="opacity:.6">★ Rated</button>'
+          : `<button class="btn btn-sec" onclick="openModuleRating(${m.id},'${safeTitle}')">★ Rate</button>`;
+      }
       return `<div class="as-card">
         <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
           <div><h4>📄 ${esc(m.title)} ${done}</h4>
             <div class="meta">${esc(m.description||'')}</div>
             <div class="meta" style="margin-top:5px">${(m.file_type||'file').toUpperCase()} · ${t}</div></div>
-          <button class="btn btn-pri" onclick="openFileModule(${m.id},'${esc(m.title).replace(/'/g,"&#39;")}','${esc(m.link)}',${m.min_minutes},${m.completed?1:0})">${m.completed?'View again':'Open'}</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            ${rateBtn}
+            <button class="btn btn-pri" onclick="openFileModule(${m.id},'${safeTitle}','${esc(m.link)}',${m.min_minutes},${m.completed?1:0})">${m.completed?'View again':'Open'}</button>
+          </div>
         </div></div>`;
     }).join('');
   }catch(e){ box.innerHTML = '<div class="empty">Could not load modules.</div>'; }
@@ -770,10 +787,54 @@ async function submitRating(){
   let r;
   try{ r = await (await fetch('/api/rating/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json(); }
   catch(e){ alert('Could not save — please try again.'); return; }
-  if(r && r.ok){ $('rtModal').classList.remove('show'); }
+  if(r && r.ok){
+    $('rtModal').classList.remove('show');
+    // if a catch-up queue is active, move to the next pending item
+    if(RT_QUEUE.active){ RT_QUEUE.idx++; setTimeout(showNextCatchup, 200); }
+    else {
+      // refresh module lists so the "Rate" button flips to "Rated"
+      try{
+        const active = document.querySelector('.pt-tab.active');
+        const tab = active ? active.getAttribute('data-tab') : '';
+        if(tab==='induction') loadFileModules('induction');
+        if(tab==='training') loadFileModules('training');
+      }catch(e){}
+    }
+  }
   else { alert((r && r.msg) || 'Could not save your rating.'); }
+}
+
+/* ---------- Catch-up: rate previously-completed modules/courses ---------- */
+let RT_QUEUE = { active:false, items:[], idx:0 };
+
+async function startRatingCatchup(){
+  // staff only; ask for up to 3 pending ratings on login
+  let d;
+  try{ d = await (await fetch('/api/rating/pending?limit=3',{cache:'no-store'})).json(); }
+  catch(e){ return; }
+  if(!d || !d.ok || !d.is_staff) return;
+  if(!d.items || !d.items.length) return;
+  RT_QUEUE = { active:true, items:d.items, idx:0, total:d.total };
+  showNextCatchup();
+}
+
+function showNextCatchup(){
+  if(!RT_QUEUE.active) return;
+  if(RT_QUEUE.idx >= RT_QUEUE.items.length){
+    // this batch done — if more remain overall, tell them; end the queue for now
+    RT_QUEUE.active = false;
+    if(RT_QUEUE.total > RT_QUEUE.items.length){
+      alert("Thanks! You have more trainings to rate — we'll ask for the rest next time you log in.");
+    }
+    return;
+  }
+  const item = RT_QUEUE.items[RT_QUEUE.idx];
+  if(item.type === 'module'){ openModuleRating(item.id, item.title); }
+  else if(item.type === 'course'){ openCourseRating(item.id, item.title); }
+  else { RT_QUEUE.idx++; showNextCatchup(); }
 }
 
 /* start */
 boot();
 loadPendingBadges();
+setTimeout(startRatingCatchup, 1200);
