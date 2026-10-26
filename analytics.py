@@ -297,6 +297,18 @@ def api_analytics_trainers():
 
     # average score + pass rate of each trainer's learners (best attempt per learner-assessment)
     out = []
+    # trainer ratings (avg of trainer_rating across all ratings for that trainer)
+    rate_map = {}
+    if _table_exists(db, "training_ratings"):
+        for r in db.execute(
+            "SELECT trainer_id, "
+            "AVG(trainer_rating*1.0) avg_tr, COUNT(trainer_rating) n_tr, "
+            "AVG(content_rating*1.0) avg_ct, COUNT(content_rating) n_ct "
+            "FROM training_ratings WHERE trainer_id IS NOT NULL AND trainer_id<>'' "
+            "GROUP BY trainer_id"
+        ).fetchall():
+            rate_map[r["trainer_id"]] = r
+
     for t, s in stats.items():
         learner_ids = list(s["learners"])
         avg_score = None
@@ -312,6 +324,7 @@ def api_analytics_trainers():
             if rows:
                 avg_score = round(sum(x["best"] for x in rows) / len(rows))
                 pass_rate = round(sum(x["passed"] for x in rows) * 100 / len(rows))
+        rr = rate_map.get(t)
         out.append({
             "trainer_id": t, "trainer": names.get(t, t),
             "learners": len(s["learners"]),
@@ -319,6 +332,9 @@ def api_analytics_trainers():
             "modules": len(s["modules"]),
             "avg_score": avg_score,
             "pass_rate": pass_rate,
+            "trainer_rating": (round(rr["avg_tr"], 1) if rr and rr["avg_tr"] is not None else None),
+            "trainer_rating_n": (rr["n_tr"] if rr else 0),
+            "content_rating": (round(rr["avg_ct"], 1) if rr and rr["avg_ct"] is not None else None),
         })
     out.sort(key=lambda x: (-(x["learners"]), x["trainer"]))
     return jsonify(ok=True, trainers=out)
@@ -373,6 +389,157 @@ def api_analytics_people():
         "FROM users WHERE role='staff' ORDER BY name"
     ).fetchall()
     return jsonify(ok=True, people=[dict(r) for r in rows])
+
+
+# ===============================================================
+#  RATINGS  (Phase B)  — learner feedback
+# ===============================================================
+def _login_only(view):
+    @wraps(view)
+    def wrapped(*a, **k):
+        if _current_user() is None:
+            return jsonify(ok=False, msg="Please sign in again."), 401
+        return view(*a, **k)
+    return wrapped
+
+
+@analytics_bp.route("/api/rating/trainer-for-module")
+@_login_only
+def api_rating_trainer_for_module():
+    """Which approved trainer delivered this module to the current learner
+    (used to label the trainer being rated). Returns the most recent one."""
+    u = _current_user()
+    mid = request.args.get("module_id")
+    db = _get_db()
+    names = _name_map(db)
+    row = db.execute(
+        "SELECT trainer_id FROM training_delivery "
+        "WHERE learner_id=? AND module_id=? AND status='approved' "
+        "ORDER BY approved_at DESC, created_at DESC LIMIT 1",
+        (u["emp_id"], mid)
+    ).fetchone()
+    tid = row["trainer_id"] if row else None
+    return jsonify(ok=True, trainer_id=tid, trainer_name=(names.get(tid, "") if tid else ""))
+
+
+@analytics_bp.route("/api/rating/submit", methods=["POST"])
+@_login_only
+def api_rating_submit():
+    """Save a learner's rating. target_type 'module' => content+trainer;
+    'course' => course rating. Required fields are validated."""
+    u = _current_user()
+    d = request.get_json(force=True)
+    ttype = (d.get("target_type") or "").strip()
+    comment = (d.get("comment") or "").strip()[:1000]
+    db = _get_db()
+
+    def _stars(v):
+        try:
+            n = int(v)
+            return n if 1 <= n <= 5 else None
+        except (ValueError, TypeError):
+            return None
+
+    now = datetime.utcnow().isoformat()
+
+    if ttype == "module":
+        mid = d.get("module_id")
+        if not mid:
+            return jsonify(ok=False, msg="Missing module."), 400
+        content = _stars(d.get("content_rating"))
+        trainer = _stars(d.get("trainer_rating"))
+        if content is None or trainer is None:
+            return jsonify(ok=False, msg="Please rate both content and trainer (1-5)."), 400
+        tid = (d.get("trainer_id") or "").strip() or None
+        # upsert: one rating per learner per module
+        existing = db.execute(
+            "SELECT id FROM training_ratings WHERE emp_id=? AND module_id=?",
+            (u["emp_id"], mid)
+        ).fetchone()
+        if existing:
+            db.execute(
+                "UPDATE training_ratings SET content_rating=?, trainer_rating=?, "
+                "trainer_id=?, comment=?, created_at=? WHERE id=?",
+                (content, trainer, tid, comment, now, existing["id"])
+            )
+        else:
+            db.execute(
+                "INSERT INTO training_ratings (emp_id,target_type,module_id,trainer_id,"
+                "content_rating,trainer_rating,comment,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (u["emp_id"], "module", mid, tid, content, trainer, comment, now)
+            )
+        db.commit()
+        return jsonify(ok=True, msg="Thanks for your feedback!")
+
+    elif ttype == "course":
+        aid = d.get("assessment_id")
+        if not aid:
+            return jsonify(ok=False, msg="Missing course."), 400
+        course = _stars(d.get("course_rating"))
+        if course is None:
+            return jsonify(ok=False, msg="Please rate the course (1-5)."), 400
+        existing = db.execute(
+            "SELECT id FROM training_ratings WHERE emp_id=? AND assessment_id=?",
+            (u["emp_id"], aid)
+        ).fetchone()
+        if existing:
+            db.execute(
+                "UPDATE training_ratings SET course_rating=?, comment=?, created_at=? WHERE id=?",
+                (course, comment, now, existing["id"])
+            )
+        else:
+            db.execute(
+                "INSERT INTO training_ratings (emp_id,target_type,assessment_id,"
+                "course_rating,comment,created_at) VALUES (?,?,?,?,?,?)",
+                (u["emp_id"], "course", aid, course, comment, now)
+            )
+        db.commit()
+        return jsonify(ok=True, msg="Thanks for your feedback!")
+
+    return jsonify(ok=False, msg="Unknown rating type."), 400
+
+
+@analytics_bp.route("/api/analytics/feedback")
+@_staff_only
+def api_analytics_feedback():
+    """Admin (all) or trainer (own only): rating comments + stars.
+    Optional ?trainer_id= to filter."""
+    u = _current_user()
+    db = _get_db()
+    names = _name_map(db)
+    if not _table_exists(db, "training_ratings"):
+        return jsonify(ok=True, feedback=[])
+
+    want_trainer = (request.args.get("trainer_id") or "").strip()
+    # a trainer (instructor) may only see their OWN feedback
+    if u["role"] == "instructor":
+        want_trainer = u["emp_id"]
+
+    sql = ("SELECT r.*, COALESCE(cm.title,'') module_title, COALESCE(a.title,'') course_title "
+           "FROM training_ratings r "
+           "LEFT JOIN content_modules cm ON cm.id=r.module_id "
+           "LEFT JOIN assessments a ON a.id=r.assessment_id ")
+    args = []
+    if want_trainer:
+        sql += "WHERE r.trainer_id=? "
+        args.append(want_trainer)
+    sql += "ORDER BY r.created_at DESC LIMIT 400"
+
+    out = []
+    for r in db.execute(sql, args).fetchall():
+        out.append({
+            "when": _ist(r["created_at"]),
+            "learner": names.get(r["emp_id"], r["emp_id"]),
+            "type": r["target_type"],
+            "about": (r["module_title"] if r["target_type"] == "module" else r["course_title"]),
+            "trainer": (names.get(r["trainer_id"], "") if r["trainer_id"] else ""),
+            "content_rating": r["content_rating"],
+            "trainer_rating": r["trainer_rating"],
+            "course_rating": r["course_rating"],
+            "comment": r["comment"] or "",
+        })
+    return jsonify(ok=True, feedback=out, is_admin=(u["role"] == "admin"))
 
 
 def init_analytics(app, get_db, current_user):
