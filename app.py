@@ -2966,11 +2966,48 @@ def api_admin_add_questions_csv():
         parsed.append((q, aa, bb, cc, dd, correct, cat))
     if not parsed:
         return jsonify(ok=False, msg="No valid questions found.", errors=errors), 400
+    # If "replace all" was requested, clear the existing question pool FIRST —
+    # but only now that we have valid new questions to put in its place, so we
+    # never leave the assessment empty. We delete ONLY questions; the
+    # assessment row and all assessment_results (who passed) are untouched.
+    replaced = False
+    if d.get("replace"):
+        db.execute("DELETE FROM questions WHERE assessment_id=?", (aid,))
+        replaced = True
     for (q, aa, bb, cc, dd, correct, cat) in parsed:
         db.execute("INSERT INTO questions (assessment_id,question,opt_a,opt_b,opt_c,opt_d,correct,category) VALUES (?,?,?,?,?,?,?,?)",
                    (aid, q, aa, bb, cc, dd, correct, cat))
     db.commit()
-    return jsonify(ok=True, msg=f"Added {len(parsed)} more questions.", added=len(parsed), errors=errors)
+    if replaced:
+        msg = f"Replaced all questions — the assessment now has {len(parsed)} questions."
+    else:
+        msg = f"Added {len(parsed)} more questions."
+    return jsonify(ok=True, msg=msg, added=len(parsed), replaced=replaced, errors=errors)
+
+
+@app.route("/api/admin/clear-questions", methods=["POST"])
+@view_admin_required
+def api_admin_clear_questions():
+    """Delete ALL questions for an assessment, keeping the assessment row and
+    all pass records (assessment_results). Used to start fresh before a
+    re-upload. Requires an explicit confirm token."""
+    d = request.get_json(force=True)
+    aid = d.get("id")
+    if (d.get("confirm") or "").strip().upper() != "CLEAR":
+        return jsonify(ok=False, msg="Confirmation missing."), 400
+    db = get_db()
+    a = db.execute("SELECT * FROM assessments WHERE id=?", (aid,)).fetchone()
+    if not a:
+        return jsonify(ok=False, msg="Assessment not found."), 404
+    _u = current_user()
+    if _u["role"] == "instructor" and a["status"] == "live":
+        return jsonify(ok=False, msg="This assessment is already live. Ask an admin."), 403
+    n = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (aid,)).fetchone()["c"]
+    db.execute("DELETE FROM questions WHERE assessment_id=?", (aid,))
+    db.commit()
+    log_activity("cleared assessment questions", "assessment", a["title"],
+                 details=f"{n} questions removed; assessment & results kept")
+    return jsonify(ok=True, msg=f"Cleared {n} questions. The assessment and all pass records are kept.")
 
 
 @app.route("/api/admin/assessment-results")
