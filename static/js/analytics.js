@@ -219,21 +219,84 @@
     loadActivity(r);
   };
 
+  // group definitions: key -> {label, icon, color}
+  var ACT_GROUPS = [
+    { key: "induction",  label: "Induction completed",  icon: "📘", color: "#1f5fa9" },
+    { key: "training",   label: "Training completed",   icon: "🎓", color: "#0a7d4f" },
+    { key: "assessment", label: "Assessments taken",    icon: "📝", color: "#8a5a00" },
+    { key: "video",      label: "Videos watched",       icon: "🎥", color: "#6b46c1" },
+    { key: "cert",       label: "Certificates issued",  icon: "📜", color: "#b4231d" },
+    { key: "ojt_call",   label: "OJT calls",            icon: "📞", color: "#0c7b93" }
+  ];
+
+  function totalsBar(t) {
+    t = t || {};
+    var card = function (n, l, color) {
+      return '<div class="an-card" style="padding:12px">' +
+        '<div class="n" style="color:' + color + ';font-size:24px">' + (n || 0) + '</div>' +
+        '<div class="l">' + l + '</div></div>';
+    };
+    return '<div class="an-cards" style="margin-bottom:14px">' +
+      card(t.induction, "Induction done", "#1f5fa9") +
+      card(t.training, "Training done", "#0a7d4f") +
+      card(t.assess_pass, "Assessments passed", "#0a7d4f") +
+      card(t.assess_fail, "Assessments failed", "#b4231d") +
+      card(t.videos, "Videos watched", "#6b46c1") +
+      card(t.certs, "Certificates", "#8a5a00") +
+      card(t.ojt_calls, "OJT calls", "#0c7b93") +
+      '</div>';
+  }
+
+  // one collapsible section for a group of events
+  function groupSection(g, evs) {
+    if (!evs.length) return "";
+    var id = "actg_" + g.key;
+    var rows = evs.map(function (ev) {
+      var resClass = "";
+      if (ev.type === "assessment") resClass = ev.passed ? "t-pass" : "t-fail";
+      var resHtml = resClass ? '<span class="tag ' + resClass + '">' + escAn(ev.result) + '</span>' : escAn(ev.result);
+      return '<tr><td style="white-space:nowrap">' + escAn(ev.when) + '</td>' +
+        '<td>' + escAn(ev.name) + '</td>' +
+        '<td>' + escAn(ev.detail) + '</td>' +
+        '<td>' + resHtml + '</td></tr>';
+    }).join("");
+    return '<div class="an-sect" style="padding:0;overflow:hidden">' +
+      '<div onclick="window.__anToggle(\'' + id + '\')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-left:4px solid ' + g.color + '">' +
+        '<h4 style="margin:0">' + g.icon + ' ' + g.label + ' <span class="an-muted" style="font-weight:400">(' + evs.length + ')</span></h4>' +
+        '<span class="an-muted" id="' + id + '_arw">▾</span>' +
+      '</div>' +
+      '<div id="' + id + '" style="padding:0 16px 12px">' +
+        '<table><thead><tr><th>Date</th><th>Employee</th><th>Detail</th><th>Result</th></tr></thead><tbody>' +
+        rows + '</tbody></table></div></div>';
+  }
+
+  window.__anToggle = function (id) {
+    var el = $an(id), arw = $an(id + "_arw");
+    if (!el) return;
+    var hidden = el.style.display === "none";
+    el.style.display = hidden ? "" : "none";
+    if (arw) arw.textContent = hidden ? "▾" : "▸";
+  };
+
   function loadActivity(range) {
     var body = $an("anActBody");
     body.innerHTML = '<div class="an-empty">Loading…</div>';
     getJAn("/api/analytics/activity?range=" + range).then(function (d) {
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
-      if (!d.events.length) { body.innerHTML = '<div class="an-empty">No activity in this period.</div>'; return; }
-      var icon = { module: "📘", video: "🎥", assessment: "📝" };
-      var h = '<div class="an-sect"><h4>' + d.count + ' events</h4>' +
-        '<table><thead><tr><th>Date</th><th>Employee</th><th>Activity</th><th>Result</th></tr></thead><tbody>';
+      var html = totalsBar(d.totals);
+      if (!d.events || !d.events.length) {
+        body.innerHTML = html + '<div class="an-empty">No activity in this period.</div>';
+        return;
+      }
+      // bucket events by group key
+      var buckets = {};
       d.events.forEach(function (ev) {
-        h += '<tr><td>' + escAn(ev.when) + '</td><td>' + escAn(ev.name) + '</td>' +
-          '<td>' + (icon[ev.type] || "") + ' ' + escAn(ev.detail) + '</td>' +
-          '<td>' + escAn(ev.result) + '</td></tr>';
+        (buckets[ev.type] = buckets[ev.type] || []).push(ev);
       });
-      body.innerHTML = h + '</tbody></table></div>';
+      ACT_GROUPS.forEach(function (g) {
+        html += groupSection(g, buckets[g.key] || []);
+      });
+      body.innerHTML = html;
     });
   }
 
