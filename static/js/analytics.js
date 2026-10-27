@@ -20,7 +20,7 @@
     return fetch(url, { cache: "no-store" }).then(function (r) { return r.json(); });
   }
 
-  var AN = { view: "employee", people: [], curEmp: null };
+  var AN = { view: "overview", people: [], curEmp: null };
 
   // ---- styles (scoped to #anRoot) ----
   function css() {
@@ -47,14 +47,15 @@
       "#anRoot .t-no{background:#eef1f4;color:#7a8690}",
       "#anRoot .an-input{padding:8px 10px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px;min-width:240px;font-family:inherit}",
       "#anRoot .an-empty{padding:22px;text-align:center;color:var(--mg-muted);font-size:13px}",
-      "#anRoot .an-muted{color:var(--mg-muted);font-size:12px}"
+      "#anRoot .an-muted{color:var(--mg-muted);font-size:12px}",
+      "@media(max-width:820px){#anRoot .an-grid2{grid-template-columns:1fr !important}}"
     ].join("") + "</style>";
   }
 
   function shell() {
     return css() +
-      '<div class="an-cards" id="anOverview"></div>' +
       '<div class="an-sub">' +
+        '<button class="an-pill" id="anTabOv" onclick="window.__anView(\'overview\')">📊 Overview</button>' +
         '<button class="an-pill" id="anTabEmp" onclick="window.__anView(\'employee\')">👤 Employee</button>' +
         '<button class="an-pill" id="anTabAct" onclick="window.__anView(\'activity\')">🕒 Activity</button>' +
         '<button class="an-pill" id="anTabTr" onclick="window.__anView(\'trainers\')">🧑‍🏫 Trainers</button>' +
@@ -63,29 +64,12 @@
       '<div id="anViewBox"></div>';
   }
 
-  // ---- overview cards ----
-  function loadOverview() {
-    getJAn("/api/analytics/overview").then(function (d) {
-      if (!d || !d.ok) return;
-      var o = d.overview || {};
-      var card = function (n, l) {
-        return '<div class="an-card"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>';
-      };
-      $an("anOverview").innerHTML =
-        card(o.total_staff || 0, "Total learners") +
-        card(o.completions_today || 0, "Modules completed today") +
-        card(o.assessments_today || 0, "Assessments taken today") +
-        card(o.passed_today || 0, "Passed today") +
-        card(o.certs_today || 0, "Certificates issued today");
-    });
-  }
-
   function setActivePill() {
-    ["Emp", "Act", "Tr", "Fb"].forEach(function (s) {
+    ["Ov", "Emp", "Act", "Tr", "Fb"].forEach(function (s) {
       var b = $an("anTab" + s);
       if (b) b.classList.remove("on");
     });
-    var map = { employee: "Emp", activity: "Act", trainers: "Tr", feedback: "Fb" };
+    var map = { overview: "Ov", employee: "Emp", activity: "Act", trainers: "Tr", feedback: "Fb" };
     var b = $an("anTab" + map[AN.view]);
     if (b) b.classList.add("on");
   }
@@ -94,10 +78,117 @@
 
   function renderView() {
     setActivePill();
+    if (AN.view === "overview") return renderOverview();
     if (AN.view === "employee") return renderEmployee();
     if (AN.view === "activity") return renderActivity();
     if (AN.view === "trainers") return renderTrainers();
     if (AN.view === "feedback") return renderFeedback();
+  }
+
+  // ===================== OVERVIEW (dashboard) =====================
+  var AN_CHARTS = {};
+  function destroyCharts() {
+    Object.keys(AN_CHARTS).forEach(function (k) {
+      try { AN_CHARTS[k].destroy(); } catch (e) {}
+    });
+    AN_CHARTS = {};
+  }
+
+  function renderOverview() {
+    var box = $an("anViewBox");
+    box.innerHTML = '<div id="anOvBody"><div class="an-empty">Loading dashboard…</div></div>';
+    getJAn("/api/analytics/overview").then(function (d) {
+      var body = $an("anOvBody");
+      if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
+      var o = d.overview || {}, p = d.pulse || {}, f = d.funnel || {};
+      destroyCharts();
+
+      var kpi = function (n, l, color, suffix) {
+        return '<div class="an-card"><div class="n" style="color:' + (color || "var(--mg-blue)") + '">' +
+          n + (suffix || "") + '</div><div class="l">' + l + '</div></div>';
+      };
+
+      var html = "";
+      // KPI row
+      html += '<div class="an-cards">' +
+        kpi(o.total_staff || 0, "Total learners", "#1f5fa9") +
+        kpi(o.active_week || 0, "Active this week", "#0a7d4f") +
+        kpi(o.induction_rate || 0, "Induction complete", "#1f5fa9", "%") +
+        kpi(o.training_rate || 0, "Training complete", "#0a7d4f", "%") +
+        kpi(o.avg_score || 0, "Avg assessment score", "#534ab7", "%") +
+        kpi(o.total_certs || 0, "Certificates issued", "#8a5a00") +
+        '</div>';
+
+      // Onboarding pulse (today)
+      html += '<div class="an-sect"><h4>📅 Onboarding pulse — today</h4>' +
+        '<div class="an-cards" style="margin:0">' +
+        kpi(p.enrolled_today || 0, "Enrolled today", "#1f5fa9") +
+        kpi(p.logged_in_today || 0, "Logged in today", "#0a7d4f") +
+        kpi(p.logged_in || 0, "Ever logged in", "#534ab7") +
+        kpi(p.never_logged || 0, "Never logged in", "#b4231d") +
+        '</div></div>';
+
+      // Funnel + Trend side by side
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px" class="an-grid2">' +
+        '<div class="an-sect"><h4>🪜 Completion funnel</h4><canvas id="anFunnel" height="200"></canvas></div>' +
+        '<div class="an-sect"><h4>📈 Activity — last 30 days</h4><canvas id="anTrend" height="200"></canvas></div>' +
+        '</div>';
+
+      // Needs attention
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px" class="an-grid2">';
+      html += '<div class="an-sect"><h4>⚠ Inactive 7+ days (' + (d.attention || []).length + ')</h4>';
+      if ((d.attention || []).length) {
+        html += '<table><tbody>' + d.attention.map(function (a) {
+          return '<tr><td>' + escAn(a.name) + '</td><td class="an-muted">' + escAn(a.reason) + '</td></tr>';
+        }).join("") + '</tbody></table>';
+      } else { html += '<div class="an-empty">Everyone active 🎉</div>'; }
+      html += '</div>';
+      html += '<div class="an-sect"><h4>🔁 Repeat failers (' + (d.repeat_failers || []).length + ')</h4>';
+      if ((d.repeat_failers || []).length) {
+        html += '<table><thead><tr><th>Learner</th><th>Assessment</th><th>Fails</th></tr></thead><tbody>' +
+          d.repeat_failers.map(function (r) {
+            return '<tr><td>' + escAn(r.name) + '</td><td>' + escAn(r.assessment) + '</td>' +
+              '<td><span class="tag t-fail">' + r.fails + '</span></td></tr>';
+          }).join("") + '</tbody></table>';
+      } else { html += '<div class="an-empty">No repeat failers 🎉</div>'; }
+      html += '</div></div>';
+
+      body.innerHTML = html;
+
+      // draw charts (if Chart.js loaded)
+      if (typeof Chart !== "undefined") {
+        try {
+          var fc = $an("anFunnel");
+          if (fc) AN_CHARTS.funnel = new Chart(fc, {
+            type: "bar",
+            data: {
+              labels: ["Enrolled", "Induction", "Training", "Certified"],
+              datasets: [{
+                data: [f.enrolled || 0, f.induction || 0, f.training || 0, f.certified || 0],
+                backgroundColor: ["#9db8d6", "#1f5fa9", "#0a7d4f", "#8a5a00"]
+              }]
+            },
+            options: { indexAxis: "y", plugins: { legend: { display: false } },
+              scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } }
+          });
+          var tc = $an("anTrend");
+          if (tc && d.trend) AN_CHARTS.trend = new Chart(tc, {
+            type: "line",
+            data: {
+              labels: d.trend.map(function (x) { return x.date; }),
+              datasets: [
+                { label: "Completions", data: d.trend.map(function (x) { return x.completions; }),
+                  borderColor: "#1f5fa9", backgroundColor: "rgba(31,95,169,.1)", tension: .3, fill: true },
+                { label: "Assessments", data: d.trend.map(function (x) { return x.assessments; }),
+                  borderColor: "#0a7d4f", backgroundColor: "rgba(10,125,79,.08)", tension: .3, fill: true }
+              ]
+            },
+            options: { plugins: { legend: { position: "bottom" } },
+              scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+          });
+        } catch (e) {}
+      }
+    });
   }
 
   // ===================== EMPLOYEE =====================
@@ -368,8 +459,7 @@
       root.innerHTML = shell();
       root.setAttribute("data-built", "1");
     }
-    loadOverview();
-    // load people list once, then render current view
+    // load people list once (for the Employee picker), then render current view
     if (!AN.people.length) {
       getJAn("/api/analytics/people").then(function (d) {
         AN.people = (d && d.ok && d.people) ? d.people : [];
