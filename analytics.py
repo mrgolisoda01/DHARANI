@@ -394,7 +394,9 @@ def api_analytics_trainers():
 @_staff_only
 def api_analytics_overview():
     db = _get_db()
-    today_iso = _today_ist().isoformat()
+    today = _today_ist()
+    today_iso = today.isoformat()
+    week_iso = (today - timedelta(days=7)).isoformat()
 
     def _count(sql, args=()):
         try:
@@ -402,25 +404,169 @@ def api_analytics_overview():
         except Exception:
             return 0
 
+    # ---- top KPI cards ----
     total_staff = _count("SELECT COUNT(*) c FROM users WHERE status='approved' AND role='staff'")
-    completions_today = _count(
-        "SELECT COUNT(*) c FROM module_completions WHERE completed_at >= ?", (today_iso,))
-    assess_today = _count(
-        "SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ?", (today_iso,))
-    passed_today = _count(
-        "SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ? AND passed=1", (today_iso,))
-    certs_today = _count(
-        "SELECT COUNT(*) c FROM issued_certificates WHERE issued_at >= ?", (today_iso,))
+
+    # active this week = did any module/assessment/video in last 7 days
+    active_ids = set()
+    for sql in (
+        "SELECT DISTINCT emp_id FROM module_completions WHERE completed_at >= ?",
+        "SELECT DISTINCT emp_id FROM assessment_results WHERE taken_at >= ?",
+    ):
+        try:
+            for r in db.execute(sql, (week_iso,)).fetchall():
+                active_ids.add(r["emp_id"])
+        except Exception:
+            pass
+    if _table_exists(db, "video_completions"):
+        try:
+            for r in db.execute("SELECT DISTINCT emp_id FROM video_completions WHERE completed_at >= ?", (week_iso,)).fetchall():
+                active_ids.add(r["emp_id"])
+        except Exception:
+            pass
+    active_week = len(active_ids)
+
+    # induction & training completion rate (completed vs expected, staff only)
+    def _completion_rate(kind):
+        # total live modules of this kind, matched to each staff by role, is heavy;
+        # use a simpler proxy: completions / (staff * live-modules-of-kind) across "all" modules.
+        live = _count("SELECT COUNT(*) c FROM content_modules WHERE status='live' AND kind=?", (kind,))
+        if not live or not total_staff:
+            return 0
+        done = _count(
+            "SELECT COUNT(*) c FROM module_completions mc "
+            "JOIN content_modules cm ON cm.id=mc.module_id "
+            "JOIN users u ON u.emp_id=mc.emp_id "
+            "WHERE cm.status='live' AND cm.kind=? AND u.role='staff' AND u.status='approved'", (kind,))
+        denom = live * total_staff
+        return min(100, round(done * 100 / denom)) if denom else 0
+
+    induction_rate = _completion_rate("induction")
+    training_rate = _completion_rate("training")
+
+    # average assessment score (best attempt per learner-assessment, staff)
+    avg_score = 0
+    try:
+        rows = db.execute(
+            "SELECT MAX(percent) best FROM assessment_results r "
+            "JOIN users u ON u.emp_id=r.emp_id "
+            "WHERE u.role='staff' GROUP BY r.emp_id, r.assessment_id"
+        ).fetchall()
+        if rows:
+            avg_score = round(sum(x["best"] for x in rows) / len(rows))
+    except Exception:
+        avg_score = 0
+
+    total_certs = _count("SELECT COUNT(*) c FROM issued_certificates")
+
+    # ---- onboarding pulse (today) ----
+    enrolled_today = _count(
+        "SELECT COUNT(*) c FROM users WHERE role='staff' AND created_at >= ?", (today_iso,))
+    approved_total = total_staff
+    # logged in at least once vs never (approved staff)
+    logged_in = _count(
+        "SELECT COUNT(*) c FROM users WHERE role='staff' AND status='approved' AND last_login IS NOT NULL AND last_login<>''")
+    never_logged = max(0, total_staff - logged_in)
+    # logged in today
+    logged_in_today = _count(
+        "SELECT COUNT(*) c FROM users WHERE role='staff' AND last_login >= ?", (today_iso,))
+
+    # ---- completion funnel (staff) ----
+    funnel_enrolled = total_staff
+    # did >=1 induction module
+    funnel_induction = _count(
+        "SELECT COUNT(DISTINCT mc.emp_id) c FROM module_completions mc "
+        "JOIN content_modules cm ON cm.id=mc.module_id "
+        "JOIN users u ON u.emp_id=mc.emp_id "
+        "WHERE cm.kind='induction' AND cm.status='live' AND u.role='staff'")
+    # did >=1 training module
+    funnel_training = _count(
+        "SELECT COUNT(DISTINCT mc.emp_id) c FROM module_completions mc "
+        "JOIN content_modules cm ON cm.id=mc.module_id "
+        "JOIN users u ON u.emp_id=mc.emp_id "
+        "WHERE cm.kind<>'induction' AND cm.status='live' AND u.role='staff'")
+    # earned >=1 certificate
+    funnel_certified = _count(
+        "SELECT COUNT(DISTINCT ic.emp_id) c FROM issued_certificates ic "
+        "JOIN users u ON u.emp_id=ic.emp_id WHERE u.role='staff'")
+
+    # ---- 30-day trend (completions + assessments per day) ----
+    trend = []
+    for i in range(29, -1, -1):
+        day = today - timedelta(days=i)
+        d0 = day.isoformat()
+        d1 = (day + timedelta(days=1)).isoformat()
+        comp = _count("SELECT COUNT(*) c FROM module_completions WHERE completed_at >= ? AND completed_at < ?", (d0, d1))
+        ass = _count("SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ? AND taken_at < ?", (d0, d1))
+        trend.append({"date": day.strftime("%d %b"), "completions": comp, "assessments": ass})
+
+    # ---- needs attention ----
+    names = _name_map(db)
+    attention = []
+    # inactive 7+ days (approved staff who did nothing in last 7 days, but have logged in before)
+    try:
+        for u in db.execute(
+            "SELECT emp_id, name, last_login FROM users WHERE role='staff' AND status='approved'"
+        ).fetchall():
+            if u["emp_id"] in active_ids:
+                continue
+            attention.append({"emp_id": u["emp_id"], "name": u["name"],
+                              "reason": "No activity in 7+ days"})
+    except Exception:
+        pass
+    attention = attention[:12]
+    # repeat failers: >=3 failed attempts on the same assessment, none passed
+    repeat_failers = []
+    try:
+        for r in db.execute(
+            "SELECT r.emp_id, r.assessment_id, a.title, COUNT(*) fails "
+            "FROM assessment_results r JOIN assessments a ON a.id=r.assessment_id "
+            "WHERE r.passed=0 GROUP BY r.emp_id, r.assessment_id, a.title HAVING COUNT(*) >= 3"
+        ).fetchall():
+            # skip if they eventually passed it
+            passed = db.execute(
+                "SELECT 1 FROM assessment_results WHERE emp_id=? AND assessment_id=? AND passed=1 LIMIT 1",
+                (r["emp_id"], r["assessment_id"])).fetchone()
+            if passed:
+                continue
+            repeat_failers.append({
+                "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
+                "assessment": r["title"], "fails": r["fails"]})
+    except Exception:
+        pass
+    repeat_failers = repeat_failers[:12]
 
     return jsonify(
         ok=True,
         overview={
             "total_staff": total_staff,
-            "completions_today": completions_today,
-            "assessments_today": assess_today,
-            "passed_today": passed_today,
-            "certs_today": certs_today,
+            "active_week": active_week,
+            "induction_rate": induction_rate,
+            "training_rate": training_rate,
+            "avg_score": avg_score,
+            "total_certs": total_certs,
+            # today cards
+            "completions_today": _count("SELECT COUNT(*) c FROM module_completions WHERE completed_at >= ?", (today_iso,)),
+            "assessments_today": _count("SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ?", (today_iso,)),
+            "passed_today": _count("SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ? AND passed=1", (today_iso,)),
+            "certs_today": _count("SELECT COUNT(*) c FROM issued_certificates WHERE issued_at >= ?", (today_iso,)),
         },
+        pulse={
+            "enrolled_today": enrolled_today,
+            "approved_total": approved_total,
+            "logged_in": logged_in,
+            "never_logged": never_logged,
+            "logged_in_today": logged_in_today,
+        },
+        funnel={
+            "enrolled": funnel_enrolled,
+            "induction": funnel_induction,
+            "training": funnel_training,
+            "certified": funnel_certified,
+        },
+        trend=trend,
+        attention=attention,
+        repeat_failers=repeat_failers,
     )
 
 
