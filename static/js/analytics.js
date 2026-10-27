@@ -392,6 +392,16 @@
   }
 
   // ===================== TRAINERS =====================
+  function kpiColor(s) {
+    if (s >= 80) return "#0a7d4f";
+    if (s >= 60) return "#8a5a00";
+    return "#b4231d";
+  }
+  function starTxt(v, n) {
+    if (v == null) return '<span class="an-muted">—</span>';
+    return '<b>' + v + '</b>★' + (n ? ' <span class="an-muted">(' + n + ')</span>' : '');
+  }
+
   function renderTrainers() {
     var box = $an("anViewBox");
     box.innerHTML = '<div id="anTrBody"><div class="an-empty">Loading…</div></div>';
@@ -399,26 +409,95 @@
       var body = $an("anTrBody");
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
       if (!d.trainers.length) { body.innerHTML = '<div class="an-empty">No trainer deliveries recorded yet.</div>'; return; }
-      var stars = function (v, n) {
-        if (v == null) return '<span class="an-muted">—</span>';
-        return '<b>' + v + '</b> ★' + (n ? ' <span class="an-muted">(' + n + ')</span>' : '');
-      };
-      var h = '<div class="an-sect"><h4>Trainer performance &amp; ratings</h4>' +
-        '<table><thead><tr><th>Trainer</th><th>Learners</th><th>Modules</th><th>Deliveries</th>' +
-        '<th>Avg score</th><th>Pass rate</th><th>Trainer rating</th><th>Content rating</th></tr></thead><tbody>';
-      d.trainers.forEach(function (t) {
-        h += '<tr><td><b>' + escAn(t.trainer) + '</b></td>' +
-          '<td>' + t.learners + '</td><td>' + t.modules + '</td><td>' + t.deliveries + '</td>' +
-          '<td>' + (t.avg_score == null ? '<span class="an-muted">—</span>' : t.avg_score + "%") + '</td>' +
-          '<td>' + (t.pass_rate == null ? '<span class="an-muted">—</span>' :
-            '<span class="bar" style="width:70px"><i style="width:' + t.pass_rate + '%"></i></span> ' + t.pass_rate + "%") + '</td>' +
-          '<td>' + stars(t.trainer_rating, t.trainer_rating_n) + '</td>' +
-          '<td>' + stars(t.content_rating, 0) + '</td></tr>';
+      var w = d.kpi_weights || {};
+
+      // leaderboard (top 3 as medal cards)
+      var medal = ["🥇", "🥈", "🥉"];
+      var top = d.trainers.slice(0, 3);
+      var lead = '<div class="an-cards" style="margin-bottom:14px">';
+      top.forEach(function (t, i) {
+        lead += '<div class="an-card" style="cursor:pointer" onclick="window.__anTrainer(\'' + escAn(t.trainer_id) + '\')">' +
+          '<div style="font-size:22px">' + (medal[i] || "") + '</div>' +
+          '<div class="n" style="color:' + kpiColor(t.kpi_score) + '">' + t.kpi_score + '</div>' +
+          '<div class="l">' + escAn(t.trainer) + (t.low_data ? ' <span class="tag t-no">low data</span>' : '') + '</div></div>';
       });
-      body.innerHTML = h + '</tbody></table>' +
-        '<div class="an-muted" style="margin-top:10px">Ratings are collected from learners after they complete a module (content + trainer) or pass a course.</div></div>';
+      lead += '</div>';
+
+      // full scorecard table
+      var h = '<div class="an-sect"><h4>🧑‍🏫 Trainer KPI scorecard</h4>' +
+        '<div class="an-muted" style="margin-bottom:10px">KPI score (0–100) = Pass ' + (w.pass||30) + '% · Avg score ' + (w.score||20) +
+        '% · First-attempt ' + (w.first_attempt||20) + '% · Rating ' + (w.rating||20) + '% · Engagement ' + (w.engagement||10) + '%. Click a trainer for details.</div>' +
+        '<table><thead><tr><th>Trainer</th><th>KPI</th><th>Learners</th><th>Pass rate</th>' +
+        '<th>Avg score</th><th>1st-attempt</th><th>Rating</th><th>OJT calls</th></tr></thead><tbody>';
+      d.trainers.forEach(function (t) {
+        h += '<tr style="cursor:pointer" onclick="window.__anTrainer(\'' + escAn(t.trainer_id) + '\')">' +
+          '<td><b>' + escAn(t.trainer) + '</b>' + (t.low_data ? ' <span class="tag t-no">low data</span>' : '') + '</td>' +
+          '<td><span style="display:inline-block;min-width:34px;text-align:center;font-weight:800;color:#fff;background:' + kpiColor(t.kpi_score) + ';border-radius:8px;padding:2px 6px">' + t.kpi_score + '</span></td>' +
+          '<td>' + t.learners + '</td>' +
+          '<td>' + (t.pass_rate == null ? '<span class="an-muted">—</span>' :
+            '<span class="bar" style="width:60px"><i style="width:' + t.pass_rate + '%"></i></span> ' + t.pass_rate + '%') + '</td>' +
+          '<td>' + (t.avg_score == null ? '<span class="an-muted">—</span>' : t.avg_score + '%') + '</td>' +
+          '<td>' + (t.first_attempt_rate == null ? '<span class="an-muted">—</span>' : t.first_attempt_rate + '%') + '</td>' +
+          '<td>' + starTxt(t.trainer_rating, t.trainer_rating_n) + '</td>' +
+          '<td>' + (t.ojt_calls || 0) + '</td></tr>';
+      });
+      body.innerHTML = lead + h + '</tbody></table></div>';
     });
   }
+
+  // drill-in for one trainer
+  window.__anTrainer = function (tid) {
+    var box = $an("anViewBox");
+    box.innerHTML = '<div class="an-sect"><button class="an-pill" onclick="window.__anView(\'trainers\')">‹ Back to trainers</button></div>' +
+      '<div id="anTrDetail"><div class="an-empty">Loading…</div></div>';
+    getJAn("/api/analytics/trainer?id=" + encodeURIComponent(tid)).then(function (d) {
+      var el = $an("anTrDetail");
+      if (!d || !d.ok) { el.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
+      var r = d.ratings || {};
+      var html = '<div class="an-sect"><h4>' + escAn(d.trainer) + '</h4>' +
+        '<div class="an-muted">Trainer rating: ' + starTxt(r.trainer_avg, r.n) +
+        ' &nbsp;·&nbsp; Content rating: ' + starTxt(r.content_avg, 0) + '</div></div>';
+
+      // learners
+      html += '<div class="an-sect"><h4>Learners trained (' + (d.learners || []).length + ')</h4>';
+      if ((d.learners || []).length) {
+        html += '<table><thead><tr><th>Learner</th><th>Best score</th><th>Passed</th><th>Attempts</th></tr></thead><tbody>' +
+          d.learners.map(function (l) {
+            return '<tr><td>' + escAn(l.name) + '</td>' +
+              '<td>' + (l.best == null ? '—' : l.best + '%') + '</td>' +
+              '<td>' + (l.passed ? '<span class="tag t-pass">Yes</span>' : '<span class="tag t-fail">No</span>') + '</td>' +
+              '<td>' + l.attempts + '</td></tr>';
+          }).join("") + '</tbody></table>';
+      } else { html += '<div class="an-empty">No learners.</div>'; }
+      html += '</div>';
+
+      // modules
+      html += '<div class="an-sect"><h4>Modules delivered (' + (d.modules || []).length + ')</h4>';
+      if ((d.modules || []).length) {
+        html += '<table><thead><tr><th>Module</th><th>Learners</th></tr></thead><tbody>' +
+          d.modules.map(function (m) {
+            return '<tr><td>' + escAn(m.title) + '</td><td>' + m.learners + '</td></tr>';
+          }).join("") + '</tbody></table>';
+      } else { html += '<div class="an-empty">No modules.</div>'; }
+      html += '</div>';
+
+      // comments
+      html += '<div class="an-sect"><h4>Feedback comments (' + (d.comments || []).length + ')</h4>';
+      if ((d.comments || []).length) {
+        html += d.comments.map(function (c) {
+          return '<div style="border:1px solid var(--mg-line);border-radius:8px;padding:10px;margin-bottom:8px;background:#fafdff">' +
+            '<div style="font-size:13px">"' + escAn(c.comment) + '"</div>' +
+            '<div class="an-muted" style="margin-top:4px">— ' + escAn(c.learner) +
+            (c.module ? ' · ' + escAn(c.module) : '') +
+            (c.trainer_rating ? ' · ' + c.trainer_rating + '★' : '') +
+            ' · ' + escAn(c.when) + '</div></div>';
+        }).join("");
+      } else { html += '<div class="an-empty">No written feedback yet.</div>'; }
+      html += '</div>';
+
+      el.innerHTML = html;
+    });
+  };
 
   // ===================== FEEDBACK =====================
   function renderFeedback() {
@@ -432,24 +511,98 @@
         return;
       }
       var starTxt = function (v) { return v == null ? "" : (v + "★"); };
+      AN._fb = {}; // cache rows by id for the edit popup
       var h = '<div class="an-sect"><h4>Learner feedback &amp; comments' +
         (d.is_admin ? '' : ' (your trainings)') + '</h4>' +
         '<table><thead><tr><th>Date</th><th>Learner</th><th>About</th><th>Trainer</th>' +
-        '<th>Ratings</th><th>Comment</th></tr></thead><tbody>';
+        '<th>Ratings</th><th>Comment</th>' + (d.is_admin ? '<th></th>' : '') + '</tr></thead><tbody>';
       d.feedback.forEach(function (f) {
+        AN._fb[f.id] = f;
         var ratings = [];
         if (f.trainer_rating != null) ratings.push("Trainer " + starTxt(f.trainer_rating));
         if (f.content_rating != null) ratings.push("Content " + starTxt(f.content_rating));
         if (f.course_rating != null) ratings.push("Course " + starTxt(f.course_rating));
-        h += '<tr><td>' + escAn(f.when) + '</td><td>' + escAn(f.learner) + '</td>' +
+        h += '<tr><td style="white-space:nowrap">' + escAn(f.when) + '</td><td>' + escAn(f.learner) + '</td>' +
           '<td>' + escAn(f.about || "") + '</td>' +
           '<td>' + (f.trainer ? escAn(f.trainer) : '<span class="an-muted">—</span>') + '</td>' +
           '<td>' + escAn(ratings.join(" · ")) + '</td>' +
-          '<td>' + (f.comment ? escAn(f.comment) : '<span class="an-muted">—</span>') + '</td></tr>';
+          '<td>' + (f.comment ? escAn(f.comment) : '<span class="an-muted">—</span>') + '</td>' +
+          (d.is_admin ? '<td style="white-space:nowrap"><button class="an-pill" style="padding:3px 10px" onclick="window.__anEditFb(' + f.id + ')">Edit</button></td>' : '') +
+          '</tr>';
       });
-      body.innerHTML = h + '</tbody></table></div>';
+      body.innerHTML = h + '</tbody></table>' +
+        (d.is_admin ? '<div class="an-muted" style="margin-top:8px">Use Edit to correct the trainer if a learner picked the wrong one.</div>' : '') +
+        '</div>';
     });
   }
+
+  // admin: edit a submitted rating (fix trainer / stars / delete)
+  window.__anEditFb = function (id) {
+    var f = (AN._fb || {})[id];
+    if (!f) return;
+    // ensure we have the trainer list
+    var buildPopup = function (trainers) {
+      var opts = '<option value="">— No trainer —</option>' + trainers.map(function (t) {
+        return '<option value="' + escAn(t.emp_id) + '"' + (t.emp_id === f.trainer_id ? ' selected' : '') + '>' +
+          escAn(t.name) + (t.designation ? ' · ' + escAn(t.designation) : '') + '</option>';
+      }).join("");
+      var ov = $an("anFbEditOv");
+      if (!ov) { ov = document.createElement("div"); ov.id = "anFbEditOv"; document.body.appendChild(ov); }
+      ov.style = "position:fixed;inset:0;background:rgba(8,30,40,.5);display:flex;align-items:center;justify-content:center;padding:20px;z-index:95";
+      var starSel = function (label, field, val) {
+        if (val == null) return "";
+        var o = "";
+        for (var i = 1; i <= 5; i++) o += '<option value="' + i + '"' + (i === val ? ' selected' : '') + '>' + i + '★</option>';
+        return '<div style="margin:8px 0"><label style="font-size:12.5px;font-weight:600;display:block;margin-bottom:3px">' + label + '</label>' +
+          '<select id="anFb_' + field + '" style="padding:7px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px">' + o + '</select></div>';
+      };
+      ov.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:440px;width:100%;padding:20px;box-shadow:0 18px 50px rgba(0,0,0,.25)">' +
+        '<h3 style="margin:0 0 4px;font-size:15px">Edit feedback</h3>' +
+        '<div class="an-muted" style="margin-bottom:10px">From ' + escAn(f.learner) + ' · ' + escAn(f.about || "") + '</div>' +
+        '<div style="margin:8px 0"><label style="font-size:12.5px;font-weight:600;display:block;margin-bottom:3px">Trainer</label>' +
+        '<select id="anFb_trainer" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:8px;font-size:13px">' + opts + '</select></div>' +
+        starSel("Trainer rating", "trainer_rating", f.trainer_rating) +
+        starSel("Content rating", "content_rating", f.content_rating) +
+        starSel("Course rating", "course_rating", f.course_rating) +
+        '<div style="display:flex;justify-content:space-between;margin-top:16px">' +
+        '<button class="an-pill" style="color:#b4231d;border-color:#f0c9c9" onclick="window.__anDeleteFb(' + id + ')">Delete</button>' +
+        '<div style="display:flex;gap:8px">' +
+        '<button class="an-pill" onclick="document.getElementById(\'anFbEditOv\').remove()">Cancel</button>' +
+        '<button class="an-pill" style="background:var(--mg-blue);color:#fff;border-color:var(--mg-blue)" onclick="window.__anSaveFb(' + id + ')">Save</button>' +
+        '</div></div></div>';
+    };
+    if (AN._trainers) { buildPopup(AN._trainers); }
+    else {
+      getJAn("/api/analytics/rating/trainers-list").then(function (d) {
+        AN._trainers = (d && d.ok && d.trainers) ? d.trainers : [];
+        buildPopup(AN._trainers);
+      });
+    }
+  };
+
+  window.__anSaveFb = function (id) {
+    var body = { id: id };
+    var tr = $an("anFb_trainer"); if (tr) body.trainer_id = tr.value;
+    ["trainer_rating", "content_rating", "course_rating"].forEach(function (k) {
+      var el = $an("anFb_" + k); if (el) body[k] = parseInt(el.value, 10);
+    });
+    fetch("/api/analytics/rating/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        var ov = $an("anFbEditOv"); if (ov) ov.remove();
+        if (r && r.ok) { renderFeedback(); } else { alert((r && r.msg) || "Could not save."); }
+      });
+  };
+
+  window.__anDeleteFb = function (id) {
+    if (!confirm("Delete this feedback permanently?")) return;
+    fetch("/api/analytics/rating/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: id }) })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        var ov = $an("anFbEditOv"); if (ov) ov.remove();
+        if (r && r.ok) { renderFeedback(); } else { alert((r && r.msg) || "Could not delete."); }
+      });
+  };
 
   // ---- entry point (called by switchTab('an')) ----
   window.loadAnalytics = function () {
