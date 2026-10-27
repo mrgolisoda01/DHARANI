@@ -15,9 +15,7 @@
     "#tcRoot{width:100%;box-sizing:border-box}",
     "#tcRoot #tcBody{width:100%;box-sizing:border-box}",
     "#tcRoot .pcards{width:100%;box-sizing:border-box}",
-    "#tcRoot .card{width:100%;box-sizing:border-box}",
     "#tcRoot .card>div{width:100%;box-sizing:border-box}",
-    "#tcRoot table{width:100%}",
     "#tcRoot .subtabs{display:flex;gap:4px;border-bottom:1px solid var(--mg-line,#e3e8ee);margin-bottom:14px;flex-wrap:wrap}",
     "#tcRoot .subtab{border:none;background:none;padding:10px 14px;font-size:13.5px;font-weight:600;color:#62707a;cursor:pointer;border-bottom:3px solid transparent;font-family:inherit}",
     "#tcRoot .subtab.on{color:var(--mg-blue,#1F5FA9);border-bottom-color:var(--mg-blue,#1F5FA9)}",
@@ -45,7 +43,10 @@
     "#tcRoot .pbar .pn{width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#42515c}",
     "#tcRoot .pbar .pt{flex:1;height:16px;background:#eef2f5;border-radius:8px;overflow:hidden}",
     "#tcRoot .pbar .pt i{display:block;height:100%}",
-    "#tcRoot .pbar .pvv{width:46px;text-align:right;font-weight:800;color:#12284B}"
+    "#tcRoot .pbar .pvv{width:46px;text-align:right;font-weight:800;color:#12284B}",
+    // --- width overrides (LAST so they win over the global .card max-width cap) ---
+    "#tcRoot .card{width:100%!important;max-width:none!important;box-sizing:border-box}",
+    "#tcRoot table{width:100%!important;min-width:0!important}"
   ].join("\n");
   document.head.appendChild(css);
 
@@ -185,10 +186,32 @@
         '<br><span style="font-size:12px;color:#62707a">'+esc((it.kind||"").toUpperCase())+' · '+esc(it.module_title||"module")+'</span></div>'+
         '<div style="text-align:right;white-space:nowrap">'+actions+'</div></div>';
     }).join("") : '<div class="empty" style="padding:16px">'+(d.is_admin?"Nothing waiting for approval.":"You haven\'t marked any training yet.")+'</div>';
-    shell(rows);
+    // bulk bar — admin only, when there are pending items
+    var pendingIds = items.filter(function(it){ return it.status==="pending"; }).map(function(it){ return it.id; });
+    var bulkBar = "";
+    if(d.is_admin && pendingIds.length){
+      bulkBar = '<div style="display:flex;justify-content:flex-end;gap:8px;margin:0 0 10px">'+
+        '<button class="btn ok" id="tcApproveAll" style="padding:5px 14px;font-size:12.5px">✓ Approve all ('+pendingIds.length+')</button>'+
+        '<button class="btn no" id="tcRejectAll" style="padding:5px 14px;font-size:12.5px">Reject all</button></div>';
+    }
+    shell(bulkBar + rows);
     $("tcRoot").querySelectorAll("[data-ap]").forEach(function(b){ b.addEventListener("click", function(){ resolve(b.dataset.ap,"approve"); }); });
     $("tcRoot").querySelectorAll("[data-rj]").forEach(function(b){ b.addEventListener("click", function(){ resolve(b.dataset.rj,"reject"); }); });
     $("tcRoot").querySelectorAll("[data-del]").forEach(function(b){ b.addEventListener("click", function(){ if(confirm("Remove this record?")) delRec(b.dataset.del); }); });
+    var aAll=$("tcApproveAll"); if(aAll) aAll.addEventListener("click", function(){ resolveAllTc(pendingIds,"approve"); });
+    var rAll=$("tcRejectAll"); if(rAll) rAll.addEventListener("click", function(){ resolveAllTc(pendingIds,"reject"); });
+  }
+  async function resolveAllTc(ids, decision){
+    if(!ids || !ids.length){ note("Nothing to "+decision+"."); return; }
+    var verb = decision==="approve" ? "Approve" : "Reject";
+    if(!confirm(verb+" all "+ids.length+" training record(s)?")) return;
+    var ok=0, fail=0;
+    for(var i=0;i<ids.length;i++){
+      var r = await postJ("/api/training/resolve",{id:ids[i],decision:decision});
+      if(r && r.ok) ok++; else fail++;
+    }
+    note(verb+"d "+ok+(fail?(" · "+fail+" failed"):"")+".");
+    renderPending();
   }
   async function resolve(id,decision){ var r=await postJ("/api/training/resolve",{id:id,decision:decision}); if(r.ok){note(r.msg||"Done.");renderPending();}else note(r.msg||"Failed."); }
   async function delRec(id){ var r=await postJ("/api/training/delete",{id:id}); if(r.ok){note("Removed.");renderPending();}else note(r.msg||"Failed."); }
