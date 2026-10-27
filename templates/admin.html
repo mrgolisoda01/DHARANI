@@ -738,6 +738,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
   <div class="toast" id="toast"></div>
 
+  <script src="{{ url_for('static', filename='js/ui-busy.js') }}"></script>
   <script src="{{ url_for('static', filename='js/brand_assets.js') }}"></script>
   <script>
     // who is logged in — used to hide admin-only actions from instructors
@@ -970,6 +971,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       try{ d = await (await fetch('/api/admin/all-approvals')).json(); }
       catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
       if(!d.ok){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
+      window.APPR_DATA = d;  // stash for bulk approve/reject
 
       const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       const b = document.getElementById('apprBadge');
@@ -980,9 +982,18 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         return;
       }
 
-      function card(title, colour, bodyHtml){
+      function card(title, colour, bodyHtml, bulkKey){
+        let bulk = '';
+        if(bulkKey){
+          bulk = `<div style="display:flex;gap:6px">
+            <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75;border-color:#bfe6d3" onclick="apprBulk('${bulkKey}','approve')">✓ Approve all</button>
+            <button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprBulk('${bulkKey}','reject')">Reject all</button>
+          </div>`;
+        }
         return `<div style="background:#fff;border:1px solid var(--mg-line);border-left:4px solid ${colour};border-radius:12px;padding:16px;margin-bottom:14px">
-          <h3 style="font-size:14.5px;margin:0 0 10px;color:${colour}">${title}</h3>${bodyHtml}</div>`;
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px">
+            <h3 style="font-size:14.5px;margin:0;color:${colour}">${title}</h3>${bulk}
+          </div>${bodyHtml}</div>`;
       }
       function rowWrap(left, buttons){
         return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--mg-line);flex-wrap:wrap">
@@ -999,7 +1010,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
                      + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprRejectEmployee('${esc(e.emp_id)}')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('👥 New employees ('+d.employees.length+')', '#1f5fa9', rows);
+        html += card('👥 New employees ('+d.employees.length+')', '#1f5fa9', rows, 'employees');
       }
 
       // Content: modules, videos, certs
@@ -1027,7 +1038,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('cert',${c.id})">Decline</button>`)));
       if(contentRows.length){
-        html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''));
+        html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''), 'content');
       }
 
       // Edit requests (old stays live until approved)
@@ -1054,7 +1065,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
                      + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('🗑 Delete / resign requests ('+d.deletes.length+')', '#e24b4a', rows);
+        html += card('🗑 Delete / resign requests ('+d.deletes.length+')', '#e24b4a', rows, 'deletes');
       }
 
       // Question add / replace / clear requests (instructor -> admin)
@@ -1072,10 +1083,61 @@ Priya S,MG087,9876500000,State Head,"></textarea>
                 + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('📝 Question change requests ('+d.question_changes.length+')', '#c9a227', rows);
+        html += card('📝 Question change requests ('+d.question_changes.length+')', '#c9a227', rows, 'questions');
       }
 
       box.innerHTML = html;
+    }
+
+    // ---- Bulk approve / reject for a whole section ----
+    async function apprBulk(section, decision){
+      const d = window.APPR_DATA || {};
+      const post = (url, body)=> fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>({ok:false}));
+
+      // build the list of per-item calls for this section
+      let calls = [], label = '';
+      if(section === 'employees'){
+        const list = d.employees||[];
+        label = list.length + ' employee' + (list.length!==1?'s':'');
+        calls = list.map(e => decision==='approve'
+          ? ()=>post('/api/approve',{emp_id:e.emp_id})
+          : ()=>post('/api/reject',{emp_id:e.emp_id}));
+      } else if(section === 'content'){
+        const mods=(d.modules||[]), vids=(d.videos||[]), ass=(d.assessments||[]), crt=(d.certs||[]);
+        label = (mods.length+vids.length+ass.length+crt.length) + ' content item(s)';
+        if(decision==='approve'){
+          calls = calls.concat(ass.map(a=>()=>post('/api/admin/approve-assessment',{id:a.id})));
+          calls = calls.concat(mods.map(m=>()=>post('/api/admin/approve-module',{id:m.id})));
+          calls = calls.concat(vids.map(v=>()=>post('/api/admin/approve-video',{id:v.id})));
+          calls = calls.concat(crt.map(c=>()=>post('/api/admin/approve-cert-track',{id:c.id})));
+        } else {
+          calls = calls.concat(ass.map(a=>()=>post('/api/admin/decline-assessment',{id:a.id})));
+          calls = calls.concat(mods.map(m=>()=>post('/api/admin/decline-content',{kind:'module',id:m.id})));
+          calls = calls.concat(vids.map(v=>()=>post('/api/admin/decline-content',{kind:'video',id:v.id})));
+          calls = calls.concat(crt.map(c=>()=>post('/api/admin/decline-content',{kind:'cert',id:c.id})));
+        }
+      } else if(section === 'deletes'){
+        const list = d.deletes||[];
+        label = list.length + ' delete/resign request(s)';
+        calls = list.map(a => ()=>post('/api/admin/resolve-action',{id:a.id,decision}));
+      } else if(section === 'questions'){
+        const list = d.question_changes||[];
+        label = list.length + ' question-change request(s)';
+        calls = list.map(a => ()=>post('/api/admin/resolve-action',{id:a.id,decision}));
+      }
+
+      if(!calls.length){ toast('Nothing to '+decision+'.'); return; }
+      const verb = decision==='approve' ? 'Approve' : 'Reject';
+      if(!confirm(verb + ' all ' + label + '?')) return;
+
+      // run sequentially so the server isn't hammered; count results
+      let ok=0, fail=0;
+      for(const c of calls){
+        const r = await c();
+        if(r && r.ok) ok++; else fail++;
+      }
+      toast(verb+'d '+ok+(fail?(' · '+fail+' failed'):'')+'.');
+      loadApprovals();
     }
 
     async function apprApproveEmployee(emp_id){
