@@ -227,17 +227,22 @@ def api_analytics_activity():
     names = _name_map(db)
 
     events = []
+    totals = {"induction": 0, "training": 0, "assess_pass": 0, "assess_fail": 0,
+              "videos": 0, "certs": 0, "ojt_calls": 0}
 
-    # module completions
+    # module completions (split induction vs training)
     for r in db.execute(
         "SELECT mc.emp_id, mc.completed_at, cm.title, cm.kind "
         "FROM module_completions mc LEFT JOIN content_modules cm ON cm.id=mc.module_id "
         "WHERE mc.completed_at >= ? ORDER BY mc.completed_at DESC", (since_iso,)
     ).fetchall():
+        kind = (r["kind"] or "module").lower()
+        group = "induction" if kind == "induction" else "training"
+        totals[group] = totals.get(group, 0) + 1
         events.append({
             "when": _ist(r["completed_at"]), "ts": str(r["completed_at"]),
             "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
-            "type": "module", "detail": (r["kind"] or "module").title() + ": " + (r["title"] or ""),
+            "type": group, "detail": (r["title"] or "module"),
             "result": "Completed",
         })
 
@@ -248,10 +253,11 @@ def api_analytics_activity():
             "FROM video_completions vc LEFT JOIN videos v ON v.id=vc.video_id "
             "WHERE vc.completed_at >= ? ORDER BY vc.completed_at DESC", (since_iso,)
         ).fetchall():
+            totals["videos"] += 1
             events.append({
                 "when": _ist(r["completed_at"]), "ts": str(r["completed_at"]),
                 "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
-                "type": "video", "detail": "Video: " + (r["title"] or ""),
+                "type": "video", "detail": (r["title"] or "video"),
                 "result": "Watched",
             })
 
@@ -261,15 +267,56 @@ def api_analytics_activity():
         "FROM assessment_results r LEFT JOIN assessments a ON a.id=r.assessment_id "
         "WHERE r.taken_at >= ? ORDER BY r.taken_at DESC", (since_iso,)
     ).fetchall():
+        if r["passed"]:
+            totals["assess_pass"] += 1
+        else:
+            totals["assess_fail"] += 1
         events.append({
             "when": _ist(r["taken_at"]), "ts": str(r["taken_at"]),
             "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
-            "type": "assessment", "detail": "Assessment: " + (r["title"] or ""),
+            "type": "assessment", "detail": (r["title"] or "assessment"),
             "result": ("PASS " if r["passed"] else "FAIL ") + str(r["percent"]) + "%",
+            "passed": bool(r["passed"]),
         })
 
+    # certificates issued
+    for r in db.execute(
+        "SELECT emp_id, cert_name, issued_at FROM issued_certificates "
+        "WHERE issued_at >= ? ORDER BY issued_at DESC", (since_iso,)
+    ).fetchall():
+        totals["certs"] += 1
+        events.append({
+            "when": _ist(r["issued_at"]), "ts": str(r["issued_at"]),
+            "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
+            "type": "cert", "detail": (r["cert_name"] or "Certificate"),
+            "result": "Issued",
+        })
+
+    # OJT calls (trainer -> learner), via enrollment
+    if _table_exists(db, "ojt_calls"):
+        try:
+            for r in db.execute(
+                "SELECT oc.called_by, oc.called_at, oc.outcome, oc.day_no, "
+                "       e.emp_id AS learner_id "
+                "FROM ojt_calls oc LEFT JOIN ojt_enrollments e ON e.id=oc.enrollment_id "
+                "WHERE oc.called_at >= ? ORDER BY oc.called_at DESC", (since_iso,)
+            ).fetchall():
+                totals["ojt_calls"] += 1
+                caller = names.get(r["called_by"], r["called_by"] or "")
+                learner = names.get(r["learner_id"], r["learner_id"] or "")
+                events.append({
+                    "when": _ist(r["called_at"]), "ts": str(r["called_at"]),
+                    "emp_id": r["learner_id"], "name": learner,
+                    "type": "ojt_call",
+                    "detail": "Day " + str(r["day_no"] or "") + " call" + (" · " + caller if caller else ""),
+                    "result": (r["outcome"] or "Called"),
+                })
+        except Exception:
+            pass
+
     events.sort(key=lambda e: e["ts"], reverse=True)
-    return jsonify(ok=True, range=rng, count=len(events), events=events[:500])
+    return jsonify(ok=True, range=rng, count=len(events),
+                   totals=totals, events=events[:800])
 
 
 # ===============================================================
