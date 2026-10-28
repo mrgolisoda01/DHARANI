@@ -770,6 +770,13 @@ function openCourseRating(assessmentId, title){
   $('rtModal').classList.add('show');
 }
 
+// Close/skip the feedback popup (optional). If a login catch-up queue is
+// running, skipping closes the whole queue for this session.
+function closeRating(){
+  $('rtModal').classList.remove('show');
+  if(RT_QUEUE && RT_QUEUE.active){ RT_QUEUE.active = false; }
+}
+
 async function submitRating(){
   const comment = ($('rtComment') && $('rtComment').value || '').trim();
   let body;
