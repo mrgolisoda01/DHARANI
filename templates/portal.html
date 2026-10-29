@@ -358,7 +358,10 @@
      (Induction / Training / Assessments / Videos) stay open so they can train. -->
 <script>
   (function(){
-    window.IS_ACTIVATED = {{ 'true' if (user['activated'] if 'activated' in user.keys() else 0) else 'false' }};
+    // Unlocked if an admin manually activated the account, OR the learner has
+    // finished all training assigned to their role (auto-unlock). Either one opens
+    // the field tabs — so completing training needs no admin step.
+    window.IS_ACTIVATED = {{ 'true' if ((user['activated'] if 'activated' in user.keys() else 0) or (training_done | default(false))) else 'false' }};
     window.IS_STAFF = {{ 'false' if user['role'] in ('admin','instructor') else 'true' }};
     // admins/instructors are never gated
     var GATED = (window.IS_STAFF && !window.IS_ACTIVATED);
@@ -381,8 +384,8 @@
         '<div style="font-size:40px;margin-bottom:10px">🔒</div>'+
         '<h3 style="margin:0 0 8px;color:var(--mg-ink)">Complete your training to unlock</h3>'+
         '<p style="margin:0;color:var(--muted);font-size:14px;line-height:1.6">'+
-        'This section opens once your training is completed and your account is activated by the L&amp;D team. '+
-        'Meanwhile, please finish your <b>Induction</b>, <b>Training</b> and <b>Assessments</b> from the tabs above.</p>'+
+        'This section unlocks automatically once you finish all your <b>Induction</b> and <b>Training</b> modules '+
+        'and pass all your <b>Assessments</b> from the tabs above. Complete those and this opens on your next sign-in.</p>'+
         '</div>';
     }
 
