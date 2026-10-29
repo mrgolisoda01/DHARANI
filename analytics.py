@@ -535,7 +535,17 @@ def api_analytics_trainer_detail():
 @analytics_bp.route("/api/analytics/overview")
 @_staff_only
 def api_analytics_overview():
+    import time as _time
+    _dbg = request.args.get("debug")
+    _marks = []
+    _t0 = _time.perf_counter()
+
+    def _mark(label):
+        if _dbg:
+            _marks.append({"step": label, "ms": round((_time.perf_counter() - _t0) * 1000)})
+
     db = _get_db()
+    _mark("get_db")
     today = _today_ist()
     today_iso = today.isoformat()
     week_iso = (today - timedelta(days=7)).isoformat()
@@ -546,8 +556,23 @@ def api_analytics_overview():
         except Exception:
             return 0
 
-    # ---- top KPI cards ----
-    total_staff = _count("SELECT COUNT(*) c FROM users WHERE status='approved' AND role='staff'")
+    # ---- all users-table counts in ONE query (was 4 separate round-trips) ----
+    # conditional aggregation: total approved staff, enrolled today, ever
+    # logged in, logged in today — computed together.
+    _ur = {}
+    try:
+        _ur = db.execute(
+            "SELECT "
+            " COUNT(*) FILTER (WHERE status='approved' AND role='staff') total_staff, "
+            " COUNT(*) FILTER (WHERE role='staff' AND created_at >= ?) enrolled_today, "
+            " COUNT(*) FILTER (WHERE role='staff' AND status='approved' "
+            "                  AND last_login IS NOT NULL AND last_login<>'') logged_in, "
+            " COUNT(*) FILTER (WHERE role='staff' AND last_login >= ?) logged_in_today "
+            "FROM users", (today_iso, today_iso)
+        ).fetchone()
+    except Exception:
+        _ur = {}
+    total_staff = _rowget(_ur, "total_staff", 0) or 0
 
     # active this week = did any module/assessment/video in last 7 days
     active_ids = set()
@@ -567,6 +592,7 @@ def api_analytics_overview():
         except Exception:
             pass
     active_week = len(active_ids)
+    _mark("active_week")
 
     # induction & training completion rate (completed vs expected, staff only)
     def _completion_rate(kind):
@@ -585,6 +611,7 @@ def api_analytics_overview():
 
     induction_rate = _completion_rate("induction")
     training_rate = _completion_rate("training")
+    _mark("completion_rates")
 
     # average assessment score (best attempt per learner-assessment, staff)
     avg_score = 0
@@ -598,39 +625,43 @@ def api_analytics_overview():
             avg_score = round(sum(x["best"] for x in rows) / len(rows))
     except Exception:
         avg_score = 0
+    _mark("avg_score")
 
     total_certs = _count("SELECT COUNT(*) c FROM issued_certificates")
 
-    # ---- onboarding pulse (today) ----
-    enrolled_today = _count(
-        "SELECT COUNT(*) c FROM users WHERE role='staff' AND created_at >= ?", (today_iso,))
+    # ---- onboarding pulse (today) — reuse the combined users query above ----
+    enrolled_today = _rowget(_ur, "enrolled_today", 0) or 0
     approved_total = total_staff
-    # logged in at least once vs never (approved staff)
-    logged_in = _count(
-        "SELECT COUNT(*) c FROM users WHERE role='staff' AND status='approved' AND last_login IS NOT NULL AND last_login<>''")
+    logged_in = _rowget(_ur, "logged_in", 0) or 0
     never_logged = max(0, total_staff - logged_in)
-    # logged in today
-    logged_in_today = _count(
-        "SELECT COUNT(*) c FROM users WHERE role='staff' AND last_login >= ?", (today_iso,))
+    logged_in_today = _rowget(_ur, "logged_in_today", 0) or 0
+    _mark("pulse")
 
     # ---- completion funnel (staff) ----
+    # both module-completion funnels in ONE query (conditional distinct count);
+    # was 2 separate round-trips.
     funnel_enrolled = total_staff
-    # did >=1 induction module
-    funnel_induction = _count(
-        "SELECT COUNT(DISTINCT mc.emp_id) c FROM module_completions mc "
-        "JOIN content_modules cm ON cm.id=mc.module_id "
-        "JOIN users u ON u.emp_id=mc.emp_id "
-        "WHERE cm.kind='induction' AND cm.status='live' AND u.role='staff'")
-    # did >=1 training module
-    funnel_training = _count(
-        "SELECT COUNT(DISTINCT mc.emp_id) c FROM module_completions mc "
-        "JOIN content_modules cm ON cm.id=mc.module_id "
-        "JOIN users u ON u.emp_id=mc.emp_id "
-        "WHERE cm.kind<>'induction' AND cm.status='live' AND u.role='staff'")
+    funnel_induction = 0
+    funnel_training = 0
+    try:
+        _fr = db.execute(
+            "SELECT "
+            " COUNT(DISTINCT mc.emp_id) FILTER (WHERE cm.kind='induction') ind, "
+            " COUNT(DISTINCT mc.emp_id) FILTER (WHERE cm.kind<>'induction') trn "
+            "FROM module_completions mc "
+            "JOIN content_modules cm ON cm.id=mc.module_id "
+            "JOIN users u ON u.emp_id=mc.emp_id "
+            "WHERE cm.status='live' AND u.role='staff'"
+        ).fetchone()
+        funnel_induction = _rowget(_fr, "ind", 0) or 0
+        funnel_training = _rowget(_fr, "trn", 0) or 0
+    except Exception:
+        pass
     # earned >=1 certificate
     funnel_certified = _count(
         "SELECT COUNT(DISTINCT ic.emp_id) c FROM issued_certificates ic "
         "JOIN users u ON u.emp_id=ic.emp_id WHERE u.role='staff'")
+    _mark("funnel")
 
     # ---- 30-day trend (completions + assessments per day) ----
     # One grouped query each (instead of 60 per-day round-trips). Timestamps
@@ -663,9 +694,11 @@ def api_analytics_overview():
         trend.append({"date": day.strftime("%d %b"),
                       "completions": comp_by_day.get(key, 0),
                       "assessments": ass_by_day.get(key, 0)})
+    _mark("trend")
 
     # ---- needs attention ----
     names = _name_map(db)
+    _mark("name_map")
     attention = []
     # inactive 7+ days (approved staff who did nothing in last 7 days, but have logged in before)
     try:
@@ -679,6 +712,7 @@ def api_analytics_overview():
     except Exception:
         pass
     attention = attention[:12]
+    _mark("attention")
     # repeat failers: >=3 failed attempts on the same assessment, none passed.
     # Single query: the "never passed" check is a NOT EXISTS, so no per-row
     # round-trip (was 1 extra query per failing group).
@@ -698,6 +732,23 @@ def api_analytics_overview():
                 "assessment": r["title"], "fails": r["fails"]})
     except Exception:
         pass
+    _mark("repeat_failers")
+
+    completions_today = _count("SELECT COUNT(*) c FROM module_completions WHERE completed_at >= ?", (today_iso,))
+    # both assessment 'today' counts in one query
+    assessments_today = 0
+    passed_today = 0
+    try:
+        _at = db.execute(
+            "SELECT COUNT(*) total, COUNT(*) FILTER (WHERE passed=1) passed "
+            "FROM assessment_results WHERE taken_at >= ?", (today_iso,)
+        ).fetchone()
+        assessments_today = _rowget(_at, "total", 0) or 0
+        passed_today = _rowget(_at, "passed", 0) or 0
+    except Exception:
+        pass
+    certs_today = _count("SELECT COUNT(*) c FROM issued_certificates WHERE issued_at >= ?", (today_iso,))
+    _mark("today_cards")
 
     return jsonify(
         ok=True,
@@ -709,10 +760,10 @@ def api_analytics_overview():
             "avg_score": avg_score,
             "total_certs": total_certs,
             # today cards
-            "completions_today": _count("SELECT COUNT(*) c FROM module_completions WHERE completed_at >= ?", (today_iso,)),
-            "assessments_today": _count("SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ?", (today_iso,)),
-            "passed_today": _count("SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ? AND passed=1", (today_iso,)),
-            "certs_today": _count("SELECT COUNT(*) c FROM issued_certificates WHERE issued_at >= ?", (today_iso,)),
+            "completions_today": completions_today,
+            "assessments_today": assessments_today,
+            "passed_today": passed_today,
+            "certs_today": certs_today,
         },
         pulse={
             "enrolled_today": enrolled_today,
@@ -730,6 +781,8 @@ def api_analytics_overview():
         trend=trend,
         attention=attention,
         repeat_failers=repeat_failers,
+        _debug=({"total_ms": round((_time.perf_counter() - _t0) * 1000),
+                 "steps": _marks} if _dbg else None),
     )
 
 
