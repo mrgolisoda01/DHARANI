@@ -58,7 +58,8 @@
         '<button class="an-pill" id="anTabOv" onclick="window.__anView(\'overview\')">📊 Overview</button>' +
         '<button class="an-pill" id="anTabEmp" onclick="window.__anView(\'employee\')">👤 Employee</button>' +
         '<button class="an-pill" id="anTabAct" onclick="window.__anView(\'activity\')">🕒 Activity</button>' +
-        '<button class="an-pill" id="anTabTr" onclick="window.__anView(\'trainers\')">🧑‍🏫 Trainers</button>' +
+        '<button class="an-pill" id="anTabTr" onclick="window.__anView(\'trainers\')">🧑‍🏫 ' +
+          (window.IS_ADMIN ? 'Trainers' : 'My Performance') + '</button>' +
         '<button class="an-pill" id="anTabFb" onclick="window.__anView(\'feedback\')">💬 Feedback</button>' +
       '</div>' +
       '<div id="anViewBox"></div>';
@@ -403,6 +404,9 @@
   }
 
   function renderTrainers() {
+    // Trainers (instructors) see ONLY their own performance; admin sees all.
+    if (!window.IS_ADMIN) return renderMyPerformance();
+
     var box = $an("anViewBox");
     box.innerHTML = '<div id="anTrBody"><div class="an-empty">Loading…</div></div>';
     getJAn("/api/analytics/trainers").then(function (d) {
@@ -445,7 +449,50 @@
     });
   }
 
-  // drill-in for one trainer
+  // shared detail block (learners + modules + comments) used by the admin
+  // drill-in AND the trainer's own "My Performance" view.
+  function _trainerDetailHTML(d) {
+    var html = "";
+    // learners
+    html += '<div class="an-sect"><h4>Learners trained (' + (d.learners || []).length + ')</h4>';
+    if ((d.learners || []).length) {
+      html += '<table><thead><tr><th>Learner</th><th>Best score</th><th>Passed</th><th>Attempts</th></tr></thead><tbody>' +
+        d.learners.map(function (l) {
+          return '<tr><td>' + escAn(l.name) + '</td>' +
+            '<td>' + (l.best == null ? '—' : l.best + '%') + '</td>' +
+            '<td>' + (l.passed ? '<span class="tag t-pass">Yes</span>' : '<span class="tag t-fail">No</span>') + '</td>' +
+            '<td>' + l.attempts + '</td></tr>';
+        }).join("") + '</tbody></table>';
+    } else { html += '<div class="an-empty">No learners.</div>'; }
+    html += '</div>';
+
+    // modules
+    html += '<div class="an-sect"><h4>Modules delivered (' + (d.modules || []).length + ')</h4>';
+    if ((d.modules || []).length) {
+      html += '<table><thead><tr><th>Module</th><th>Learners</th></tr></thead><tbody>' +
+        d.modules.map(function (m) {
+          return '<tr><td>' + escAn(m.title) + '</td><td>' + m.learners + '</td></tr>';
+        }).join("") + '</tbody></table>';
+    } else { html += '<div class="an-empty">No modules.</div>'; }
+    html += '</div>';
+
+    // comments
+    html += '<div class="an-sect"><h4>Feedback comments (' + (d.comments || []).length + ')</h4>';
+    if ((d.comments || []).length) {
+      html += d.comments.map(function (c) {
+        return '<div style="border:1px solid var(--mg-line);border-radius:8px;padding:10px;margin-bottom:8px;background:#fafdff">' +
+          '<div style="font-size:13px">"' + escAn(c.comment) + '"</div>' +
+          '<div class="an-muted" style="margin-top:4px">— ' + escAn(c.learner) +
+          (c.module ? ' · ' + escAn(c.module) : '') +
+          (c.trainer_rating ? ' · ' + c.trainer_rating + '★' : '') +
+          ' · ' + escAn(c.when) + '</div></div>';
+      }).join("");
+    } else { html += '<div class="an-empty">No written feedback yet.</div>'; }
+    html += '</div>';
+    return html;
+  }
+
+  // drill-in for one trainer (admin)
   window.__anTrainer = function (tid) {
     var box = $an("anViewBox");
     box.innerHTML = '<div class="an-sect"><button class="an-pill" onclick="window.__anView(\'trainers\')">‹ Back to trainers</button></div>' +
@@ -457,47 +504,62 @@
       var html = '<div class="an-sect"><h4>' + escAn(d.trainer) + '</h4>' +
         '<div class="an-muted">Trainer rating: ' + starTxt(r.trainer_avg, r.n) +
         ' &nbsp;·&nbsp; Content rating: ' + starTxt(r.content_avg, 0) + '</div></div>';
-
-      // learners
-      html += '<div class="an-sect"><h4>Learners trained (' + (d.learners || []).length + ')</h4>';
-      if ((d.learners || []).length) {
-        html += '<table><thead><tr><th>Learner</th><th>Best score</th><th>Passed</th><th>Attempts</th></tr></thead><tbody>' +
-          d.learners.map(function (l) {
-            return '<tr><td>' + escAn(l.name) + '</td>' +
-              '<td>' + (l.best == null ? '—' : l.best + '%') + '</td>' +
-              '<td>' + (l.passed ? '<span class="tag t-pass">Yes</span>' : '<span class="tag t-fail">No</span>') + '</td>' +
-              '<td>' + l.attempts + '</td></tr>';
-          }).join("") + '</tbody></table>';
-      } else { html += '<div class="an-empty">No learners.</div>'; }
-      html += '</div>';
-
-      // modules
-      html += '<div class="an-sect"><h4>Modules delivered (' + (d.modules || []).length + ')</h4>';
-      if ((d.modules || []).length) {
-        html += '<table><thead><tr><th>Module</th><th>Learners</th></tr></thead><tbody>' +
-          d.modules.map(function (m) {
-            return '<tr><td>' + escAn(m.title) + '</td><td>' + m.learners + '</td></tr>';
-          }).join("") + '</tbody></table>';
-      } else { html += '<div class="an-empty">No modules.</div>'; }
-      html += '</div>';
-
-      // comments
-      html += '<div class="an-sect"><h4>Feedback comments (' + (d.comments || []).length + ')</h4>';
-      if ((d.comments || []).length) {
-        html += d.comments.map(function (c) {
-          return '<div style="border:1px solid var(--mg-line);border-radius:8px;padding:10px;margin-bottom:8px;background:#fafdff">' +
-            '<div style="font-size:13px">"' + escAn(c.comment) + '"</div>' +
-            '<div class="an-muted" style="margin-top:4px">— ' + escAn(c.learner) +
-            (c.module ? ' · ' + escAn(c.module) : '') +
-            (c.trainer_rating ? ' · ' + c.trainer_rating + '★' : '') +
-            ' · ' + escAn(c.when) + '</div></div>';
-        }).join("");
-      } else { html += '<div class="an-empty">No written feedback yet.</div>'; }
-      html += '</div>';
-
-      el.innerHTML = html;
+      el.innerHTML = html + _trainerDetailHTML(d);
     });
   };
+
+  // ===================== MY PERFORMANCE (trainer's own view) =====================
+  function renderMyPerformance() {
+    var box = $an("anViewBox");
+    box.innerHTML = '<div id="anMyBody"><div class="an-empty">Loading…</div></div>';
+    // 1) own KPI summary card, then 2) own detail (learners/modules/comments)
+    getJAn("/api/analytics/my-trainer").then(function (d) {
+      var body = $an("anMyBody");
+      if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
+      var m = d.me || {};
+      var w = d.kpi_weights || {};
+
+      // big KPI card
+      var html = '<div class="an-sect" style="text-align:center">' +
+        '<div class="an-muted" style="margin-bottom:6px">My KPI score</div>' +
+        '<div style="font-size:52px;font-weight:800;line-height:1;color:' + kpiColor(m.kpi_score) + '">' + (m.kpi_score || 0) + '</div>' +
+        '<div class="an-muted" style="margin-top:6px">out of 100' +
+        (m.low_data ? ' · <span class="tag t-no">low data</span>' : '') + '</div>' +
+        '<div class="an-muted" style="margin-top:10px;font-size:11.5px">Pass ' + (w.pass||30) + '% · Avg score ' + (w.score||20) +
+        '% · First-attempt ' + (w.first_attempt||20) + '% · Rating ' + (w.rating||20) + '% · Engagement ' + (w.engagement||10) + '%</div>' +
+        '</div>';
+
+      // my metrics row
+      html += '<div class="an-cards">' +
+        anCard(m.pass_rate == null ? '—' : m.pass_rate + '%', 'Pass rate') +
+        anCard(m.avg_score == null ? '—' : m.avg_score + '%', 'Avg learner score') +
+        anCard(m.first_attempt_rate == null ? '—' : m.first_attempt_rate + '%', '1st-attempt pass') +
+        anCard(m.learners || 0, 'Learners trained') +
+        anCard(m.deliveries || 0, 'Modules delivered') +
+        anCard(m.ojt_calls || 0, 'OJT calls') +
+      '</div>';
+
+      // my ratings
+      html += '<div class="an-sect"><h4>⭐ My ratings from learners</h4>' +
+        '<div class="an-muted">Trainer rating: ' + starTxt(m.trainer_rating, m.trainer_rating_n) +
+        ' &nbsp;·&nbsp; Content rating: ' + starTxt(m.content_rating, 0) + '</div></div>';
+
+      body.innerHTML = html + '<div id="anMyDetail"><div class="an-empty">Loading your learners & feedback…</div></div>';
+
+      // 2) reuse the drill-in detail for myself
+      getJAn("/api/analytics/trainer?id=" + encodeURIComponent(m.trainer_id)).then(function (dd) {
+        var el = $an("anMyDetail");
+        if (!el) return;
+        if (!dd || !dd.ok) { el.innerHTML = '<div class="an-empty">Could not load your details.</div>'; return; }
+        el.innerHTML = _trainerDetailHTML(dd);
+      });
+    });
+  }
+
+  // small stat card helper (used by My Performance)
+  function anCard(n, label) {
+    return '<div class="an-card"><div class="n">' + escAn(n) + '</div><div class="l">' + escAn(label) + '</div></div>';
+  }
 
   // ===================== FEEDBACK =====================
   function renderFeedback() {
