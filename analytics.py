@@ -369,34 +369,47 @@ def api_analytics_trainers():
     max_calls = max(calls_map.values()) if calls_map else 0
     max_deliveries = max((s["deliveries"] for s in stats.values()), default=0)
 
+    # ---- per-learner assessment aggregates, computed ONCE for everyone ----
+    # (was 2 queries per trainer; now 2 queries total, rolled up in Python).
+    # Only need learners that appear in some delivery.
+    all_learners = set()
+    for s in stats.values():
+        all_learners |= s["learners"]
+
+    best_rows = []     # (emp_id, assessment_id) -> {"best","passed"} (best attempt)
+    first_pass = {}    # (emp_id, assessment_id) -> 1/0 (earliest attempt passed?)
+    if all_learners:
+        lids = list(all_learners)
+        ph = ",".join("?" * len(lids))
+        for r in db.execute(
+            "SELECT emp_id, assessment_id, MAX(percent) best, "
+            "MAX(CASE WHEN passed=1 THEN 1 ELSE 0 END) passed "
+            "FROM assessment_results WHERE emp_id IN (" + ph + ") "
+            "GROUP BY emp_id, assessment_id", lids
+        ).fetchall():
+            best_rows.append((r["emp_id"], r["assessment_id"], r["best"], r["passed"]))
+        for r in db.execute(
+            "SELECT emp_id, assessment_id, passed FROM assessment_results r1 "
+            "WHERE emp_id IN (" + ph + ") AND id = ("
+            "  SELECT MIN(id) FROM assessment_results r2 "
+            "  WHERE r2.emp_id=r1.emp_id AND r2.assessment_id=r1.assessment_id)",
+            lids
+        ).fetchall():
+            first_pass[(r["emp_id"], r["assessment_id"])] = (1 if r["passed"] else 0)
+
     for t, s in stats.items():
-        learner_ids = list(s["learners"])
+        lset = s["learners"]
         avg_score = None
         pass_rate = None
         first_attempt_rate = None
-        if learner_ids:
-            ph = ",".join("?" * len(learner_ids))
-            rows = db.execute(
-                "SELECT emp_id, assessment_id, MAX(percent) best, "
-                "MAX(CASE WHEN passed=1 THEN 1 ELSE 0 END) passed "
-                "FROM assessment_results WHERE emp_id IN (" + ph + ") "
-                "GROUP BY emp_id, assessment_id", learner_ids
-            ).fetchall()
+        if lset:
+            rows = [br for br in best_rows if br[0] in lset]
             if rows:
-                avg_score = round(sum(x["best"] for x in rows) / len(rows))
-                pass_rate = round(sum(x["passed"] for x in rows) * 100 / len(rows))
-
-            # first-attempt pass: for each learner+assessment, did the EARLIEST
-            # attempt pass? (id ascending = chronological)
-            fa = db.execute(
-                "SELECT emp_id, assessment_id, passed FROM assessment_results r1 "
-                "WHERE emp_id IN (" + ph + ") AND id = ("
-                "  SELECT MIN(id) FROM assessment_results r2 "
-                "  WHERE r2.emp_id=r1.emp_id AND r2.assessment_id=r1.assessment_id)",
-                learner_ids
-            ).fetchall()
+                avg_score = round(sum(br[2] for br in rows) / len(rows))
+                pass_rate = round(sum(br[3] for br in rows) * 100 / len(rows))
+            fa = [v for (emp, _aid), v in first_pass.items() if emp in lset]
             if fa:
-                first_attempt_rate = round(sum(1 for x in fa if x["passed"]) * 100 / len(fa))
+                first_attempt_rate = round(sum(fa) * 100 / len(fa))
 
         rr = rate_map.get(t)
         trainer_rating = (round(rr["avg_tr"], 1) if rr and rr["avg_tr"] is not None else None)
@@ -617,14 +630,36 @@ def api_analytics_overview():
         "JOIN users u ON u.emp_id=ic.emp_id WHERE u.role='staff'")
 
     # ---- 30-day trend (completions + assessments per day) ----
+    # One grouped query each (instead of 60 per-day round-trips). Timestamps
+    # are stored as ISO-UTC text, so the first 10 chars are the UTC date and
+    # group exactly as the old per-day string-range buckets did.
+    start_iso = (today - timedelta(days=29)).isoformat()
+
+    def _by_day(sql, col):
+        bucket = {}
+        try:
+            for r in db.execute(sql, (start_iso,)).fetchall():
+                d = r["d"]
+                if d:
+                    bucket[d] = r["c"]
+        except Exception:
+            pass
+        return bucket
+
+    comp_by_day = _by_day(
+        "SELECT substr(completed_at,1,10) d, COUNT(*) c FROM module_completions "
+        "WHERE completed_at >= ? GROUP BY substr(completed_at,1,10)", "completed_at")
+    ass_by_day = _by_day(
+        "SELECT substr(taken_at,1,10) d, COUNT(*) c FROM assessment_results "
+        "WHERE taken_at >= ? GROUP BY substr(taken_at,1,10)", "taken_at")
+
     trend = []
     for i in range(29, -1, -1):
         day = today - timedelta(days=i)
-        d0 = day.isoformat()
-        d1 = (day + timedelta(days=1)).isoformat()
-        comp = _count("SELECT COUNT(*) c FROM module_completions WHERE completed_at >= ? AND completed_at < ?", (d0, d1))
-        ass = _count("SELECT COUNT(*) c FROM assessment_results WHERE taken_at >= ? AND taken_at < ?", (d0, d1))
-        trend.append({"date": day.strftime("%d %b"), "completions": comp, "assessments": ass})
+        key = day.isoformat()
+        trend.append({"date": day.strftime("%d %b"),
+                      "completions": comp_by_day.get(key, 0),
+                      "assessments": ass_by_day.get(key, 0)})
 
     # ---- needs attention ----
     names = _name_map(db)
@@ -641,26 +676,25 @@ def api_analytics_overview():
     except Exception:
         pass
     attention = attention[:12]
-    # repeat failers: >=3 failed attempts on the same assessment, none passed
+    # repeat failers: >=3 failed attempts on the same assessment, none passed.
+    # Single query: the "never passed" check is a NOT EXISTS, so no per-row
+    # round-trip (was 1 extra query per failing group).
     repeat_failers = []
     try:
         for r in db.execute(
             "SELECT r.emp_id, r.assessment_id, a.title, COUNT(*) fails "
             "FROM assessment_results r JOIN assessments a ON a.id=r.assessment_id "
-            "WHERE r.passed=0 GROUP BY r.emp_id, r.assessment_id, a.title HAVING COUNT(*) >= 3"
+            "WHERE r.passed=0 AND NOT EXISTS ("
+            "  SELECT 1 FROM assessment_results p "
+            "  WHERE p.emp_id=r.emp_id AND p.assessment_id=r.assessment_id AND p.passed=1) "
+            "GROUP BY r.emp_id, r.assessment_id, a.title HAVING COUNT(*) >= 3 "
+            "ORDER BY COUNT(*) DESC LIMIT 12"
         ).fetchall():
-            # skip if they eventually passed it
-            passed = db.execute(
-                "SELECT 1 FROM assessment_results WHERE emp_id=? AND assessment_id=? AND passed=1 LIMIT 1",
-                (r["emp_id"], r["assessment_id"])).fetchone()
-            if passed:
-                continue
             repeat_failers.append({
                 "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
                 "assessment": r["title"], "fails": r["fails"]})
     except Exception:
         pass
-    repeat_failers = repeat_failers[:12]
 
     return jsonify(
         ok=True,
