@@ -574,43 +574,67 @@ def api_analytics_overview():
         _ur = {}
     total_staff = _rowget(_ur, "total_staff", 0) or 0
 
-    # active this week = did any module/assessment/video in last 7 days
+    # active this week = did any module / assessment / video in last 7 days.
+    # ONE union query (was 3 queries + a table-exists probe = 4 round-trips).
     active_ids = set()
-    for sql in (
-        "SELECT DISTINCT emp_id FROM module_completions WHERE completed_at >= ?",
-        "SELECT DISTINCT emp_id FROM assessment_results WHERE taken_at >= ?",
-    ):
+    _union = (
+        "SELECT DISTINCT emp_id FROM module_completions WHERE completed_at >= ? "
+        "UNION SELECT DISTINCT emp_id FROM assessment_results WHERE taken_at >= ? "
+        "UNION SELECT DISTINCT emp_id FROM video_completions WHERE completed_at >= ?"
+    )
+    try:
+        for r in db.execute(_union, (week_iso, week_iso, week_iso)).fetchall():
+            active_ids.add(r["emp_id"])
+    except Exception:
+        # if video_completions is absent, retry without it (two tables only)
         try:
-            for r in db.execute(sql, (week_iso,)).fetchall():
-                active_ids.add(r["emp_id"])
-        except Exception:
-            pass
-    if _table_exists(db, "video_completions"):
-        try:
-            for r in db.execute("SELECT DISTINCT emp_id FROM video_completions WHERE completed_at >= ?", (week_iso,)).fetchall():
+            for r in db.execute(
+                "SELECT DISTINCT emp_id FROM module_completions WHERE completed_at >= ? "
+                "UNION SELECT DISTINCT emp_id FROM assessment_results WHERE taken_at >= ?",
+                (week_iso, week_iso)
+            ).fetchall():
                 active_ids.add(r["emp_id"])
         except Exception:
             pass
     active_week = len(active_ids)
     _mark("active_week")
 
-    # induction & training completion rate (completed vs expected, staff only)
-    def _completion_rate(kind):
-        # total live modules of this kind, matched to each staff by role, is heavy;
-        # use a simpler proxy: completions / (staff * live-modules-of-kind) across "all" modules.
-        live = _count("SELECT COUNT(*) c FROM content_modules WHERE status='live' AND kind=?", (kind,))
-        if not live or not total_staff:
-            return 0
-        done = _count(
-            "SELECT COUNT(*) c FROM module_completions mc "
+    # induction & training completion rate (completed vs expected, staff only).
+    # All four numbers (live-count + done-count, per kind) in ONE query each —
+    # 2 queries total instead of 4.
+    live_ind = live_trn = done_ind = done_trn = 0
+    try:
+        _lv = db.execute(
+            "SELECT "
+            " COUNT(*) FILTER (WHERE kind='induction') ind, "
+            " COUNT(*) FILTER (WHERE kind='training') trn "
+            "FROM content_modules WHERE status='live'"
+        ).fetchone()
+        live_ind = _rowget(_lv, "ind", 0) or 0
+        live_trn = _rowget(_lv, "trn", 0) or 0
+    except Exception:
+        pass
+    try:
+        _dn = db.execute(
+            "SELECT "
+            " COUNT(*) FILTER (WHERE cm.kind='induction') ind, "
+            " COUNT(*) FILTER (WHERE cm.kind='training') trn "
+            "FROM module_completions mc "
             "JOIN content_modules cm ON cm.id=mc.module_id "
             "JOIN users u ON u.emp_id=mc.emp_id "
-            "WHERE cm.status='live' AND cm.kind=? AND u.role='staff' AND u.status='approved'", (kind,))
+            "WHERE cm.status='live' AND u.role='staff' AND u.status='approved'"
+        ).fetchone()
+        done_ind = _rowget(_dn, "ind", 0) or 0
+        done_trn = _rowget(_dn, "trn", 0) or 0
+    except Exception:
+        pass
+
+    def _rate(live, done):
         denom = live * total_staff
         return min(100, round(done * 100 / denom)) if denom else 0
 
-    induction_rate = _completion_rate("induction")
-    training_rate = _completion_rate("training")
+    induction_rate = _rate(live_ind, done_ind)
+    training_rate = _rate(live_trn, done_trn)
     _mark("completion_rates")
 
     # average assessment score (best attempt per learner-assessment, staff)
@@ -627,7 +651,7 @@ def api_analytics_overview():
         avg_score = 0
     _mark("avg_score")
 
-    total_certs = _count("SELECT COUNT(*) c FROM issued_certificates")
+    # total_certs is folded into the funnel block below (one fewer round-trip)
 
     # ---- onboarding pulse (today) — reuse the combined users query above ----
     enrolled_today = _rowget(_ur, "enrolled_today", 0) or 0
@@ -657,35 +681,45 @@ def api_analytics_overview():
         funnel_training = _rowget(_fr, "trn", 0) or 0
     except Exception:
         pass
-    # earned >=1 certificate
-    funnel_certified = _count(
-        "SELECT COUNT(DISTINCT ic.emp_id) c FROM issued_certificates ic "
-        "JOIN users u ON u.emp_id=ic.emp_id WHERE u.role='staff'")
+    # both certificate counts in one query: total issued + distinct staff certified
+    total_certs = 0
+    funnel_certified = 0
+    try:
+        _cc = db.execute(
+            "SELECT "
+            " (SELECT COUNT(*) FROM issued_certificates) total, "
+            " (SELECT COUNT(DISTINCT ic.emp_id) FROM issued_certificates ic "
+            "  JOIN users u ON u.emp_id=ic.emp_id WHERE u.role='staff') certified"
+        ).fetchone()
+        total_certs = _rowget(_cc, "total", 0) or 0
+        funnel_certified = _rowget(_cc, "certified", 0) or 0
+    except Exception:
+        pass
     _mark("funnel")
 
     # ---- 30-day trend (completions + assessments per day) ----
-    # One grouped query each (instead of 60 per-day round-trips). Timestamps
-    # are stored as ISO-UTC text, so the first 10 chars are the UTC date and
-    # group exactly as the old per-day string-range buckets did.
+    # BOTH series in ONE query (UNION ALL, tagged by source), grouped by the
+    # UTC date prefix — down from 60 per-day queries, then 2, now 1.
     start_iso = (today - timedelta(days=29)).isoformat()
-
-    def _by_day(sql, col):
-        bucket = {}
-        try:
-            for r in db.execute(sql, (start_iso,)).fetchall():
-                d = r["d"]
-                if d:
-                    bucket[d] = r["c"]
-        except Exception:
-            pass
-        return bucket
-
-    comp_by_day = _by_day(
-        "SELECT substr(completed_at,1,10) d, COUNT(*) c FROM module_completions "
-        "WHERE completed_at >= ? GROUP BY substr(completed_at,1,10)", "completed_at")
-    ass_by_day = _by_day(
-        "SELECT substr(taken_at,1,10) d, COUNT(*) c FROM assessment_results "
-        "WHERE taken_at >= ? GROUP BY substr(taken_at,1,10)", "taken_at")
+    comp_by_day, ass_by_day = {}, {}
+    try:
+        for r in db.execute(
+            "SELECT 'c' src, substr(completed_at,1,10) d, COUNT(*) n FROM module_completions "
+            "WHERE completed_at >= ? GROUP BY substr(completed_at,1,10) "
+            "UNION ALL "
+            "SELECT 'a' src, substr(taken_at,1,10) d, COUNT(*) n FROM assessment_results "
+            "WHERE taken_at >= ? GROUP BY substr(taken_at,1,10)",
+            (start_iso, start_iso)
+        ).fetchall():
+            d = r["d"]
+            if not d:
+                continue
+            if r["src"] == "c":
+                comp_by_day[d] = r["n"]
+            else:
+                ass_by_day[d] = r["n"]
+    except Exception:
+        pass
 
     trend = []
     for i in range(29, -1, -1):
@@ -734,20 +768,23 @@ def api_analytics_overview():
         pass
     _mark("repeat_failers")
 
-    completions_today = _count("SELECT COUNT(*) c FROM module_completions WHERE completed_at >= ?", (today_iso,))
-    # both assessment 'today' counts in one query
-    assessments_today = 0
-    passed_today = 0
+    # all four "today" cards in ONE query via scalar subqueries (was 3 round-trips)
+    completions_today = assessments_today = passed_today = certs_today = 0
     try:
-        _at = db.execute(
-            "SELECT COUNT(*) total, COUNT(*) FILTER (WHERE passed=1) passed "
-            "FROM assessment_results WHERE taken_at >= ?", (today_iso,)
+        _td = db.execute(
+            "SELECT "
+            " (SELECT COUNT(*) FROM module_completions WHERE completed_at >= ?) comp, "
+            " (SELECT COUNT(*) FROM assessment_results WHERE taken_at >= ?) ass, "
+            " (SELECT COUNT(*) FROM assessment_results WHERE taken_at >= ? AND passed=1) passed, "
+            " (SELECT COUNT(*) FROM issued_certificates WHERE issued_at >= ?) certs",
+            (today_iso, today_iso, today_iso, today_iso)
         ).fetchone()
-        assessments_today = _rowget(_at, "total", 0) or 0
-        passed_today = _rowget(_at, "passed", 0) or 0
+        completions_today = _rowget(_td, "comp", 0) or 0
+        assessments_today = _rowget(_td, "ass", 0) or 0
+        passed_today = _rowget(_td, "passed", 0) or 0
+        certs_today = _rowget(_td, "certs", 0) or 0
     except Exception:
         pass
-    certs_today = _count("SELECT COUNT(*) c FROM issued_certificates WHERE issued_at >= ?", (today_iso,))
     _mark("today_cards")
 
     return jsonify(
