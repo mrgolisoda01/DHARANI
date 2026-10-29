@@ -412,7 +412,10 @@ def api_analytics_trainers():
                 first_attempt_rate = round(sum(fa) * 100 / len(fa))
 
         rr = rate_map.get(t)
-        trainer_rating = (round(rr["avg_tr"], 1) if rr and rr["avg_tr"] is not None else None)
+        # AVG() comes back as Decimal from psycopg2 — coerce to float before any
+        # arithmetic, or Decimal*float in the KPI blend raises TypeError (500).
+        trainer_rating = (round(float(rr["avg_tr"]), 1)
+                          if rr and rr["avg_tr"] is not None else None)
         ojt_calls = calls_map.get(t, 0)
         n_learners = len(s["learners"])
         low_data = n_learners < 3
@@ -443,7 +446,7 @@ def api_analytics_trainers():
             "ojt_calls": ojt_calls,
             "trainer_rating": trainer_rating,
             "trainer_rating_n": (rr["n_tr"] if rr else 0),
-            "content_rating": (round(rr["avg_ct"], 1) if rr and rr["avg_ct"] is not None else None),
+            "content_rating": (round(float(rr["avg_ct"]), 1) if rr and rr["avg_ct"] is not None else None),
             "kpi_score": kpi_score,
             "low_data": low_data,
         })
@@ -502,8 +505,8 @@ def api_analytics_trainer_detail():
         ).fetchone()
         if rb:
             ratings = {
-                "trainer_avg": (round(rb["ta"], 1) if rb["ta"] is not None else None),
-                "content_avg": (round(rb["ca"], 1) if rb["ca"] is not None else None),
+                "trainer_avg": (round(float(rb["ta"]), 1) if rb["ta"] is not None else None),
+                "content_avg": (round(float(rb["ca"]), 1) if rb["ca"] is not None else None),
                 "n": rb["n"] or 0,
             }
         for r in db.execute(
