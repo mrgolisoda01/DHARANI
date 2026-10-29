@@ -658,7 +658,8 @@ def portal_page():
     u = current_user()
     if u and u["role"] in ("admin", "instructor"):
         return redirect(url_for("admin_page"))
-    return render_template("portal.html", user=current_user())
+    return render_template("portal.html", user=u,
+                           training_done=_training_complete(get_db(), u))
 
 
 @app.route("/my-training")
@@ -668,7 +669,9 @@ def my_training_page():
     # reachable by instructors/admins too so they can complete training on the
     # same account. Learners just use /portal; this is the door for staff who
     # normally live in the admin portal.
-    return render_template("portal.html", user=current_user())
+    u = current_user()
+    return render_template("portal.html", user=u,
+                           training_done=_training_complete(get_db(), u))
 
 
 @app.route("/admin")
@@ -2148,6 +2151,56 @@ def _roles_match_designation(roles_field, designation):
     desg = (designation or "").strip().lower()
     allowed = [r.strip().lower() for r in roles.split(",")]
     return any(a and a in desg for a in allowed)
+
+
+def _training_complete(db, user):
+    """True when this learner has finished ALL training assigned to their role:
+    every live induction + training module completed AND every active
+    assessment for their role passed. This is what auto-unlocks the field tabs
+    (Certificates / My OJT / Route Audit) — no manual activation needed.
+
+    Admins/instructors are never gated, so they always count as complete.
+    If there is simply no content assigned to the role yet, we do NOT unlock
+    (nothing to complete means training hasn't happened)."""
+    try:
+        if user is None:
+            return False
+        if user["role"] in ("admin", "instructor"):
+            return True
+        emp = user["emp_id"]
+        desg = user["designation"]
+
+        mods = db.execute(
+            "SELECT id, kind, roles FROM content_modules "
+            "WHERE kind IN ('induction','training') AND status='live'"
+        ).fetchall()
+        assess = db.execute(
+            "SELECT id, roles FROM assessments WHERE active=1"
+        ).fetchall()
+
+        req_modules = [m["id"] for m in mods
+                       if _roles_match_designation(m["roles"], desg)]
+        req_assess = [a["id"] for a in assess
+                      if _roles_match_designation(a["roles"], desg)]
+
+        # nothing assigned yet → not complete (stay locked)
+        if not req_modules and not req_assess:
+            return False
+
+        done = {r["module_id"] for r in db.execute(
+            "SELECT module_id FROM module_completions WHERE emp_id=?", (emp,)
+        ).fetchall()}
+        passed = {r["assessment_id"] for r in db.execute(
+            "SELECT assessment_id FROM assessment_results WHERE emp_id=? AND passed=1",
+            (emp,)
+        ).fetchall()}
+
+        modules_ok = all(mid in done for mid in req_modules)
+        assess_ok = all(aid in passed for aid in req_assess)
+        return modules_ok and assess_ok
+    except Exception:
+        # on any error, do not silently unlock — fall back to locked
+        return False
 
 
 @app.route("/api/admin/cert-expiry")
