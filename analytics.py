@@ -322,12 +322,10 @@ def api_analytics_activity():
 # ===============================================================
 #  3) TRAINER ROLL-UP  (KPI foundation)
 # ===============================================================
-@analytics_bp.route("/api/analytics/trainers")
-@_staff_only
-def api_analytics_trainers():
-    """Per trainer: modules delivered, distinct learners trained, and
-    those learners' average assessment score & pass rate."""
-    db = _get_db()
+def _build_trainer_kpis(db):
+    """Compute the KPI scorecard list for ALL trainers (sorted best-first).
+    Shared by the admin-wide Trainers view and the per-trainer 'My Performance'
+    view, so the numbers are identical in both."""
     names = _name_map(db)
 
     # trainer -> set(learner), count(deliveries), set(module)
@@ -451,8 +449,56 @@ def api_analytics_trainers():
             "low_data": low_data,
         })
     out.sort(key=lambda x: (-(x["kpi_score"]), -(x["learners"]), x["trainer"]))
-    return jsonify(ok=True, trainers=out,
-                   kpi_weights={"pass": 30, "score": 20, "first_attempt": 20, "rating": 20, "engagement": 10})
+    return out
+
+
+_KPI_WEIGHTS = {"pass": 30, "score": 20, "first_attempt": 20, "rating": 20, "engagement": 10}
+
+
+@analytics_bp.route("/api/analytics/trainers")
+@_staff_only
+def api_analytics_trainers():
+    """Full trainer KPI list + leaderboard. ADMIN ONLY — a trainer must not
+    see other trainers' scores. Instructors use /api/analytics/my-trainer."""
+    u = _current_user()
+    if u["role"] != "admin":
+        return jsonify(ok=False, admin_only=True,
+                       msg="Trainer KPIs are visible to the admin only."), 403
+    db = _get_db()
+    out = _build_trainer_kpis(db)
+    return jsonify(ok=True, trainers=out, kpi_weights=_KPI_WEIGHTS)
+
+
+@analytics_bp.route("/api/analytics/my-trainer")
+@_staff_only
+def api_analytics_my_trainer():
+    """The caller's OWN KPI scorecard (instructor sees only themselves; admin
+    can use it too). Rank is computed but only returned to admins."""
+    u = _current_user()
+    me = u["emp_id"]
+    db = _get_db()
+    out = _build_trainer_kpis(db)
+    mine = None
+    rank = None
+    for i, row in enumerate(out):
+        if row["trainer_id"] == me:
+            mine = row
+            rank = i + 1  # 1-based position in the best-first list
+            break
+    if mine is None:
+        # a trainer with no approved deliveries yet — return an empty shell
+        mine = {
+            "trainer_id": me, "trainer": u["name"],
+            "learners": 0, "deliveries": 0, "modules": 0,
+            "avg_score": None, "pass_rate": None, "first_attempt_rate": None,
+            "ojt_calls": 0, "trainer_rating": None, "trainer_rating_n": 0,
+            "content_rating": None, "kpi_score": 0, "low_data": True,
+        }
+    # instructors don't get told their rank-of-N (no competitive framing)
+    show_rank = (u["role"] == "admin")
+    return jsonify(ok=True, me=mine, kpi_weights=_KPI_WEIGHTS,
+                   rank=(rank if show_rank else None),
+                   total_trainers=(len(out) if show_rank else None))
 
 
 @analytics_bp.route("/api/analytics/trainer")
@@ -463,6 +509,12 @@ def api_analytics_trainer_detail():
     tid = (request.args.get("id") or "").strip()
     if not tid:
         return jsonify(ok=False, msg="Missing trainer id."), 400
+    # a trainer (instructor) may only drill into their OWN record; the admin
+    # can drill into anyone.
+    u = _current_user()
+    if u["role"] != "admin" and tid != u["emp_id"]:
+        return jsonify(ok=False, admin_only=True,
+                       msg="You can only view your own performance."), 403
     db = _get_db()
     names = _name_map(db)
 
