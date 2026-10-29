@@ -612,14 +612,17 @@
       root.innerHTML = shell();
       root.setAttribute("data-built", "1");
     }
-    // load people list once (for the Employee picker), then render current view
+    // Render the current view immediately (paints fast); load the people
+    // list in parallel in the background — it's only needed for the Employee
+    // picker, so it must not block the first paint.
+    renderView();
     if (!AN.people.length) {
       getJAn("/api/analytics/people").then(function (d) {
         AN.people = (d && d.ok && d.people) ? d.people : [];
-        renderView();
+        // if the user is already on the Employee view, refresh it now that
+        // the picker data has arrived
+        if (AN.view === "employee") renderView();
       });
-    } else {
-      renderView();
     }
   };
 })();
