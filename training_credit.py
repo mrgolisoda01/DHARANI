@@ -165,7 +165,45 @@ def api_training_pending():
         rows = db.execute(base + "WHERE d.status='pending' ORDER BY d.created_at DESC LIMIT 300").fetchall()
     else:
         rows = db.execute(base + "WHERE d.created_by=? ORDER BY d.created_at DESC LIMIT 100", (u["emp_id"],)).fetchall()
-    return jsonify(ok=True, items=[dict(r) for r in rows], is_admin=(u["role"] == "admin"))
+
+    # ----- D2 nudge: items a learner says THIS trainer trained them on, but
+    #        this trainer has no approved delivery for yet. Only for instructors
+    #        viewing themselves (and admins see all learner-claims with no match).
+    awaiting = []
+    try:
+        me = u["emp_id"]
+        names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+        mtitle = {r["id"]: r["title"] for r in db.execute("SELECT id, title FROM content_modules").fetchall()}
+        # learner picks pointing at this trainer (or any, for admin)
+        if u["role"] == "admin":
+            picks = db.execute(
+                "SELECT emp_id, module_id, trainer_id FROM training_ratings "
+                "WHERE target_type='module' AND module_id IS NOT NULL AND trainer_id IS NOT NULL AND trainer_id<>''"
+            ).fetchall()
+        else:
+            picks = db.execute(
+                "SELECT emp_id, module_id, trainer_id FROM training_ratings "
+                "WHERE target_type='module' AND module_id IS NOT NULL AND trainer_id=?", (me,)
+            ).fetchall()
+        for r in picks:
+            # already have an approved delivery for this exact trainer+learner+module?
+            has = db.execute(
+                "SELECT 1 FROM training_delivery WHERE trainer_id=? AND learner_id=? AND module_id=? AND status='approved'",
+                (r["trainer_id"], r["emp_id"], r["module_id"])
+            ).fetchone()
+            if has:
+                continue
+            awaiting.append({
+                "learner_id": r["emp_id"], "learner_name": names.get(r["emp_id"], r["emp_id"]),
+                "module_id": r["module_id"], "module_title": mtitle.get(r["module_id"], "Module " + str(r["module_id"])),
+                "trainer_id": r["trainer_id"], "trainer_name": names.get(r["trainer_id"], r["trainer_id"]),
+            })
+    except Exception:
+        awaiting = []
+
+    return jsonify(ok=True, items=[dict(r) for r in rows],
+                   awaiting_confirmation=awaiting,
+                   is_admin=(u["role"] == "admin"))
 
 
 @tc_bp.route("/api/training/resolve", methods=["POST"])
@@ -392,6 +430,187 @@ def api_training_my_record():
                    ind_done=ind_done, ind_total=len(my_ind),
                    trn_done=trn_done, trn_total=len(my_trn),
                    assessments=assessments)
+
+
+@tc_bp.route("/api/training/confirmations")
+@_staff
+def api_training_confirmations():
+    """Two-sided confirmation view. For every (learner, module) that has a mark
+    from either side, classify it:
+      confirmed        - learner's picked trainer == an approved trainer delivery
+      conflict         - both marked, but different trainer  -> admin resolves
+      awaiting_trainer - learner picked a trainer, no matching approved delivery
+      awaiting_learner - trainer delivered, learner hasn't rated/picked yet
+    Returns summary counts + the conflict list + the awaiting-trainer list.
+    KPI is NOT affected — this is a trust/confirmation layer only."""
+    _ensure()
+    db = _get_db()
+    names = {}
+    for r in db.execute("SELECT emp_id, name FROM users").fetchall():
+        names[r["emp_id"]] = r["name"]
+    mtitle = {}
+    try:
+        for r in db.execute("SELECT id, title, kind FROM content_modules").fetchall():
+            mtitle[r["id"]] = {"title": r["title"], "kind": r["kind"]}
+    except Exception:
+        pass
+
+    # learner's mark: trainer picked when rating a MODULE
+    learner_pick = {}   # (learner_id, module_id) -> trainer_id
+    try:
+        for r in db.execute(
+            "SELECT emp_id, module_id, trainer_id FROM training_ratings "
+            "WHERE target_type='module' AND module_id IS NOT NULL "
+            "AND trainer_id IS NOT NULL AND trainer_id<>''"
+        ).fetchall():
+            learner_pick[(r["emp_id"], r["module_id"])] = r["trainer_id"]
+    except Exception:
+        pass
+
+    # trainer's mark: approved deliveries (a module could have >1 trainer record)
+    trainer_recs = {}   # (learner_id, module_id) -> set(trainer_id)
+    for r in db.execute(
+        "SELECT learner_id, module_id, trainer_id FROM training_delivery "
+        "WHERE status='approved' AND module_id IS NOT NULL"
+    ).fetchall():
+        trainer_recs.setdefault((r["learner_id"], r["module_id"]), set()).add(r["trainer_id"])
+
+    keys = set(learner_pick.keys()) | set(trainer_recs.keys())
+    confirmed = conflict = awaiting_trainer = awaiting_learner = 0
+    conflicts, awaiting_tr = [], []
+
+    for (lid, mid) in keys:
+        lp = learner_pick.get((lid, mid))
+        trs = trainer_recs.get((lid, mid), set())
+        mi = mtitle.get(mid, {})
+        base = {
+            "learner_id": lid, "learner": names.get(lid, lid),
+            "module_id": mid, "module": mi.get("title") or ("Module " + str(mid)),
+            "kind": mi.get("kind") or "",
+        }
+        if lp and lp in trs:
+            confirmed += 1
+        elif lp and trs and lp not in trs:
+            conflict += 1
+            row = dict(base)
+            row["learner_says_id"] = lp
+            row["learner_says"] = names.get(lp, lp)
+            row["record_says_ids"] = sorted(trs)
+            row["record_says"] = ", ".join(names.get(t, t) for t in sorted(trs))
+            conflicts.append(row)
+        elif lp and not trs:
+            awaiting_trainer += 1
+            row = dict(base)
+            row["learner_says_id"] = lp
+            row["learner_says"] = names.get(lp, lp)
+            awaiting_tr.append(row)
+        elif not lp and trs:
+            awaiting_learner += 1
+
+    conflicts.sort(key=lambda x: (x["learner"] or "", x["module"] or ""))
+    awaiting_tr.sort(key=lambda x: (x["learner_says"] or "", x["learner"] or ""))
+    return jsonify(ok=True,
+                   summary={"confirmed": confirmed, "conflict": conflict,
+                            "awaiting_trainer": awaiting_trainer,
+                            "awaiting_learner": awaiting_learner},
+                   conflicts=conflicts, awaiting_trainer_list=awaiting_tr)
+
+
+@tc_bp.route("/api/training/confirm-resolve", methods=["POST"])
+@_admin
+def api_training_confirm_resolve():
+    """Admin resolves a conflict for one (learner, module): set the correct
+    trainer. We make the chosen trainer the single approved delivery for that
+    learner+module and update the learner's rating to match, so the pair
+    becomes 'confirmed'. decision='dismiss' leaves everything untouched."""
+    _ensure()
+    d = request.get_json(force=True)
+    u = _current_user()
+    lid = (d.get("learner_id") or "").strip()
+    try:
+        mid = int(d.get("module_id"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Bad module."), 400
+    decision = (d.get("decision") or "").strip()
+    if not lid:
+        return jsonify(ok=False, msg="Missing learner."), 400
+    db = _get_db()
+
+    if decision == "dismiss":
+        return jsonify(ok=True, msg="Left as-is.")
+
+    tid = (d.get("trainer_id") or "").strip()
+    if not tid:
+        return jsonify(ok=False, msg="Pick the correct trainer."), 400
+    valid = db.execute(
+        "SELECT kind FROM content_modules WHERE id=?", (mid,)).fetchone()
+    kind = (valid["kind"] if valid else None)
+    # is the chosen trainer a real trainer?
+    ok = db.execute("SELECT 1 FROM users WHERE emp_id=? AND role IN ('instructor','admin')", (tid,)).fetchone()
+    if not ok:
+        return jsonify(ok=False, msg="Choose a valid trainer."), 400
+
+    # 1) make the chosen trainer the approved delivery; remove other trainers'
+    #    approved deliveries for this exact learner+module (they were the conflict)
+    db.execute("DELETE FROM training_delivery WHERE learner_id=? AND module_id=? AND trainer_id<>?",
+               (lid, mid, tid))
+    row = db.execute("SELECT id FROM training_delivery WHERE trainer_id=? AND learner_id=? AND module_id=?",
+                     (tid, lid, mid)).fetchone()
+    if row:
+        db.execute("UPDATE training_delivery SET status='approved', kind=?, approved_by=?, approved_at=? WHERE id=?",
+                   (kind, u["emp_id"], _now(), row["id"]))
+    else:
+        db.execute("INSERT INTO training_delivery (trainer_id, learner_id, module_id, kind, status, created_by, created_at, approved_by, approved_at) "
+                   "VALUES (?,?,?,?,?,?,?,?,?)",
+                   (tid, lid, mid, kind, "approved", u["emp_id"], _now(), u["emp_id"], _now()))
+
+    # 2) align the learner's rating to the chosen trainer (so it reads 'confirmed')
+    try:
+        rr = db.execute("SELECT id FROM training_ratings WHERE emp_id=? AND module_id=?", (lid, mid)).fetchone()
+        if rr:
+            db.execute("UPDATE training_ratings SET trainer_id=? WHERE id=?", (tid, rr["id"]))
+    except Exception:
+        pass
+
+    db.commit()
+    return jsonify(ok=True, msg="Resolved — delivery confirmed to " +
+                   (db.execute("SELECT name FROM users WHERE emp_id=?", (tid,)).fetchone() or {"name": tid})["name"] + ".")
+
+
+@tc_bp.route("/api/training/confirm-claim", methods=["POST"])
+@_staff
+def api_training_confirm_claim():
+    """A trainer (or admin) confirms a learner's claim that they trained them on
+    a module -> creates/updates an APPROVED delivery, making it 'confirmed'.
+    An instructor may only confirm claims that name themselves."""
+    _ensure()
+    u = _current_user()
+    d = request.get_json(force=True)
+    lid = (d.get("learner_id") or "").strip()
+    tid = (d.get("trainer_id") or "").strip()
+    try:
+        mid = int(d.get("module_id"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Bad module."), 400
+    if not lid or not tid:
+        return jsonify(ok=False, msg="Missing learner or trainer."), 400
+    # instructor can only confirm claims about themselves
+    if u["role"] != "admin" and tid != u["emp_id"]:
+        return jsonify(ok=False, msg="You can only confirm your own trainings."), 403
+    db = _get_db()
+    kr = db.execute("SELECT kind FROM content_modules WHERE id=?", (mid,)).fetchone()
+    kind = (kr["kind"] if kr else None)
+    row = db.execute("SELECT id FROM training_delivery WHERE trainer_id=? AND learner_id=? AND module_id=?",
+                     (tid, lid, mid)).fetchone()
+    if row:
+        db.execute("UPDATE training_delivery SET status='approved', kind=?, approved_by=?, approved_at=? WHERE id=?",
+                   (kind, u["emp_id"], _now(), row["id"]))
+    else:
+        db.execute("INSERT INTO training_delivery (trainer_id, learner_id, module_id, kind, status, created_by, created_at, approved_by, approved_at) "
+                   "VALUES (?,?,?,?,?,?,?,?,?)",
+                   (tid, lid, mid, kind, "approved", u["emp_id"], _now(), u["emp_id"], _now()))
+    db.commit()
+    return jsonify(ok=True, msg="Confirmed.")
 
 
 @tc_bp.route("/api/training/by-learner")
