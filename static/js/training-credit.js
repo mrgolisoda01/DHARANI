@@ -59,6 +59,7 @@
   function shell(inner){
     var tabs = [["mark","➕ Mark training"],
                 [S.cfg&&S.cfg.is_admin?"approve":"mine", S.cfg&&S.cfg.is_admin?"✅ Approvals":"📋 My submissions"],
+                ["confirm","✔ Confirmations"],
                 ["prod","📊 Productivity"],
                 ["byl","👥 By learner"]];
     var bar = '<div class="subtabs">'+tabs.map(function(t){
@@ -74,6 +75,7 @@
     if(!S.cfg){ var c=await getJ("/api/training/options"); S.cfg=(c&&c.ok)?c:{is_admin:false,trainers:[],learners:[],induction:[],training:[]}; }
     if(S.view==="mark") return renderMark();
     if(S.view==="approve"||S.view==="mine") return renderPending();
+    if(S.view==="confirm") return renderConfirmations();
     if(S.view==="prod") return renderProd();
     if(S.view==="byl") return renderByLearner();
   }
@@ -215,6 +217,111 @@
   }
   async function resolve(id,decision){ var r=await postJ("/api/training/resolve",{id:id,decision:decision}); if(r.ok){note(r.msg||"Done.");renderPending();}else note(r.msg||"Failed."); }
   async function delRec(id){ var r=await postJ("/api/training/delete",{id:id}); if(r.ok){note("Removed.");renderPending();}else note(r.msg||"Failed."); }
+
+  // ---- Confirmations (two-sided) ----
+  async function renderConfirmations(){
+    shell('<div class="empty">Loading…</div>');
+    var isAdmin = S.cfg && S.cfg.is_admin;
+
+    if(isAdmin){
+      var d = await getJ("/api/training/confirmations");
+      if(!d || !d.ok){ shell('<div class="empty" style="padding:16px">Could not load.</div>'); return; }
+      var sm = d.summary || {};
+      function card(v,l,col){ return '<div class="pcard"><div class="pv" style="color:'+(col||"#12284B")+'">'+v+'</div><div class="pl">'+l+'</div></div>'; }
+      var cards = '<div class="pcards">'+
+        card(sm.confirmed!=null?sm.confirmed:0,"✅ Confirmed (both agree)","#1d9e75")+
+        card(sm.conflict!=null?sm.conflict:0,"⚠️ Conflicts — need you",(sm.conflict?"#d64545":"#1d9e75"))+
+        card(sm.awaiting_trainer!=null?sm.awaiting_trainer:0,"🕐 Awaiting trainer","#c9a227")+
+        card(sm.awaiting_learner!=null?sm.awaiting_learner:0,"🕐 Awaiting learner","#62707a")+
+      '</div>';
+
+      var trainerOpts = (S.cfg.trainers||[]).map(function(t){ return '<option value="'+esc(t.emp_id)+'">'+esc(t.name)+'</option>'; }).join("");
+
+      // conflicts
+      var conf = d.conflicts || [];
+      var confHtml = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#b4231d">⚠️ Conflicts — learner & trainer record disagree ('+conf.length+')</h4>'+
+        '<p style="font-size:12px;color:#62707a;margin:0 0 10px">Pick the correct trainer. That becomes the confirmed delivery and the learner\'s rating is aligned to match.</p>';
+      if(!conf.length){ confHtml += '<div class="empty" style="padding:10px">No conflicts. 👍</div>'; }
+      else {
+        confHtml += conf.map(function(c){
+          var key = esc(c.learner_id)+'|'+c.module_id;
+          var sel = '<select data-csel="'+key+'" style="max-width:220px">'+
+            '<option value="'+esc(c.learner_says_id)+'">'+esc(c.learner_says)+' (learner\'s pick)</option>'+
+            (c.record_says_ids||[]).map(function(id,i){ return '<option value="'+esc(id)+'">'+esc((c.record_says||"").split(", ")[i]||id)+' (record)</option>'; }).join("")+
+            trainerOpts+'</select>';
+          return '<div class="arow" style="flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>'+esc(c.learner)+'</b> · '+esc(c.module)+
+            '<br><span style="font-size:12px;color:#62707a">Learner says <b>'+esc(c.learner_says)+'</b> · Record says <b>'+esc(c.record_says)+'</b></span></div>'+
+            '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'+sel+
+            '<button class="btn ok" style="padding:5px 12px;font-size:12px" data-cres="'+key+'" data-lid="'+esc(c.learner_id)+'" data-mid="'+c.module_id+'">Confirm</button>'+
+            '<button class="btn sec" style="padding:5px 10px;font-size:12px" data-cdis="'+key+'" data-lid="'+esc(c.learner_id)+'" data-mid="'+c.module_id+'">Dismiss</button>'+
+            '</div></div>';
+        }).join("");
+      }
+      confHtml += '</div>';
+
+      // awaiting trainer (learner claimed, no trainer record) — admin can confirm on the trainer's behalf
+      var aw = d.awaiting_trainer_list || [];
+      var awHtml = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#845a0b">🕐 Awaiting trainer confirmation ('+aw.length+')</h4>'+
+        '<p style="font-size:12px;color:#62707a;margin:0 0 10px">A learner marked who trained them, but that trainer hasn\'t logged it. Confirm to record it.</p>';
+      if(!aw.length){ awHtml += '<div class="empty" style="padding:10px">Nothing waiting.</div>'; }
+      else {
+        awHtml += aw.map(function(a){
+          var key = esc(a.learner_id)+'|'+a.module_id;
+          return '<div class="arow"><div style="flex:1"><b>'+esc(a.learner)+'</b> · '+esc(a.module)+
+            '<br><span style="font-size:12px;color:#62707a">Learner says trainer: <b>'+esc(a.learner_says)+'</b></span></div>'+
+            '<button class="btn ok" style="padding:5px 12px;font-size:12px" data-aw="'+key+'" data-lid="'+esc(a.learner_id)+'" data-tid="'+esc(a.learner_says_id)+'" data-mid="'+a.module_id+'">Confirm</button></div>';
+        }).join("");
+      }
+      awHtml += '</div>';
+
+      shell(cards + confHtml + awHtml);
+
+      // wire conflict resolve/dismiss
+      $("tcRoot").querySelectorAll("[data-cres]").forEach(function(b){
+        b.addEventListener("click", async function(){
+          var sel = $("tcRoot").querySelector('[data-csel="'+b.dataset.cres.replace(/"/g,'\\"')+'"]');
+          var tid = sel ? sel.value : "";
+          var r = await postJ("/api/training/confirm-resolve",{learner_id:b.dataset.lid,module_id:b.dataset.mid,trainer_id:tid,decision:"resolve"});
+          if(r.ok){ note(r.msg||"Resolved."); renderConfirmations(); } else note(r.msg||"Failed.");
+        });
+      });
+      $("tcRoot").querySelectorAll("[data-cdis]").forEach(function(b){
+        b.addEventListener("click", async function(){
+          var r = await postJ("/api/training/confirm-resolve",{learner_id:b.dataset.lid,module_id:b.dataset.mid,decision:"dismiss"});
+          if(r.ok){ note(r.msg||"Left as-is."); renderConfirmations(); } else note(r.msg||"Failed.");
+        });
+      });
+      $("tcRoot").querySelectorAll("[data-aw]").forEach(function(b){
+        b.addEventListener("click", async function(){
+          var r = await postJ("/api/training/confirm-claim",{learner_id:b.dataset.lid,trainer_id:b.dataset.tid,module_id:b.dataset.mid});
+          if(r.ok){ note(r.msg||"Confirmed."); renderConfirmations(); } else note(r.msg||"Failed.");
+        });
+      });
+      return;
+    }
+
+    // ----- instructor view: their own 'awaiting your confirmation' items -----
+    var p = await getJ("/api/training/pending");
+    var aw2 = (p && p.ok) ? (p.awaiting_confirmation || []) : [];
+    var html = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#12284B">✔ Awaiting your confirmation ('+aw2.length+')</h4>'+
+      '<p style="font-size:12px;color:#62707a;margin:0 0 10px">Learners marked that <b>you</b> trained them on these modules. Confirm to record it — or ignore if it\'s wrong.</p>';
+    if(!aw2.length){ html += '<div class="empty" style="padding:10px">Nothing waiting. When a learner names you as their trainer, it shows here.</div>'; }
+    else {
+      html += aw2.map(function(a){
+        var key = esc(a.learner_id)+'|'+a.module_id;
+        return '<div class="arow"><div style="flex:1"><b>'+esc(a.learner_name)+'</b> · '+esc(a.module_title)+'</div>'+
+          '<button class="btn ok" style="padding:5px 12px;font-size:12px" data-aw="'+key+'" data-lid="'+esc(a.learner_id)+'" data-tid="'+esc(a.trainer_id)+'" data-mid="'+a.module_id+'">Confirm I trained them</button></div>';
+      }).join("");
+    }
+    html += '</div>';
+    shell(html);
+    $("tcRoot").querySelectorAll("[data-aw]").forEach(function(b){
+      b.addEventListener("click", async function(){
+        var r = await postJ("/api/training/confirm-claim",{learner_id:b.dataset.lid,trainer_id:b.dataset.tid,module_id:b.dataset.mid});
+        if(r.ok){ note(r.msg||"Confirmed."); renderConfirmations(); } else note(r.msg||"Failed.");
+      });
+    });
+  }
 
   // ---- Productivity ----
   async function renderProd(){
