@@ -79,6 +79,8 @@
 
   function renderView() {
     setActivePill();
+    // clear any Chart.js instances from the previous view before switching
+    try { destroyCharts(); } catch (e) {}
     if (AN.view === "overview") return renderOverview();
     if (AN.view === "employee") return renderEmployee();
     if (AN.view === "activity") return renderActivity();
@@ -561,41 +563,184 @@
     return '<div class="an-card"><div class="n">' + escAn(n) + '</div><div class="l">' + escAn(label) + '</div></div>';
   }
 
-  // ===================== FEEDBACK =====================
+  // ===================== FEEDBACK (dashboard) =====================
+  var LOW_STAR = 3;  // ratings at or below this are flagged for attention
+
   function renderFeedback() {
     var box = $an("anViewBox");
     box.innerHTML = '<div id="anFbBody"><div class="an-empty">Loading…</div></div>';
     getJAn("/api/analytics/feedback").then(function (d) {
       var body = $an("anFbBody");
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
-      if (!d.feedback.length) {
-        body.innerHTML = '<div class="an-empty">No learner feedback yet. It appears here once learners rate modules/courses.</div>';
-        return;
-      }
-      var starTxt = function (v) { return v == null ? "" : (v + "★"); };
-      AN._fb = {}; // cache rows by id for the edit popup
-      var h = '<div class="an-sect"><h4>Learner feedback &amp; comments' +
-        (d.is_admin ? '' : ' (your trainings)') + '</h4>' +
-        '<table><thead><tr><th>Date</th><th>Learner</th><th>About</th><th>Trainer</th>' +
-        '<th>Ratings</th><th>Comment</th>' + (d.is_admin ? '<th></th>' : '') + '</tr></thead><tbody>';
-      d.feedback.forEach(function (f) {
-        AN._fb[f.id] = f;
-        var ratings = [];
-        if (f.trainer_rating != null) ratings.push("Trainer " + starTxt(f.trainer_rating));
-        if (f.content_rating != null) ratings.push("Content " + starTxt(f.content_rating));
-        if (f.course_rating != null) ratings.push("Course " + starTxt(f.course_rating));
-        h += '<tr><td style="white-space:nowrap">' + escAn(f.when) + '</td><td>' + escAn(f.learner) + '</td>' +
-          '<td>' + escAn(f.about || "") + '</td>' +
-          '<td>' + (f.trainer ? escAn(f.trainer) : '<span class="an-muted">—</span>') + '</td>' +
-          '<td>' + escAn(ratings.join(" · ")) + '</td>' +
-          '<td>' + (f.comment ? escAn(f.comment) : '<span class="an-muted">—</span>') + '</td>' +
-          (d.is_admin ? '<td style="white-space:nowrap"><button class="an-pill" style="padding:3px 10px" onclick="window.__anEditFb(' + f.id + ')">Edit</button></td>' : '') +
-          '</tr>';
+      // cache for toggle re-render + edit popup
+      AN._fbRows = (d.feedback || []);
+      AN._fbIsAdmin = !!d.is_admin;
+      AN._fb = {};
+      AN._fbRows.forEach(function (f) { AN._fb[f.id] = f; });
+      if (!AN._fbGroup) AN._fbGroup = "trainer";  // default grouping
+      drawFeedback();
+    });
+  }
+
+  // average helper (ignores nulls)
+  function _avg(arr) {
+    var v = arr.filter(function (x) { return x != null; });
+    if (!v.length) return null;
+    return Math.round((v.reduce(function (a, b) { return a + b; }, 0) / v.length) * 10) / 10;
+  }
+  function starStr(v, n) {
+    if (v == null) return '<span class="an-muted">—</span>';
+    var full = Math.round(v);
+    var s = "";
+    for (var i = 1; i <= 5; i++) s += (i <= full ? "★" : "☆");
+    return '<span style="color:#f0a500;letter-spacing:1px">' + s + '</span> ' +
+      '<span class="an-muted">' + v + (n ? " · " + n : "") + '</span>';
+  }
+
+  window.__anFbGroup = function (g) { AN._fbGroup = g; drawFeedback(); };
+
+  function drawFeedback() {
+    var body = $an("anFbBody");
+    if (!body) return;
+    var rows = AN._fbRows || [];
+    var isAdmin = AN._fbIsAdmin;
+
+    if (!rows.length) {
+      body.innerHTML = '<div class="an-empty">No learner feedback yet. It appears here once learners rate modules/courses.</div>';
+      return;
+    }
+
+    // ---- collect all star values for summary + distribution ----
+    var trAll = [], ctAll = [], coAll = [], dist = [0, 0, 0, 0, 0]; // dist[0]=1★ … dist[4]=5★
+    rows.forEach(function (f) {
+      [f.trainer_rating, f.content_rating, f.course_rating].forEach(function (v) {
+        if (v != null && v >= 1 && v <= 5) dist[v - 1]++;
       });
-      body.innerHTML = h + '</tbody></table>' +
-        (d.is_admin ? '<div class="an-muted" style="margin-top:8px">Use Edit to correct the trainer if a learner picked the wrong one.</div>' : '') +
+      if (f.trainer_rating != null) trAll.push(f.trainer_rating);
+      if (f.content_rating != null) ctAll.push(f.content_rating);
+      if (f.course_rating != null) coAll.push(f.course_rating);
+    });
+
+    // ---- 1) summary cards ----
+    var html = '<div class="an-cards">' +
+      anCard(rows.length, "Feedback entries") +
+      anCard(_avg(trAll) == null ? "—" : _avg(trAll) + "★", "Avg trainer rating") +
+      anCard(_avg(ctAll) == null ? "—" : _avg(ctAll) + "★", "Avg content rating") +
+      anCard(_avg(coAll) == null ? "—" : _avg(coAll) + "★", "Avg course rating") +
+    '</div>';
+
+    // ---- 2) distribution chart ----
+    html += '<div class="an-sect"><h4>⭐ Rating distribution</h4>' +
+      '<div style="height:200px"><canvas id="anFbDist"></canvas></div></div>';
+
+    // ---- 3) low-rating flags (<= LOW_STAR) ----
+    var low = rows.filter(function (f) {
+      return [f.trainer_rating, f.content_rating, f.course_rating].some(function (v) {
+        return v != null && v <= LOW_STAR;
+      });
+    });
+    html += '<div class="an-sect" style="border-color:#f0c9c9;background:#fffafa">' +
+      '<h4 style="color:#b4231d">⚠️ Needs attention — ' + LOW_STAR + '★ or below (' + low.length + ')</h4>';
+    if (!low.length) {
+      html += '<div class="an-empty">No low ratings. 👍</div>';
+    } else {
+      html += low.map(function (f) { return fbCardHTML(f, isAdmin, true); }).join("");
+    }
+    html += '</div>';
+
+    // ---- 4) grouped comments with toggle ----
+    html += '<div class="an-sub" style="margin-top:4px">' +
+      '<button class="an-pill' + (AN._fbGroup === "trainer" ? " on" : "") + '" onclick="window.__anFbGroup(\'trainer\')">By Trainer</button>' +
+      '<button class="an-pill' + (AN._fbGroup === "module" ? " on" : "") + '" onclick="window.__anFbGroup(\'module\')">By Module / Course</button>' +
+      '</div>';
+
+    var groups = {};
+    rows.forEach(function (f) {
+      var key, label;
+      if (AN._fbGroup === "trainer") {
+        key = f.trainer_id || "_none";
+        label = f.trainer || "— No trainer —";
+      } else {
+        key = (f.type || "") + ":" + (f.about || "");
+        label = (f.about || "Untitled") + (f.type === "course" ? " (course)" : "");
+      }
+      (groups[key] = groups[key] || { label: label, rows: [] }).rows.push(f);
+    });
+
+    var keys = Object.keys(groups).sort(function (a, b) {
+      return groups[b].rows.length - groups[a].rows.length;
+    });
+    keys.forEach(function (k) {
+      var g = groups[k];
+      // group mini-summary
+      var gtr = [], gct = [], gco = [];
+      g.rows.forEach(function (f) {
+        if (f.trainer_rating != null) gtr.push(f.trainer_rating);
+        if (f.content_rating != null) gct.push(f.content_rating);
+        if (f.course_rating != null) gco.push(f.course_rating);
+      });
+      var parts = [];
+      if (gtr.length) parts.push("Trainer " + _avg(gtr) + "★");
+      if (gct.length) parts.push("Content " + _avg(gct) + "★");
+      if (gco.length) parts.push("Course " + _avg(gco) + "★");
+      html += '<div class="an-sect"><h4>' + escAn(g.label) +
+        ' <span class="an-muted" style="font-weight:600">· ' + g.rows.length + ' feedback' +
+        (parts.length ? " · " + parts.join(" · ") : "") + '</span></h4>' +
+        g.rows.map(function (f) { return fbCardHTML(f, isAdmin, false); }).join("") +
         '</div>';
     });
+
+    body.innerHTML = html;
+
+    // draw the distribution chart (after DOM is in place)
+    var cv = $an("anFbDist");
+    if (cv && window.Chart) {
+      try { if (AN_CHARTS.fbDist) { AN_CHARTS.fbDist.destroy(); delete AN_CHARTS.fbDist; } } catch (e) {}
+      try {
+        AN_CHARTS.fbDist = new Chart(cv.getContext("2d"), {
+          type: "bar",
+          data: {
+            labels: ["1★", "2★", "3★", "4★", "5★"],
+            datasets: [{
+              data: dist,
+              backgroundColor: ["#b4231d", "#e24b4a", "#f0a500", "#6cc04a", "#1d9e75"],
+              borderRadius: 6
+            }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+          }
+        });
+      } catch (e) {}
+    }
+  }
+
+  // one feedback card (used in flags + grouped lists)
+  function fbCardHTML(f, isAdmin, flagMode) {
+    var ratings = [];
+    if (f.trainer_rating != null) ratings.push("Trainer " + f.trainer_rating + "★");
+    if (f.content_rating != null) ratings.push("Content " + f.content_rating + "★");
+    if (f.course_rating != null) ratings.push("Course " + f.course_rating + "★");
+    var low = [f.trainer_rating, f.content_rating, f.course_rating].some(function (v) {
+      return v != null && v <= LOW_STAR;
+    });
+    return '<div style="border:1px solid ' + (flagMode ? "#f0c9c9" : "var(--mg-line)") +
+      ';border-radius:8px;padding:10px 12px;margin-bottom:8px;background:' + (flagMode ? "#fff" : "#fafdff") + '">' +
+      '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">' +
+      '<div style="flex:1">' +
+      (f.comment ? '<div style="font-size:13px;margin-bottom:5px">"' + escAn(f.comment) + '"</div>' : '<div class="an-muted" style="font-size:12.5px;margin-bottom:5px">(no comment)</div>') +
+      '<div class="an-muted" style="font-size:12px">' +
+      escAn(f.learner) +
+      ' · ' + escAn(f.about || "") +
+      (f.trainer ? ' · trainer: ' + escAn(f.trainer) : '') +
+      ' · ' + escAn(f.when) + '</div>' +
+      '<div style="margin-top:4px;font-size:12px' + (low ? ";color:#b4231d;font-weight:600" : ";color:#44515b") + '">' +
+      escAn(ratings.join("  ·  ")) + '</div>' +
+      '</div>' +
+      (isAdmin ? '<button class="an-pill" style="padding:3px 10px;white-space:nowrap" onclick="window.__anEditFb(' + f.id + ')">Edit</button>' : '') +
+      '</div></div>';
   }
 
   // admin: edit a submitted rating (fix trainer / stars / delete)
