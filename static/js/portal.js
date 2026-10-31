@@ -24,13 +24,35 @@ function showTab(name){
   document.querySelectorAll('.pt-tab').forEach(t=>t.classList.remove('active'));
   $('tab-'+name).classList.add('show');
   document.querySelector('.pt-tab[data-tab="'+name+'"]').classList.add('active');
+  if(name==='induction') goHome();  // reset induction view on a real tab click
+  loadTabData(name);
+}
+
+// Load (or reload) the data for a tab — shared by showTab and auto-refresh.
+function loadTabData(name){
   if(name==='assess') loadAssessments();
   if(name==='certs') loadCertificates();
   if(name==='home') loadHomeStats();
-  if(name==='induction'){ goHome(); loadFileModules('induction'); }
+  if(name==='induction') loadFileModules('induction');
   if(name==='training') loadFileModules('training');
   if(name==='videos') loadVideos();
 }
+
+// ---- Auto-refresh the current tab every 30s ----
+// Only the tab you're viewing, pauses when the browser tab is hidden, and
+// skips while a module viewer or rating popup is open (so it won't interrupt).
+function portalAutoRefresh(){
+  try{
+    if(document.hidden) return;                       // not visible
+    if(document.querySelector('.fm-ov.show')) return; // a module/rating modal is open
+    if(typeof MOD_VIEWING !== 'undefined' && MOD_VIEWING) return;  // mid module view
+    var active = document.querySelector('.pt-tab.active');
+    var tab = active ? active.getAttribute('data-tab') : '';
+    if(tab) loadTabData(tab);
+    if(typeof loadPendingBadges === 'function') loadPendingBadges();  // keep tab badges fresh
+  }catch(e){}
+}
+setInterval(portalAutoRefresh, 30000);
 
 // red count badges on the Induction / Training / Assessments tabs
 async function loadPendingBadges(){
@@ -160,6 +182,7 @@ function closeFileModule(){
   clearInterval(MOD_TIMER);
   $('fmFrame').src = 'about:blank';
   $('fmModal').classList.remove('show');
+  MOD_VIEWING = null;   // no longer viewing — let auto-refresh resume
 }
 
 /* ---------------- VIDEOS ---------------- */
