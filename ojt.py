@@ -314,6 +314,47 @@ def _ensure_tables():
             i += 1
             db.execute("INSERT INTO ojt_tags (label, kind, active, sort_no, created_at) VALUES (?,?,?,?,?)",
                        (lab, kind, 1, i, _now()))
+
+    # ---- Daily Activity format (per role) + its daily log + weights ----
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_activity_items (
+            id          SERIAL PRIMARY KEY,
+            role        TEXT NOT NULL,
+            label       TEXT NOT NULL,
+            kind        TEXT NOT NULL DEFAULT 'number',  -- 'number' | 'check'
+            target      INTEGER,                         -- daily target for number items
+            points      INTEGER NOT NULL DEFAULT 1,      -- relative weight within the day
+            sort_no     INTEGER NOT NULL DEFAULT 0,
+            active      INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_activity_log (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            item_id       INTEGER NOT NULL,
+            log_date      TEXT NOT NULL,     -- YYYY-MM-DD (IST)
+            value         INTEGER,           -- for number items (count)
+            done          INTEGER,           -- for check items (0/1)
+            score         INTEGER,           -- 0-100 (auto or trainer override)
+            note          TEXT,
+            filled_by     TEXT,
+            filled_at     TEXT,
+            UNIQUE (enrollment_id, item_id, log_date)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_settings (
+            skey   TEXT PRIMARY KEY,
+            svalue TEXT
+        )
+    """)
+    # seed default weights once
+    for k, v in (("w_tasks", "60"), ("w_activity", "40")):
+        if not db.execute("SELECT 1 FROM ojt_settings WHERE skey=?", (k,)).fetchone():
+            db.execute("INSERT INTO ojt_settings (skey, svalue) VALUES (?,?)", (k, v))
+
     db.commit()
     _ready = True
 
@@ -605,11 +646,11 @@ def api_pending():
     if u["role"] == "admin":
         rows = db.execute(
             "SELECT id, action_type, target_id, target_label, payload, requested_by_name, created_at FROM pending_actions "
-            "WHERE action_type IN ('ojt_tasks','ojt_tag','ojt_topic') AND status='pending' ORDER BY created_at").fetchall()
+            "WHERE action_type IN ('ojt_tasks','ojt_tag','ojt_topic','ojt_activity') AND status='pending' ORDER BY created_at").fetchall()
     else:
         rows = db.execute(
             "SELECT id, action_type, target_id, target_label, payload, requested_by_name, created_at, status FROM pending_actions "
-            "WHERE action_type IN ('ojt_tasks','ojt_tag','ojt_topic') AND requested_by=? ORDER BY created_at DESC LIMIT 30",
+            "WHERE action_type IN ('ojt_tasks','ojt_tag','ojt_topic','ojt_activity') AND requested_by=? ORDER BY created_at DESC LIMIT 30",
             (u["emp_id"],)).fetchall()
     items = []
     for r in rows:
@@ -629,10 +670,32 @@ def api_pending():
 def api_resolve():
     d = request.get_json(force=True)
     db = _get_db()
-    act = db.execute("SELECT * FROM pending_actions WHERE id=? AND action_type IN ('ojt_tasks','ojt_tag','ojt_topic') AND status='pending'",
+    act = db.execute("SELECT * FROM pending_actions WHERE id=? AND action_type IN ('ojt_tasks','ojt_tag','ojt_topic','ojt_activity') AND status='pending'",
                      (d.get("id"),)).fetchone()
     if not act:
         return jsonify(ok=False, msg="Request not found or already handled."), 404
+
+    # --- daily-activity item requests ---
+    if act["action_type"] == "ojt_activity":
+        if d.get("decision") != "approve":
+            db.execute("UPDATE pending_actions SET status='rejected' WHERE id=?", (act["id"],))
+            db.commit()
+            return jsonify(ok=True, msg="Rejected.")
+        p = json.loads(act["payload"] or "{}")
+        op = p.get("op")
+        if op == "add":
+            n = db.execute("SELECT COALESCE(MAX(sort_no),0)+1 AS s FROM ojt_activity_items WHERE role=?", (p.get("role"),)).fetchone()["s"]
+            db.execute("INSERT INTO ojt_activity_items (role, label, kind, target, points, sort_no, active, created_at) "
+                       "VALUES (?,?,?,?,?,?,1,?)",
+                       (p.get("role"), p.get("label"), p.get("kind", "number"), p.get("target"), p.get("points", 1), n, _now()))
+        elif op == "edit":
+            db.execute("UPDATE ojt_activity_items SET label=?, kind=?, target=?, points=? WHERE id=?",
+                       (p.get("label"), p.get("kind", "number"), p.get("target"), p.get("points", 1), p.get("id")))
+        elif op == "delete":
+            db.execute("UPDATE ojt_activity_items SET active=0 WHERE id=?", (p.get("id"),))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (act["id"],))
+        db.commit()
+        return jsonify(ok=True, msg="Approved.")
 
     # --- tag / topic requests ---
     if act["action_type"] in ("ojt_tag", "ojt_topic"):
@@ -1098,6 +1161,112 @@ def api_ojt_topic_delete():
     db.execute("UPDATE ojt_topics SET active=0 WHERE id=?", (d.get("id"),))
     db.commit()
     return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------
+#  DAILY ACTIVITY FORMAT (per role) + weights
+# ---------------------------------------------------------------
+@ojt_bp.route("/api/ojt/activity-items")
+@_staff_required
+def api_ojt_activity_items():
+    """The daily-activity format for a role (the items a trainer fills each day)."""
+    db = _get_db()
+    role = _clean_role(request.args.get("role"))
+    rows = db.execute(
+        "SELECT id, label, kind, target, points, sort_no FROM ojt_activity_items "
+        "WHERE role=? AND active=1 ORDER BY sort_no, id", (role,)
+    ).fetchall() if role else []
+    return jsonify(ok=True, role=role, items=[dict(r) for r in rows], roles=OJT_ROLES)
+
+
+@ojt_bp.route("/api/ojt/activity-item-save", methods=["POST"])
+@_staff_required
+def api_ojt_activity_item_save():
+    u = _current_user()
+    d = request.get_json(force=True)
+    role = _clean_role(d.get("role"))
+    label = (d.get("label") or "").strip()[:120]
+    kind = (d.get("kind") or "number").strip().lower()
+    if kind not in ("number", "check"):
+        kind = "number"
+    if not role or not label:
+        return jsonify(ok=False, msg="Role and label are required."), 400
+    try:
+        target = int(d.get("target")) if (kind == "number" and d.get("target") not in (None, "", 0, "0")) else None
+    except (TypeError, ValueError):
+        target = None
+    try:
+        points = max(1, int(d.get("points") or 1))
+    except (TypeError, ValueError):
+        points = 1
+
+    if u["role"] == "instructor":
+        verb = "Edit" if d.get("id") else "Add"
+        _queue_meta("ojt_activity", f"{verb} activity item: {label} ({role})",
+                    {"op": ("edit" if d.get("id") else "add"), "id": d.get("id"),
+                     "role": role, "label": label, "kind": kind, "target": target, "points": points}, u)
+        return jsonify(ok=True, msg="Request sent for admin approval.")
+
+    db = _get_db()
+    iid = d.get("id")
+    if iid:
+        db.execute("UPDATE ojt_activity_items SET label=?, kind=?, target=?, points=? WHERE id=?",
+                   (label, kind, target, points, iid))
+    else:
+        n = db.execute("SELECT COALESCE(MAX(sort_no),0)+1 AS s FROM ojt_activity_items WHERE role=?", (role,)).fetchone()["s"]
+        db.execute("INSERT INTO ojt_activity_items (role, label, kind, target, points, sort_no, active, created_at) "
+                   "VALUES (?,?,?,?,?,?,1,?)", (role, label, kind, target, points, n, _now()))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/activity-item-delete", methods=["POST"])
+@_staff_required
+def api_ojt_activity_item_delete():
+    u = _current_user()
+    d = request.get_json(force=True)
+    if u["role"] == "instructor":
+        db = _get_db()
+        row = db.execute("SELECT label FROM ojt_activity_items WHERE id=?", (d.get("id"),)).fetchone()
+        _queue_meta("ojt_activity", f"Remove activity item: {(row['label'] if row else d.get('id'))}",
+                    {"op": "delete", "id": d.get("id")}, u)
+        return jsonify(ok=True, msg="Request sent for admin approval.")
+    db = _get_db()
+    db.execute("UPDATE ojt_activity_items SET active=0 WHERE id=?", (d.get("id"),))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/activity-weights")
+@_staff_required
+def api_ojt_activity_weights_get():
+    db = _get_db()
+    def _g(k, dflt):
+        r = db.execute("SELECT svalue FROM ojt_settings WHERE skey=?", (k,)).fetchone()
+        try:
+            return int(r["svalue"]) if r else dflt
+        except (TypeError, ValueError):
+            return dflt
+    return jsonify(ok=True, w_tasks=_g("w_tasks", 60), w_activity=_g("w_activity", 40))
+
+
+@ojt_bp.route("/api/ojt/activity-weights-save", methods=["POST"])
+@_admin_only
+def api_ojt_activity_weights_save():
+    d = request.get_json(force=True)
+    try:
+        wt = max(0, min(100, int(d.get("w_tasks"))))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Task weight must be 0-100."), 400
+    wa = 100 - wt   # the two always sum to 100
+    db = _get_db()
+    for k, v in (("w_tasks", str(wt)), ("w_activity", str(wa))):
+        if db.execute("SELECT 1 FROM ojt_settings WHERE skey=?", (k,)).fetchone():
+            db.execute("UPDATE ojt_settings SET svalue=? WHERE skey=?", (v, k))
+        else:
+            db.execute("INSERT INTO ojt_settings (skey, svalue) VALUES (?,?)", (k, v))
+    db.commit()
+    return jsonify(ok=True, w_tasks=wt, w_activity=wa, msg=f"Weights saved — Tasks {wt}% / Activity {wa}%.")
 
 
 @ojt_bp.route("/api/ojt/scorecard")
