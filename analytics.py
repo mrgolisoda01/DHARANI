@@ -68,6 +68,21 @@ def _name_map(db):
             for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
 
 
+def _desg_map(db):
+    """emp_id -> designation (lowercased), for separating trainers from the L&D
+    Manager in the KPI competition."""
+    return {r["emp_id"]: (r["designation"] or "").strip().lower()
+            for r in db.execute("SELECT emp_id, designation FROM users").fetchall()}
+
+
+def _is_trainer_designation(desg):
+    """A 'competing trainer' is anyone whose designation is an L&D Executive
+    (covers 'Learning & Development Executive' and 'Sr. Learning & Development
+    Executive'). The L&D Manager and generic admins are NOT in the competition."""
+    d = (desg or "").strip().lower()
+    return "learning & development executive" in d or "learning and development executive" in d
+
+
 # ===============================================================
 #  1) PER-EMPLOYEE JOURNEY
 # ===============================================================
@@ -322,11 +337,14 @@ def api_analytics_activity():
 # ===============================================================
 #  3) TRAINER ROLL-UP  (KPI foundation)
 # ===============================================================
-def _build_trainer_kpis(db):
-    """Compute the KPI scorecard list for ALL trainers (sorted best-first).
-    Shared by the admin-wide Trainers view and the per-trainer 'My Performance'
-    view, so the numbers are identical in both."""
+def _build_trainer_kpis(db, only_trainers=True, keep_ids=None):
+    """Compute the KPI scorecard list for trainers (sorted best-first).
+    only_trainers=True keeps just the competing trainers (L&D Executives),
+    excluding the L&D Manager and generic admins from the ranked competition.
+    keep_ids, if given, restricts to those emp_ids (used for the manager's own
+    numbers). Shared by the admin Trainers view and the per-trainer view."""
     names = _name_map(db)
+    desgs = _desg_map(db)
 
     # trainer -> set(learner), count(deliveries), set(module)
     stats = {}
@@ -339,6 +357,12 @@ def _build_trainer_kpis(db):
         s["learners"].add(r["learner_id"])
         s["deliveries"] += 1
         s["modules"].add(r["module_id"])
+
+    # keep only the people we want ranked
+    if keep_ids is not None:
+        stats = {t: s for t, s in stats.items() if t in set(keep_ids)}
+    elif only_trainers:
+        stats = {t: s for t, s in stats.items() if _is_trainer_designation(desgs.get(t, ""))}
 
     # average score + pass rate of each trainer's learners (best attempt per learner-assessment)
     out = []
@@ -364,7 +388,8 @@ def _build_trainer_kpis(db):
                 calls_map[r["called_by"]] = r["c"]
         except Exception:
             calls_map = {}
-    max_calls = max(calls_map.values()) if calls_map else 0
+    # normalize engagement only against the people being ranked (in `stats`)
+    max_calls = max((calls_map.get(t, 0) for t in stats.keys()), default=0)
     max_deliveries = max((s["deliveries"] for s in stats.values()), default=0)
 
     # ---- per-learner assessment aggregates, computed ONCE for everyone ----
@@ -499,6 +524,73 @@ def api_analytics_my_trainer():
     return jsonify(ok=True, me=mine, kpi_weights=_KPI_WEIGHTS,
                    rank=(rank if show_rank else None),
                    total_trainers=(len(out) if show_rank else None))
+
+
+@analytics_bp.route("/api/analytics/ld-manager")
+@_staff_only
+def api_analytics_ld_manager():
+    """The L&D Manager's own view (admin only): the manager's OWN delivery
+    activity (not scored against trainers) + a roll-up of the competing
+    trainers' progress, with best / needs-support flags."""
+    u = _current_user()
+    if u["role"] != "admin":
+        return jsonify(ok=False, admin_only=True, msg="Admin only."), 403
+    db = _get_db()
+    me = u["emp_id"]
+
+    # the competing trainers (L&D Executives), ranked
+    trainers = _build_trainer_kpis(db, only_trainers=True)
+
+    # the manager's OWN numbers, computed the same way but just for themselves
+    my_rows = _build_trainer_kpis(db, keep_ids=[me])
+    my = (my_rows[0] if my_rows else {
+        "trainer_id": me, "trainer": u["name"],
+        "learners": 0, "deliveries": 0, "modules": 0,
+        "avg_score": None, "pass_rate": None, "first_attempt_rate": None,
+        "ojt_calls": 0, "trainer_rating": None, "trainer_rating_n": 0,
+        "content_rating": None, "kpi_score": 0, "low_data": True,
+    })
+
+    # team roll-up
+    n = len(trainers)
+    def _avg(vals):
+        v = [x for x in vals if x is not None]
+        return round(sum(v) / len(v)) if v else None
+    team = {
+        "trainers": n,
+        "avg_kpi": _avg([t["kpi_score"] for t in trainers]),
+        "avg_pass": _avg([t["pass_rate"] for t in trainers]),
+        "avg_score": _avg([t["avg_score"] for t in trainers]),
+        "total_deliveries": sum(t["deliveries"] for t in trainers),
+        "total_ojt_calls": sum(t["ojt_calls"] for t in trainers),
+    }
+    # distinct learners across the team (not a simple sum — avoid double counting)
+    try:
+        team_ids = [t["trainer_id"] for t in trainers]
+        if team_ids:
+            ph = ",".join("?" * len(team_ids))
+            row = db.execute(
+                "SELECT COUNT(DISTINCT learner_id) c FROM training_delivery "
+                "WHERE status='approved' AND trainer_id IN (" + ph + ")", team_ids
+            ).fetchone()
+            team["distinct_learners"] = (row["c"] if row else 0)
+        else:
+            team["distinct_learners"] = 0
+    except Exception:
+        team["distinct_learners"] = 0
+
+    # best / needs-support flags (only meaningful with enough data)
+    best = trainers[0] if trainers else None
+    ranked = [t for t in trainers if not t["low_data"]]
+    needs = (ranked[-1] if len(ranked) >= 2 else None)
+
+    return jsonify(ok=True,
+                   manager={"emp_id": me, "name": u["name"],
+                            "designation": u["designation"] or "L&D Manager"},
+                   my=my, team=team, trainers=trainers,
+                   best=({"trainer": best["trainer"], "kpi_score": best["kpi_score"]} if best else None),
+                   needs_support=({"trainer": needs["trainer"], "kpi_score": needs["kpi_score"]} if needs else None),
+                   kpi_weights=_KPI_WEIGHTS)
 
 
 @analytics_bp.route("/api/analytics/trainer")
