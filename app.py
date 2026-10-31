@@ -1171,20 +1171,26 @@ def api_admin_all_approvals():
     except Exception:
         edits = []
 
-    # 4) question add/replace/clear requests (from instructors)
+    # 4) question requests from instructors: bulk replace/clear/add AND single
+    #    add/edit/delete on a live assessment.
     import json as _json
     question_changes = []
     try:
         for r in db.execute(
-            "SELECT * FROM pending_actions WHERE status='pending' AND action_type='question_replace' ORDER BY created_at DESC"
+            "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('question_replace','question_edit') ORDER BY created_at DESC"
         ).fetchall():
             row = dict(r)
             try:
                 p = _json.loads(row.get("payload") or "{}")
             except Exception:
                 p = {}
-            row["mode"] = p.get("mode", "add")
-            row["count"] = p.get("count", "")
+            if row.get("action_type") == "question_edit":
+                row["mode"] = "edit_" + (p.get("op") or "change")   # edit_add / edit_update / edit_delete
+                row["count"] = 1
+                row["question_preview"] = (p.get("question") or "")[:140]
+            else:
+                row["mode"] = p.get("mode", "add")
+                row["count"] = p.get("count", "")
             question_changes.append(row)
     except Exception:
         question_changes = []
@@ -1203,7 +1209,7 @@ def api_admin_pending_actions():
     """All pending action requests (instructor delete/resign/assign-manager/user-edit)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit','activate','question_replace') ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit','activate','question_replace','question_edit') ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -1396,6 +1402,37 @@ def api_admin_resolve_action():
         log_activity("approved question change", "assessment", act["target_label"] or a_id,
                      details=f"{mode}; requested by {act['requested_by_name'] or act['requested_by'] or ''}")
         return jsonify(ok=True, msg="Approved — questions updated.")
+
+    # A single question add/update/delete requested by an instructor on a
+    # LIVE assessment. Apply the exact change now.
+    if act["action_type"] == "question_edit":
+        import json as _json
+        try:
+            pay = _json.loads(act["payload"] or "{}")
+        except Exception:
+            pay = {}
+        a_id = pay.get("assessment_id") or act["target_id"]
+        op = pay.get("op")
+        if op == "delete":
+            db.execute("DELETE FROM questions WHERE id=? AND assessment_id=?", (pay.get("id"), a_id))
+            # shrink num_questions if it now exceeds the pool
+            pool = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (a_id,)).fetchone()["c"]
+            arow = db.execute("SELECT num_questions FROM assessments WHERE id=?", (a_id,)).fetchone()
+            if arow and pool > 0 and arow["num_questions"] > pool:
+                db.execute("UPDATE assessments SET num_questions=? WHERE id=?", (pool, a_id))
+        elif op == "update":
+            db.execute("UPDATE questions SET question=?,opt_a=?,opt_b=?,opt_c=?,opt_d=?,correct=?,category=? WHERE id=? AND assessment_id=?",
+                       (pay.get("question"), pay.get("opt_a"), pay.get("opt_b"), pay.get("opt_c"),
+                        pay.get("opt_d"), pay.get("correct"), pay.get("category"), pay.get("id"), a_id))
+        else:  # add
+            db.execute("INSERT INTO questions (assessment_id,question,opt_a,opt_b,opt_c,opt_d,correct,category) VALUES (?,?,?,?,?,?,?,?)",
+                       (a_id, pay.get("question"), pay.get("opt_a"), pay.get("opt_b"), pay.get("opt_c"),
+                        pay.get("opt_d"), pay.get("correct"), pay.get("category")))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+        db.commit()
+        log_activity("approved question edit", "assessment", act["target_label"] or a_id,
+                     details=f"{op}; requested by {act['requested_by_name'] or act['requested_by'] or ''}")
+        return jsonify(ok=True, msg="Approved — question " + (op or "change") + " applied.")
 
     # perform the delete that was requested
     tt = act["target_type"]
@@ -2986,15 +3023,7 @@ def api_admin_save_question():
     correct = (d.get("correct") or "").strip().upper()
     cat = (d.get("category") or "").strip()
 
-    # Instructors may only build questions on an assessment that is still
-    # pending (nothing live yet). Editing questions on a LIVE assessment is a
-    # change to live content and stays admin-only.
-    _u = current_user()
-    if _u["role"] == "instructor":
-        _a = get_db().execute("SELECT status FROM assessments WHERE id=?", (aid,)).fetchone()
-        if _a and _a["status"] == "live":
-            return jsonify(ok=False, msg="This assessment is already live. Ask an admin to change its questions."), 403
-
+    # Validate first (same rules whether it applies now or is queued).
     if not q or not a or not b:
         return jsonify(ok=False, msg="Question and options A and B are required."), 400
     if correct not in ("A", "B", "C", "D"):
@@ -3005,6 +3034,32 @@ def api_admin_save_question():
         return jsonify(ok=False, msg="Correct is D but option D is empty."), 400
 
     db = get_db()
+
+    # Instructors editing a LIVE assessment don't change it directly — the
+    # change is queued for admin approval (the live questions stay unchanged
+    # until approved). Pending assessments (nothing live yet) still apply now.
+    _u = current_user()
+    if _u["role"] == "instructor":
+        _a = db.execute("SELECT status, title FROM assessments WHERE id=?", (aid,)).fetchone()
+        if _a and _a["status"] == "live":
+            import json as _json
+            payload = _json.dumps({
+                "op": ("update" if qid else "add"),
+                "assessment_id": aid, "id": qid,
+                "question": q, "opt_a": a, "opt_b": b, "opt_c": cc, "opt_d": dd,
+                "correct": correct, "category": cat,
+            })
+            db.execute(
+                "INSERT INTO pending_actions (action_type, target_type, target_id, target_label, "
+                "payload, requested_by, requested_by_name, status, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("question_edit", "assessment", str(aid), (_a["title"] if _a else str(aid)),
+                 payload, _u["emp_id"], _u["name"],
+                 "pending", datetime.utcnow().isoformat()))
+            db.commit()
+            return jsonify(ok=True, queued=True,
+                           msg=("Edit sent for admin approval." if qid else "New question sent for admin approval."))
+
     if qid:
         db.execute("UPDATE questions SET question=?,opt_a=?,opt_b=?,opt_c=?,opt_d=?,correct=?,category=? WHERE id=? AND assessment_id=?",
                    (q, a, b, cc, dd, correct, cat, qid, aid))
@@ -3025,12 +3080,26 @@ def api_admin_delete_question():
     qid = d.get("id")
     aid = d.get("assessment_id")
     db = get_db()
-    # Instructors can only edit questions on a still-pending assessment.
+    # Instructor deleting a question on a LIVE assessment -> queue for admin
+    # approval (the question is NOT removed until approved).
     _u = current_user()
     if _u["role"] == "instructor":
-        _a = db.execute("SELECT status FROM assessments WHERE id=?", (aid,)).fetchone()
+        _a = db.execute("SELECT status, title FROM assessments WHERE id=?", (aid,)).fetchone()
         if _a and _a["status"] == "live":
-            return jsonify(ok=False, msg="This assessment is already live. Ask an admin to remove questions."), 403
+            import json as _json
+            qrow = db.execute("SELECT question FROM questions WHERE id=? AND assessment_id=?", (qid, aid)).fetchone()
+            payload = _json.dumps({
+                "op": "delete", "assessment_id": aid, "id": qid,
+                "question": (qrow["question"] if qrow else ""),
+            })
+            db.execute(
+                "INSERT INTO pending_actions (action_type, target_type, target_id, target_label, "
+                "payload, requested_by, requested_by_name, status, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("question_edit", "assessment", str(aid), (_a["title"] if _a else str(aid)),
+                 payload, _u["emp_id"], _u["name"], "pending", datetime.utcnow().isoformat()))
+            db.commit()
+            return jsonify(ok=True, queued=True, msg="Delete sent for admin approval.")
     db.execute("DELETE FROM questions WHERE id=? AND assessment_id=?", (qid, aid))
     # if num_questions now exceeds pool, shrink it
     pool = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (aid,)).fetchone()["c"]
@@ -3124,7 +3193,7 @@ def api_admin_pending_questions_preview():
     rid = request.args.get("id")
     db = get_db()
     act = db.execute(
-        "SELECT * FROM pending_actions WHERE id=? AND action_type='question_replace' AND status='pending'",
+        "SELECT * FROM pending_actions WHERE id=? AND action_type IN ('question_replace','question_edit') AND status='pending'",
         (rid,)
     ).fetchone()
     if not act:
@@ -3133,6 +3202,19 @@ def api_admin_pending_questions_preview():
         pay = _json.loads(act["payload"] or "{}")
     except Exception:
         pay = {}
+
+    # single add/edit/delete of one question on a live assessment
+    if act["action_type"] == "question_edit":
+        op = pay.get("op") or "change"
+        one = {"question": pay.get("question", ""),
+               "a": pay.get("opt_a", ""), "b": pay.get("opt_b", ""),
+               "c": pay.get("opt_c", ""), "d": pay.get("opt_d", ""),
+               "correct": pay.get("correct", "")}
+        return jsonify(ok=True, mode=("edit_" + op), op=op, count=1,
+                       assessment=act["target_label"],
+                       items=([] if op == "delete" else [one]),
+                       delete_question=(pay.get("question", "") if op == "delete" else ""))
+
     mode = pay.get("mode", "add")
     items = []
     if mode in ("add", "replace"):
