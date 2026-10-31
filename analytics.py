@@ -1243,6 +1243,283 @@ def api_analytics_rating_trainers_list():
                                        "designation": r["designation"] or ""} for r in rows])
 
 
+# ===============================================================
+#  REPORTS / EXPORT  (C5) — admin-only Excel downloads
+# ===============================================================
+def _admin_only_or_403():
+    u = _current_user()
+    if u is None or u["role"] != "admin":
+        return None
+    return u
+
+
+def _date_window():
+    """Parse ?from=YYYY-MM-DD&to=YYYY-MM-DD. Returns (from_iso, to_excl_iso,
+    label). Missing => no bound on that side. 'to' is made exclusive of the
+    next day so the whole 'to' date is included. Values are compared against
+    ISO-UTC text timestamps (same convention as the rest of this module)."""
+    f = (request.args.get("from") or "").strip()
+    t = (request.args.get("to") or "").strip()
+    from_iso = f if f else None
+    to_excl = None
+    if t:
+        try:
+            d = datetime.fromisoformat(t).date() + timedelta(days=1)
+            to_excl = d.isoformat()
+        except Exception:
+            to_excl = None
+    if f and t:
+        label = f + " to " + t
+    elif f:
+        label = "from " + f
+    elif t:
+        label = "up to " + t
+    else:
+        label = "All dates"
+    return from_iso, to_excl, label
+
+
+def _xlsx_response(wb, fname):
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    from flask import Response
+    return Response(
+        bio.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="' + fname + '"'})
+
+
+def _xlsx_styles():
+    from openpyxl.styles import Font, PatternFill, Alignment
+    return {
+        "title": Font(bold=True, size=14, color="12284B"),
+        "sub": Font(italic=True, size=10, color="64707A"),
+        "hdrfont": Font(bold=True, color="FFFFFF"),
+        "hdrfill": PatternFill("solid", fgColor="1F5FA9"),
+        "center": Alignment(horizontal="center"),
+        "wrap": Alignment(wrap_text=True, vertical="top"),
+    }
+
+
+def _ws_header(ws, st, title, sub, columns, start_row=4):
+    ws["A1"] = title
+    ws["A1"].font = st["title"]
+    ws["A2"] = sub
+    ws["A2"].font = st["sub"]
+    ws["A3"] = "Generated " + _today_ist().strftime("%d %b %Y")
+    ws["A3"].font = st["sub"]
+    for i, (name, width) in enumerate(columns, start=1):
+        c = ws.cell(row=start_row, column=i, value=name)
+        c.font = st["hdrfont"]
+        c.fill = st["hdrfill"]
+        c.alignment = st["center"]
+        ws.column_dimensions[chr(64 + i)].width = width
+    return start_row + 1
+
+
+@analytics_bp.route("/api/analytics/export/trainers")
+@_staff_only
+def api_export_trainers():
+    if not _admin_only_or_403():
+        return jsonify(ok=False, msg="Admin only."), 403
+    from openpyxl import Workbook
+    db = _get_db()
+    rows = _build_trainer_kpis(db)
+    st = _xlsx_styles()
+    wb = Workbook(); ws = wb.active; ws.title = "Trainer KPIs"
+    cols = [("Rank", 7), ("Trainer", 26), ("KPI score", 11), ("Learners", 10),
+            ("Pass rate %", 12), ("Avg score %", 12), ("1st-attempt %", 14),
+            ("Trainer rating", 14), ("Content rating", 14), ("OJT calls", 10),
+            ("Deliveries", 11), ("Low data", 10)]
+    r = _ws_header(ws, st, "Mr. Golisoda — Trainer KPI Scorecards",
+                   "Cumulative (as of generation date)", cols)
+    for i, t in enumerate(rows, 1):
+        ws.append([i, t["trainer"], t["kpi_score"], t["learners"],
+                   t["pass_rate"], t["avg_score"], t["first_attempt_rate"],
+                   t["trainer_rating"], t["content_rating"], t["ojt_calls"],
+                   t["deliveries"], ("yes" if t["low_data"] else "")])
+    return _xlsx_response(wb, "trainer_kpis.xlsx")
+
+
+@analytics_bp.route("/api/analytics/export/employees")
+@_staff_only
+def api_export_employees():
+    if not _admin_only_or_403():
+        return jsonify(ok=False, msg="Admin only."), 403
+    from openpyxl import Workbook
+    db = _get_db()
+    names = _name_map(db)
+
+    # live modules + active assessments, and per-emp done/passed sets
+    ind = db.execute("SELECT id, roles FROM content_modules WHERE kind='induction' AND status='live'").fetchall()
+    trn = db.execute("SELECT id, roles FROM content_modules WHERE kind='training' AND status='live'").fetchall()
+    ass = db.execute("SELECT id, roles FROM assessments WHERE active=1").fetchall()
+    done = {}
+    for c in db.execute("SELECT emp_id, module_id FROM module_completions").fetchall():
+        done.setdefault(c["emp_id"], set()).add(c["module_id"])
+    passed = {}
+    best = {}
+    for r0 in db.execute("SELECT emp_id, assessment_id, MAX(percent) b, MAX(CASE WHEN passed=1 THEN 1 ELSE 0 END) p FROM assessment_results GROUP BY emp_id, assessment_id").fetchall():
+        if r0["p"]:
+            passed.setdefault(r0["emp_id"], set()).add(r0["assessment_id"])
+        best.setdefault(r0["emp_id"], []).append(r0["b"])
+    certs = {}
+    for c in db.execute("SELECT emp_id, COUNT(*) n FROM issued_certificates GROUP BY emp_id").fetchall():
+        certs[c["emp_id"]] = c["n"]
+    # who trained each learner (approved)
+    trained_by = {}
+    for r0 in db.execute("SELECT learner_id, trainer_id FROM training_delivery WHERE status='approved'").fetchall():
+        trained_by.setdefault(r0["learner_id"], set()).add(names.get(r0["trainer_id"], r0["trainer_id"]))
+
+    def _match(roles, desg):
+        roles = (roles or "all").strip().lower()
+        if roles in ("", "all"):
+            return True
+        d = (desg or "").strip().lower()
+        return any(a.strip() and a.strip() in d for a in roles.split(","))
+
+    learners = db.execute(
+        "SELECT emp_id, name, designation, status, COALESCE(activated,0) activated "
+        "FROM users WHERE role='staff' ORDER BY designation, name").fetchall()
+
+    st = _xlsx_styles()
+    wb = Workbook(); ws = wb.active; ws.title = "Employee records"
+    cols = [("Name", 24), ("Emp ID", 12), ("Designation", 24), ("Status", 11),
+            ("Activated", 10), ("Induction done", 14), ("Training done", 14),
+            ("Assessments passed", 18), ("Avg score %", 12), ("Certificates", 12),
+            ("Trained by", 30)]
+    r = _ws_header(ws, st, "Mr. Golisoda — Employee Training Records",
+                   "Cumulative (as of generation date)", cols)
+    for u in learners:
+        desg = u["designation"]
+        mi = [m for m in ind if _match(m["roles"], desg)]
+        mt = [m for m in trn if _match(m["roles"], desg)]
+        ma = [a for a in ass if _match(a["roles"], desg)]
+        dn = done.get(u["emp_id"], set())
+        pa = passed.get(u["emp_id"], set())
+        scores = best.get(u["emp_id"], [])
+        avg = round(sum(scores) / len(scores)) if scores else None
+        ws.append([
+            u["name"], u["emp_id"], desg, u["status"],
+            ("yes" if u["activated"] else "no"),
+            str(sum(1 for m in mi if m["id"] in dn)) + " / " + str(len(mi)),
+            str(sum(1 for m in mt if m["id"] in dn)) + " / " + str(len(mt)),
+            str(sum(1 for a in ma if a["id"] in pa)) + " / " + str(len(ma)),
+            (avg if avg is not None else ""),
+            certs.get(u["emp_id"], 0),
+            ", ".join(sorted(trained_by.get(u["emp_id"], set()))),
+        ])
+    return _xlsx_response(wb, "employee_training_records.xlsx")
+
+
+@analytics_bp.route("/api/analytics/export/activity")
+@_staff_only
+def api_export_activity():
+    if not _admin_only_or_403():
+        return jsonify(ok=False, msg="Admin only."), 403
+    from openpyxl import Workbook
+    db = _get_db()
+    names = _name_map(db)
+    from_iso, to_excl, label = _date_window()
+
+    def _rng(col):
+        w, a = [], []
+        if from_iso:
+            w.append(col + " >= ?"); a.append(from_iso)
+        if to_excl:
+            w.append(col + " < ?"); a.append(to_excl)
+        return ((" WHERE " + " AND ".join(w)) if w else ""), a
+
+    events = []
+    w, a = _rng("mc.completed_at")
+    for r0 in db.execute(
+        "SELECT mc.emp_id, mc.completed_at ts, cm.title, cm.kind FROM module_completions mc "
+        "LEFT JOIN content_modules cm ON cm.id=mc.module_id" + w, a).fetchall():
+        events.append((_ist(r0["ts"]), names.get(r0["emp_id"], r0["emp_id"]),
+                       ("Induction" if (r0["kind"] or "")=="induction" else "Training"),
+                       r0["title"] or "module", "Completed"))
+    w, a = _rng("r.taken_at")
+    for r0 in db.execute(
+        "SELECT r.emp_id, r.taken_at ts, r.percent, r.passed, a.title FROM assessment_results r "
+        "LEFT JOIN assessments a ON a.id=r.assessment_id" + w, a).fetchall():
+        events.append((_ist(r0["ts"]), names.get(r0["emp_id"], r0["emp_id"]), "Assessment",
+                       r0["title"] or "assessment",
+                       ("PASS " if r0["passed"] else "FAIL ") + str(r0["percent"]) + "%"))
+    w, a = _rng("issued_at")
+    for r0 in db.execute(
+        "SELECT emp_id, cert_name, issued_at ts FROM issued_certificates" + w, a).fetchall():
+        events.append((_ist(r0["ts"]), names.get(r0["emp_id"], r0["emp_id"]), "Certificate",
+                       r0["cert_name"] or "Certificate", "Issued"))
+    if _table_exists(db, "ojt_calls"):
+        try:
+            w, a = _rng("oc.called_at")
+            for r0 in db.execute(
+                "SELECT oc.called_by, oc.called_at ts, oc.outcome, oc.day_no, e.emp_id learner_id "
+                "FROM ojt_calls oc LEFT JOIN ojt_enrollments e ON e.id=oc.enrollment_id" + w, a).fetchall():
+                events.append((_ist(r0["ts"]), names.get(r0["learner_id"], r0["learner_id"] or ""),
+                               "OJT call", "Day " + str(r0["day_no"] or "") + " · " + names.get(r0["called_by"], r0["called_by"] or ""),
+                               r0["outcome"] or "Called"))
+        except Exception:
+            pass
+    events.sort(key=lambda e: e[0], reverse=True)
+
+    st = _xlsx_styles()
+    wb = Workbook(); ws = wb.active; ws.title = "Activity"
+    cols = [("Date", 13), ("Person", 24), ("Type", 14), ("Detail", 36), ("Result", 16)]
+    _ws_header(ws, st, "Mr. Golisoda — Activity Log", "Period: " + label, cols)
+    for e in events:
+        ws.append(list(e))
+    return _xlsx_response(wb, "activity_log.xlsx")
+
+
+@analytics_bp.route("/api/analytics/export/feedback")
+@_staff_only
+def api_export_feedback():
+    if not _admin_only_or_403():
+        return jsonify(ok=False, msg="Admin only."), 403
+    from openpyxl import Workbook
+    db = _get_db()
+    names = _name_map(db)
+    from_iso, to_excl, label = _date_window()
+    if not _table_exists(db, "training_ratings"):
+        wb = Workbook(); ws = wb.active; ws.title = "Feedback"
+        ws["A1"] = "No feedback table."
+        return _xlsx_response(wb, "feedback_report.xlsx")
+
+    w, a = [], []
+    if from_iso:
+        w.append("r.created_at >= ?"); a.append(from_iso)
+    if to_excl:
+        w.append("r.created_at < ?"); a.append(to_excl)
+    where = (" WHERE " + " AND ".join(w)) if w else ""
+    rows = db.execute(
+        "SELECT r.created_at, r.emp_id, r.target_type, r.trainer_id, "
+        "r.content_rating, r.trainer_rating, r.course_rating, r.comment, "
+        "COALESCE(cm.title,'') mtitle, COALESCE(a.title,'') ctitle "
+        "FROM training_ratings r "
+        "LEFT JOIN content_modules cm ON cm.id=r.module_id "
+        "LEFT JOIN assessments a ON a.id=r.assessment_id" + where +
+        " ORDER BY r.created_at DESC", a).fetchall()
+
+    st = _xlsx_styles()
+    wb = Workbook(); ws = wb.active; ws.title = "Feedback"
+    cols = [("Date", 13), ("Learner", 22), ("About", 30), ("Trainer", 22),
+            ("Trainer ★", 10), ("Content ★", 10), ("Course ★", 10), ("Comment", 50)]
+    _ws_header(ws, st, "Mr. Golisoda — Learner Feedback Report", "Period: " + label, cols)
+    for r0 in rows:
+        about = r0["mtitle"] if r0["target_type"] == "module" else r0["ctitle"]
+        cell_row = [
+            _ist(r0["created_at"]), names.get(r0["emp_id"], r0["emp_id"]), about,
+            (names.get(r0["trainer_id"], "") if r0["trainer_id"] else ""),
+            r0["trainer_rating"], r0["content_rating"], r0["course_rating"],
+            r0["comment"] or "",
+        ]
+        ws.append(cell_row)
+        ws.cell(row=ws.max_row, column=8).alignment = st["wrap"]
+    return _xlsx_response(wb, "feedback_report.xlsx")
+
+
 def init_analytics(app, get_db, current_user):
     global _get_db, _current_user
     _get_db = get_db
