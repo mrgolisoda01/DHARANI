@@ -461,7 +461,7 @@ async function saveOneQ(qid){
 async function delOneQ(qid){
   if(!confirm("Remove this question?")) return;
   const r = await (await fetch("/api/admin/delete-question",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:qid,assessment_id:EDIT_A.id})})).json();
-  if(r.ok){ toastA("Removed."); openEditAssess(EDIT_A.id); } else toastA(r.msg||"Failed.");
+  if(r.ok){ toastA(r.msg||"Removed."); openEditAssess(EDIT_A.id); } else toastA(r.msg||"Failed.");
 }
 
 async function addQsCsv(){

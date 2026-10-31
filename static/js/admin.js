@@ -399,11 +399,20 @@ async function loadPendingRequests(){
                  : ("Add "+cnt+" questions to");
       headline = "<b>Question change:</b> " + verb + " " + escH(a.target_label||a.target_id);
       approveLabel = "Approve change";
+    } else if(a.action_type === "question_edit"){
+      let op = "change", qp = "";
+      try{ const p = JSON.parse(a.payload||"{}"); op = p.op||"change"; qp = p.question||""; }catch(e){}
+      const verb = op==="delete" ? "Delete a question in"
+                 : op==="update" ? "Edit a question in"
+                 : "Add a question to";
+      headline = "<b>Question edit:</b> " + verb + " " + escH(a.target_label||a.target_id) +
+                 (qp ? '<div style="font-size:11.5px;color:#64707a;margin-top:2px">“'+escH(qp.slice(0,90))+(qp.length>90?'…':'')+'”</div>' : '');
+      approveLabel = "Approve edit";
     } else {
       headline = "<b>Delete " + (typeLabel[a.target_type]||a.target_type) + ":</b> " + escH(a.target_label||a.target_id);
       approveLabel = "Approve delete";
     }
-    const previewBtn = (a.action_type === "question_replace")
+    const previewBtn = (a.action_type === "question_replace" || a.action_type === "question_edit")
       ? `<button class="btn" style="padding:4px 12px;font-size:12px" onclick="previewQuestions(${a.id})">Preview</button>`
       : "";
     return `
@@ -442,11 +451,24 @@ async function previewQuestions(id){
     ov.style = "position:fixed;inset:0;background:rgba(8,30,40,.5);display:flex;align-items:flex-start;justify-content:center;padding:20px;z-index:90;overflow-y:auto";
     document.body.appendChild(ov);
   }
-  const head = d.mode==="clear"
-    ? ("Clear all questions in " + escapeHtml(d.assessment||""))
-    : ("Preview " + d.count + " questions for " + escapeHtml(d.assessment||"") + (d.mode==="replace"?" (replaces all existing)":" (added to existing)"));
+  const isEdit = (d.mode||"").indexOf("edit_")===0;
+  let head;
+  if(isEdit){
+    const opTxt = d.op==="delete" ? "Delete a question from"
+               : d.op==="update" ? "Edit a question in"
+               : "Add a question to";
+    head = opTxt + " " + escapeHtml(d.assessment||"");
+  } else {
+    head = d.mode==="clear"
+      ? ("Clear all questions in " + escapeHtml(d.assessment||""))
+      : ("Preview " + d.count + " questions for " + escapeHtml(d.assessment||"") + (d.mode==="replace"?" (replaces all existing)":" (added to existing)"));
+  }
   let rows = "";
-  if(d.mode==="clear"){
+  if(isEdit && d.op==="delete"){
+    rows = '<div style="border:1px solid #f0c9c9;border-radius:8px;padding:12px;background:#fffafa">'+
+      '<div style="font-size:12px;color:#b4231d;font-weight:600;margin-bottom:4px">This question will be removed:</div>'+
+      '<div style="font-size:13px">'+escapeHtml(d.delete_question||"(question text unavailable)")+'</div></div>';
+  } else if(d.mode==="clear"){
     rows = '<div style="padding:16px;color:var(--mg-muted)">This request only clears the existing questions — no new questions. The assessment and all pass records are kept.</div>';
   } else if(!d.items.length){
     rows = '<div style="padding:16px;color:var(--mg-muted)">No valid questions found in the request.</div>';
