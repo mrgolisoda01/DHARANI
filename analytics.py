@@ -278,6 +278,44 @@ def api_analytics_activity():
             return _trainer_names(tids)                   # exact delivery record(s)
         return _trainer_names(learner_trainers.get(emp_id, set()))  # last-resort fallback
 
+    # which modules are induction (for attributing induction assessments to the
+    # learner's induction-module trainers, which may be several — that's ok)
+    induction_mods = set()
+    try:
+        for r in db.execute("SELECT id FROM content_modules WHERE kind='induction'").fetchall():
+            induction_mods.add(r["id"])
+    except Exception:
+        pass
+    # assessment_id -> linked training module id (set by admin)
+    assess_linked = {}
+    try:
+        for r in db.execute("SELECT id, linked_module_id FROM assessments WHERE linked_module_id IS NOT NULL").fetchall():
+            assess_linked[r["id"]] = r["linked_module_id"]
+    except Exception:
+        pass
+
+    def _induction_trainers(emp_id):
+        """All trainers the learner named for their induction modules."""
+        tids = set()
+        for (lid, mid), tid in rating_by_lm.items():
+            if lid == emp_id and mid in induction_mods:
+                tids.add(tid)
+        return _trainer_names(tids)
+
+    def _assessment_trainer(emp_id, assessment_id):
+        """For a training assessment linked to a module -> that module's one
+        trainer. Otherwise (induction / unlinked) -> the learner's induction
+        trainers (may be several), else their trainer(s) generally."""
+        lm = assess_linked.get(assessment_id)
+        if lm:
+            t = _module_trainer(emp_id, lm)
+            if t:
+                return t
+        ind = _induction_trainers(emp_id)
+        if ind:
+            return ind
+        return _trainer_names(learner_trainers.get(emp_id, set()))
+
     events = []
     totals = {"induction": 0, "training": 0, "assess_pass": 0, "assess_fail": 0,
               "videos": 0, "certs": 0, "ojt_calls": 0}
@@ -317,7 +355,7 @@ def api_analytics_activity():
 
     # assessment attempts
     for r in db.execute(
-        "SELECT r.emp_id, r.taken_at, r.percent, r.passed, a.title "
+        "SELECT r.emp_id, r.assessment_id, r.taken_at, r.percent, r.passed, a.title "
         "FROM assessment_results r LEFT JOIN assessments a ON a.id=r.assessment_id "
         "WHERE r.taken_at >= ? ORDER BY r.taken_at DESC", (since_iso,)
     ).fetchall():
@@ -331,7 +369,7 @@ def api_analytics_activity():
             "type": "assessment", "detail": (r["title"] or "assessment"),
             "result": ("PASS " if r["passed"] else "FAIL ") + str(r["percent"]) + "%",
             "passed": bool(r["passed"]),
-            "trainer": _trainer_names(learner_trainers.get(r["emp_id"], set())),
+            "trainer": _assessment_trainer(r["emp_id"], r["assessment_id"]),
         })
 
     # certificates issued

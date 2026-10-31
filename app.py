@@ -495,6 +495,10 @@ def init_db():
     # add time_taken to assessment_results if an older DB doesn't have it
     if not _column_exists(db, "assessment_results", "time_taken"):
         db.execute("ALTER TABLE assessment_results ADD COLUMN time_taken INTEGER DEFAULT 0")
+    # a training assessment can link to the training module it tests, so we can
+    # attribute the assessment to that module's trainer
+    if not _column_exists(db, "assessments", "linked_module_id"):
+        db.execute("ALTER TABLE assessments ADD COLUMN linked_module_id INTEGER")
 
     # Create default admin if not present
     cur = db.execute("SELECT 1 FROM users WHERE emp_id = ?", (DEFAULT_ADMIN_ID,))
@@ -1007,8 +1011,9 @@ def api_admin_resolve_edit():
         )
     elif tt == "assessment":
         db.execute(
-            "UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=? WHERE id=?",
-            (p.get("title"), p.get("roles"), p.get("num_questions"), p.get("pass_percent"), p.get("time_limit"), tid)
+            "UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=?,linked_module_id=? WHERE id=?",
+            (p.get("title"), p.get("roles"), p.get("num_questions"), p.get("pass_percent"),
+             p.get("time_limit"), p.get("linked_module_id"), tid)
         )
     elif tt == "cert":
         db.execute(
@@ -3048,6 +3053,17 @@ def api_admin_create_assessment():
                    msg=f"Assessment created with {len(parsed)} questions.")
 
 
+@app.route("/api/admin/training-modules-list")
+@view_admin_required
+def api_admin_training_modules_list():
+    """Live training modules — for the assessment 'Linked module' dropdown."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, title FROM content_modules WHERE kind='training' AND status='live' ORDER BY sort_order, title"
+    ).fetchall()
+    return jsonify(ok=True, modules=[{"id": r["id"], "title": r["title"]} for r in rows])
+
+
 @app.route("/api/admin/toggle-assessment", methods=["POST"])
 @admin_required
 def api_admin_toggle_assessment():
@@ -3120,6 +3136,18 @@ def api_admin_update_assessment():
     try: time_limit = int(d.get("time_limit") or 0)
     except (ValueError, TypeError): time_limit = 0
 
+    # linked training module (for trainer attribution). "" / 0 clears it.
+    linked_module_id = a["linked_module_id"] if ("linked_module_id" in a.keys()) else None
+    if "linked_module_id" in d:
+        _lm = d.get("linked_module_id")
+        if _lm in (None, "", 0, "0"):
+            linked_module_id = None
+        else:
+            try:
+                linked_module_id = int(_lm)
+            except (ValueError, TypeError):
+                linked_module_id = None
+
     # don't allow num_q bigger than the pool
     pool = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (aid,)).fetchone()["c"]
     if num_q > pool and pool > 0:
@@ -3127,22 +3155,23 @@ def api_admin_update_assessment():
 
     # ADMIN: apply immediately
     if u["role"] == "admin":
-        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=? WHERE id=?",
-                   (title, roles, num_q, pass_pct, time_limit, aid))
+        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=?,linked_module_id=? WHERE id=?",
+                   (title, roles, num_q, pass_pct, time_limit, linked_module_id, aid))
         db.commit()
         return jsonify(ok=True, msg="Settings saved.")
 
     # INSTRUCTOR editing: stage the change; old stays live
     import json as _json
     proposed = {"title": title, "roles": roles, "num_questions": num_q,
-                "pass_percent": pass_pct, "time_limit": time_limit}
+                "pass_percent": pass_pct, "time_limit": time_limit,
+                "linked_module_id": linked_module_id}
     try:
         a_status = a["status"]
     except Exception:
         a_status = "live"
     if a_status in ("pending", "needs_changes"):
-        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=?,status='pending' WHERE id=?",
-                   (title, roles, num_q, pass_pct, time_limit, aid))
+        db.execute("UPDATE assessments SET title=?,roles=?,num_questions=?,pass_percent=?,time_limit=?,linked_module_id=?,status='pending' WHERE id=?",
+                   (title, roles, num_q, pass_pct, time_limit, linked_module_id, aid))
         db.commit()
         resubmit = a_status == "needs_changes"
         return jsonify(ok=True, msg=("Resubmitted for admin approval." if resubmit else "Changes saved — still pending admin approval."))
