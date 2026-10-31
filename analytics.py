@@ -241,11 +241,24 @@ def api_analytics_activity():
     db = _get_db()
     names = _name_map(db)
 
-    # ---- trainer attribution (who delivered what to whom) ----
-    # exact per (learner, module); plus a per-learner roll-up for events that
-    # aren't tied to a specific module (assessments, videos).
+    # ---- trainer attribution (who took each module for each learner) ----
+    # BEST source: the learner's own rating pick for that exact module — it
+    # names the ONE trainer who took it. Then the trainer's delivery record for
+    # that module. Only as a last resort, the learner's trainer(s) generally.
+    rating_by_lm = {}     # (learner_id, module_id) -> trainer_id (single, precise)
+    if _table_exists(db, "training_ratings"):
+        try:
+            for r in db.execute(
+                "SELECT emp_id, module_id, trainer_id FROM training_ratings "
+                "WHERE target_type='module' AND module_id IS NOT NULL "
+                "AND trainer_id IS NOT NULL AND trainer_id<>''"
+            ).fetchall():
+                rating_by_lm[(r["emp_id"], r["module_id"])] = r["trainer_id"]
+        except Exception:
+            pass
+
     deliv_by_lm = {}      # (learner_id, module_id) -> set(trainer_id)
-    learner_trainers = {} # learner_id -> set(trainer_id)
+    learner_trainers = {} # learner_id -> set(trainer_id) (fallback only)
     for r in db.execute(
         "SELECT learner_id, module_id, trainer_id FROM training_delivery WHERE status='approved'"
     ).fetchall():
@@ -254,6 +267,16 @@ def api_analytics_activity():
 
     def _trainer_names(tids):
         return ", ".join(sorted(names.get(t, t) for t in tids)) if tids else ""
+
+    def _module_trainer(emp_id, module_id):
+        """One precise trainer for this learner+module when known, else best-effort."""
+        rt = rating_by_lm.get((emp_id, module_id))
+        if rt:
+            return names.get(rt, rt)                      # the one trainer the learner named
+        tids = deliv_by_lm.get((emp_id, module_id))
+        if tids:
+            return _trainer_names(tids)                   # exact delivery record(s)
+        return _trainer_names(learner_trainers.get(emp_id, set()))  # last-resort fallback
 
     events = []
     totals = {"induction": 0, "training": 0, "assess_pass": 0, "assess_fail": 0,
@@ -268,16 +291,12 @@ def api_analytics_activity():
         kind = (r["kind"] or "module").lower()
         group = "induction" if kind == "induction" else "training"
         totals[group] = totals.get(group, 0) + 1
-        # exact trainer for this module if logged; else fall back to the
-        # learner's trainer(s) across any module (best-effort attribution)
-        tids = deliv_by_lm.get((r["emp_id"], r["module_id"]))
-        if not tids:
-            tids = learner_trainers.get(r["emp_id"], set())
         events.append({
             "when": _ist(r["completed_at"]), "ts": str(r["completed_at"]),
             "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
             "type": group, "detail": (r["title"] or "module"),
-            "result": "Completed", "trainer": _trainer_names(tids),
+            "result": "Completed",
+            "trainer": _module_trainer(r["emp_id"], r["module_id"]),
         })
 
     # video completions
