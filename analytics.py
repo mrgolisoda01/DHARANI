@@ -241,24 +241,43 @@ def api_analytics_activity():
     db = _get_db()
     names = _name_map(db)
 
+    # ---- trainer attribution (who delivered what to whom) ----
+    # exact per (learner, module); plus a per-learner roll-up for events that
+    # aren't tied to a specific module (assessments, videos).
+    deliv_by_lm = {}      # (learner_id, module_id) -> set(trainer_id)
+    learner_trainers = {} # learner_id -> set(trainer_id)
+    for r in db.execute(
+        "SELECT learner_id, module_id, trainer_id FROM training_delivery WHERE status='approved'"
+    ).fetchall():
+        deliv_by_lm.setdefault((r["learner_id"], r["module_id"]), set()).add(r["trainer_id"])
+        learner_trainers.setdefault(r["learner_id"], set()).add(r["trainer_id"])
+
+    def _trainer_names(tids):
+        return ", ".join(sorted(names.get(t, t) for t in tids)) if tids else ""
+
     events = []
     totals = {"induction": 0, "training": 0, "assess_pass": 0, "assess_fail": 0,
               "videos": 0, "certs": 0, "ojt_calls": 0}
 
     # module completions (split induction vs training)
     for r in db.execute(
-        "SELECT mc.emp_id, mc.completed_at, cm.title, cm.kind "
+        "SELECT mc.emp_id, mc.module_id, mc.completed_at, cm.title, cm.kind "
         "FROM module_completions mc LEFT JOIN content_modules cm ON cm.id=mc.module_id "
         "WHERE mc.completed_at >= ? ORDER BY mc.completed_at DESC", (since_iso,)
     ).fetchall():
         kind = (r["kind"] or "module").lower()
         group = "induction" if kind == "induction" else "training"
         totals[group] = totals.get(group, 0) + 1
+        # exact trainer for this module if logged; else fall back to the
+        # learner's trainer(s) across any module (best-effort attribution)
+        tids = deliv_by_lm.get((r["emp_id"], r["module_id"]))
+        if not tids:
+            tids = learner_trainers.get(r["emp_id"], set())
         events.append({
             "when": _ist(r["completed_at"]), "ts": str(r["completed_at"]),
             "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
             "type": group, "detail": (r["title"] or "module"),
-            "result": "Completed",
+            "result": "Completed", "trainer": _trainer_names(tids),
         })
 
     # video completions
@@ -274,6 +293,7 @@ def api_analytics_activity():
                 "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
                 "type": "video", "detail": (r["title"] or "video"),
                 "result": "Watched",
+                "trainer": _trainer_names(learner_trainers.get(r["emp_id"], set())),
             })
 
     # assessment attempts
@@ -292,6 +312,7 @@ def api_analytics_activity():
             "type": "assessment", "detail": (r["title"] or "assessment"),
             "result": ("PASS " if r["passed"] else "FAIL ") + str(r["percent"]) + "%",
             "passed": bool(r["passed"]),
+            "trainer": _trainer_names(learner_trainers.get(r["emp_id"], set())),
         })
 
     # certificates issued
@@ -305,6 +326,7 @@ def api_analytics_activity():
             "emp_id": r["emp_id"], "name": names.get(r["emp_id"], r["emp_id"]),
             "type": "cert", "detail": (r["cert_name"] or "Certificate"),
             "result": "Issued",
+            "trainer": _trainer_names(learner_trainers.get(r["emp_id"], set())),
         })
 
     # OJT calls (trainer -> learner), via enrollment
@@ -323,8 +345,9 @@ def api_analytics_activity():
                     "when": _ist(r["called_at"]), "ts": str(r["called_at"]),
                     "emp_id": r["learner_id"], "name": learner,
                     "type": "ojt_call",
-                    "detail": "Day " + str(r["day_no"] or "") + " call" + (" · " + caller if caller else ""),
+                    "detail": "Day " + str(r["day_no"] or "") + " call",
                     "result": (r["outcome"] or "Called"),
+                    "trainer": caller,
                 })
         except Exception:
             pass
