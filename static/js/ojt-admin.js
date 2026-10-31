@@ -95,6 +95,7 @@
     ];
     views.push(["tags", "🏷 Manage tags"]);
     views.push(["topics", "📊 Score topics"]);
+    views.push(["activity", "📝 Daily Activity format"]);
     views = views.map(function(v){
       return '<button class="ojt-view' + (S.view === v[0] ? " on" : "") + '" data-act="view" data-v="' + v[0] + '">' + v[1] + "</button>";
     }).join("");
@@ -130,6 +131,7 @@
     else if(S.view === "tasks") loadTasks();
     else if(S.view === "tags") loadTagManager();
     else if(S.view === "topics") loadTopicManager();
+    else if(S.view === "activity") loadActivityFormat();
     else loadApprovals();
   }
 
@@ -180,6 +182,50 @@
       '<p style="font-size:12px;color:var(--mg-muted);margin:6px 0">These are the areas the trainer scores each trainee on (0-100). e.g. P&amp;L, YOLO app, Roles &amp; Responsibilities.</p>'+
       '<div style="display:flex;gap:8px;margin-top:6px"><input id="newTopic" placeholder="New topic name" style="flex:1;padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px">'+
       '<button class="btn primary" id="addTopicBtn">Add topic</button></div></div>'+
+      '<div class="card">'+rows+'</div>';
+  }
+
+  async function loadActivityFormat(){
+    var body = $("ojtBody");
+    body.innerHTML = '<div class="empty">Loading…</div>';
+    var d = await getJ("/api/ojt/activity-items?role=" + encodeURIComponent(S.role));
+    var w = await getJ("/api/ojt/activity-weights");
+    var items = (d && d.ok) ? d.items : [];
+    var wt = (w && w.ok) ? w.w_tasks : 60, wa = (w && w.ok) ? w.w_activity : 40;
+
+    var rows = items.length ? items.map(function(it){
+      var meta = it.kind === "check" ? "Checklist (done / not done)"
+               : ("Number" + (it.target ? " · target " + it.target : "") );
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0">'+
+        '<div style="flex:1"><b style="font-size:13px">'+esc(it.label)+'</b>'+
+        '<div style="font-size:11.5px;color:var(--mg-muted)">'+meta+' · weight '+it.points+'</div></div>'+
+        '<button class="ojt-link ojt-aedit" data-id="'+it.id+'" data-label="'+esc(it.label)+'" data-kind="'+esc(it.kind)+'" data-target="'+(it.target||"")+'" data-points="'+it.points+'">✎ edit</button>'+
+        '<button class="ojt-link ojt-adel" data-id="'+it.id+'" style="color:var(--mg-red)">remove</button></div>';
+    }).join("") : '<div class="muted" style="font-size:12.5px">No activity items for '+esc(S.role)+' yet. Add the first one below.</div>';
+
+    var isAdmin = S.isAdmin;
+    body.innerHTML =
+      '<div class="card" style="margin-bottom:12px"><b>OJT score weights</b>'+
+      '<p style="font-size:12px;color:var(--mg-muted);margin:6px 0">How the overall OJT score is split between task sign-offs and daily activity. The two always add to 100%.</p>'+
+      (isAdmin
+        ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">Tasks '+
+          '<input id="wTasks" type="number" min="0" max="100" value="'+wt+'" style="width:70px;padding:7px;border:1px solid var(--mg-line);border-radius:7px">%'+
+          ' &nbsp; Activity <b id="wActLbl">'+wa+'</b>% (auto)'+
+          ' &nbsp; <button class="btn primary" id="saveWeights">Save weights</button></div>'
+        : '<div style="font-size:13px">Tasks <b>'+wt+'%</b> · Activity <b>'+wa+'%</b> <span style="color:var(--mg-muted);font-size:11.5px">(admin sets this)</span></div>')+
+      '</div>'+
+
+      '<div class="card" style="margin-bottom:12px"><b>Daily Activity format — '+esc(S.role)+'</b>'+
+      '<p style="font-size:12px;color:var(--mg-muted);margin:6px 0">The items a trainer records each day during the OJT call for a '+esc(S.role)+' trainee. '+
+      'Number items (e.g. calls, visits) can have a daily target; checklist items are done / not done.'+
+      (isAdmin ? '' : ' Your changes go to the admin for approval.')+'</p>'+
+      '<div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:end">'+
+        '<div><label style="font-size:11px;color:var(--mg-muted)">Item label</label><input id="aLabel" placeholder="e.g. Calls made" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px"></div>'+
+        '<div><label style="font-size:11px;color:var(--mg-muted)">Type</label><select id="aKind" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px"><option value="number">Number</option><option value="check">Checklist</option></select></div>'+
+        '<div><label style="font-size:11px;color:var(--mg-muted)">Target (number)</label><input id="aTarget" type="number" placeholder="e.g. 20" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px"></div>'+
+        '<div><label style="font-size:11px;color:var(--mg-muted)">Weight</label><input id="aPoints" type="number" min="1" value="1" style="width:100%;padding:8px;border:1px solid var(--mg-line);border-radius:7px;font-size:13px"></div>'+
+        '<button class="btn primary" id="addActItem">Add</button>'+
+      '</div></div>'+
       '<div class="card">'+rows+'</div>';
   }
 
@@ -759,6 +805,49 @@
       if(!confirm("Remove this topic? Existing scores stay; it just won't show for new scoring.")) return;
       var rd2 = await postJ("/api/ojt/topic-delete", { id: dlTp.dataset.id });
       if(!rd2.ok){ note(rd2.msg || "Could not remove."); } else { note(rd2.msg || "Topic removed."); loadTopicManager(); }
+      return;
+    }
+
+    // ---- Daily Activity format handlers ----
+    var saveW = e.target.closest("#saveWeights");
+    if(saveW){
+      var wt = ($("wTasks")||{}).value;
+      var rw = await postJ("/api/ojt/activity-weights-save", { w_tasks: wt });
+      if(!rw.ok){ note(rw.msg || "Could not save."); } else { note(rw.msg || "Saved."); loadActivityFormat(); }
+      return;
+    }
+    var addA = e.target.closest("#addActItem");
+    if(addA){
+      var al = ($("aLabel")||{}).value || "";
+      if(!al.trim()){ note("Enter an item label."); return; }
+      var ra3 = await postJ("/api/ojt/activity-item-save", {
+        role: S.role, label: al, kind: ($("aKind")||{}).value || "number",
+        target: ($("aTarget")||{}).value || "", points: ($("aPoints")||{}).value || 1
+      });
+      if(!ra3.ok){ note(ra3.msg || "Could not add."); } else { note(ra3.msg || "Added."); loadActivityFormat(); }
+      return;
+    }
+    var edA = e.target.closest(".ojt-aedit");
+    if(edA){
+      var nl = prompt("Edit item label:", edA.dataset.label);
+      if(nl === null) return;
+      var nt = edA.dataset.kind === "number"
+        ? prompt("Daily target (number, blank for none):", edA.dataset.target || "")
+        : "";
+      if(nt === null) nt = edA.dataset.target || "";
+      var np = prompt("Weight (how much this item counts, min 1):", edA.dataset.points || "1");
+      if(np === null) np = edA.dataset.points || "1";
+      var re3 = await postJ("/api/ojt/activity-item-save", {
+        id: edA.dataset.id, role: S.role, label: nl, kind: edA.dataset.kind, target: nt, points: np
+      });
+      if(!re3.ok){ note(re3.msg || "Could not save."); } else { note(re3.msg || "Updated."); loadActivityFormat(); }
+      return;
+    }
+    var dlA = e.target.closest(".ojt-adel");
+    if(dlA){
+      if(!confirm("Remove this activity item? Existing logged data stays; it just won't show for new days.")) return;
+      var rda = await postJ("/api/ojt/activity-item-delete", { id: dlA.dataset.id });
+      if(!rda.ok){ note(rda.msg || "Could not remove."); } else { note(rda.msg || "Removed."); loadActivityFormat(); }
       return;
     }
 
