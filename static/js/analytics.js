@@ -432,13 +432,14 @@
       lead += '</div>';
 
       // full scorecard table
-      var h = '<div class="an-sect"><h4>🧑‍🏫 Trainer KPI scorecard</h4>' +
+      var h = '<div class="an-sect"><h4>🏆 Trainers — competition (L&D Executives)</h4>' +
         '<div class="an-muted" style="margin-bottom:10px">KPI score (0–100) = Pass ' + (w.pass||30) + '% · Avg score ' + (w.score||20) +
-        '% · First-attempt ' + (w.first_attempt||20) + '% · Rating ' + (w.rating||20) + '% · Engagement ' + (w.engagement||10) + '%. Click a trainer for details.</div>' +
-        '<table><thead><tr><th>Trainer</th><th>KPI</th><th>Learners</th><th>Pass rate</th>' +
+        '% · First-attempt ' + (w.first_attempt||20) + '% · Rating ' + (w.rating||20) + '% · Engagement ' + (w.engagement||10) + '%. Click a trainer for details. (The L&D Manager is shown separately below, not in this ranking.)</div>' +
+        '<table><thead><tr><th>Rank</th><th>Trainer</th><th>KPI</th><th>Learners</th><th>Pass rate</th>' +
         '<th>Avg score</th><th>1st-attempt</th><th>Rating</th><th>OJT calls</th></tr></thead><tbody>';
-      d.trainers.forEach(function (t) {
+      d.trainers.forEach(function (t, i) {
         h += '<tr style="cursor:pointer" onclick="window.__anTrainer(\'' + escAn(t.trainer_id) + '\')">' +
+          '<td style="font-weight:700;color:var(--mg-muted)">' + (i+1) + '</td>' +
           '<td><b>' + escAn(t.trainer) + '</b>' + (t.low_data ? ' <span class="tag t-no">low data</span>' : '') + '</td>' +
           '<td><span style="display:inline-block;min-width:34px;text-align:center;font-weight:800;color:#fff;background:' + kpiColor(t.kpi_score) + ';border-radius:8px;padding:2px 6px">' + t.kpi_score + '</span></td>' +
           '<td>' + t.learners + '</td>' +
@@ -449,7 +450,79 @@
           '<td>' + starTxt(t.trainer_rating, t.trainer_rating_n) + '</td>' +
           '<td>' + (t.ojt_calls || 0) + '</td></tr>';
       });
-      body.innerHTML = lead + h + '</tbody></table></div>';
+      // render competition first, then the manager panel below it
+      body.innerHTML = lead + h + '</tbody></table></div>' +
+        '<div id="anLdMgr"><div class="an-empty">Loading your L&D Manager view…</div></div>';
+      renderLdManager();
+    });
+  }
+
+  // ---- L&D Manager view (Dharani): own activity + team roll-up ----
+  function renderLdManager() {
+    getJAn("/api/analytics/ld-manager").then(function (d) {
+      var el = $an("anLdMgr");
+      if (!el) return;
+      if (!d || !d.ok) { el.innerHTML = ''; return; }
+      var t = d.team || {}, my = d.my || {}, mgr = d.manager || {};
+
+      // team summary strip
+      var html = '<div class="an-sect"><h4>👤 ' + escAn(mgr.name || 'L&D Manager') +
+        ' — L&D Manager view <span class="an-muted" style="font-weight:600">· your team + your own activity (not in the competition)</span></h4>';
+
+      html += '<div class="an-cards">' +
+        anCard((t.trainers || 0), 'Trainers') +
+        anCard((t.distinct_learners != null ? t.distinct_learners : 0), 'Learners trained (team)') +
+        anCard((t.avg_kpi == null ? '—' : t.avg_kpi), 'Team avg KPI') +
+        anCard((t.avg_pass == null ? '—' : t.avg_pass + '%'), 'Team pass rate') +
+        anCard((t.total_deliveries || 0), 'Modules delivered (team)') +
+        anCard((t.total_ojt_calls || 0), 'OJT calls (team)') +
+      '</div>';
+
+      // best / needs-support flags
+      if (d.best || d.needs_support) {
+        html += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">';
+        if (d.best) {
+          html += '<div style="flex:1;min-width:200px;border:1px solid #bfe6d3;background:#e9f9f2;border-radius:10px;padding:10px 12px">' +
+            '<div style="font-size:12px;color:#0a7d4f;font-weight:700">🌟 Top performer</div>' +
+            '<div style="font-size:13px;margin-top:2px">' + escAn(d.best.trainer) + ' · KPI ' + d.best.kpi_score + '</div></div>';
+        }
+        if (d.needs_support) {
+          html += '<div style="flex:1;min-width:200px;border:1px solid #f0d9a9;background:#fff7e6;border-radius:10px;padding:10px 12px">' +
+            '<div style="font-size:12px;color:#9a6a00;font-weight:700">🤝 Needs support</div>' +
+            '<div style="font-size:13px;margin-top:2px">' + escAn(d.needs_support.trainer) + ' · KPI ' + d.needs_support.kpi_score + '</div></div>';
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+
+      // per-trainer roll-up (compact, clickable)
+      html += '<div class="an-sect"><h4>Your trainers — progress</h4>' +
+        '<table><thead><tr><th>Trainer</th><th>KPI</th><th>Learners</th><th>Pass</th><th>Avg</th><th>Rating</th></tr></thead><tbody>';
+      (d.trainers || []).forEach(function (x) {
+        html += '<tr style="cursor:pointer" onclick="window.__anTrainer(\'' + escAn(x.trainer_id) + '\')">' +
+          '<td><b>' + escAn(x.trainer) + '</b>' + (x.low_data ? ' <span class="tag t-no">low data</span>' : '') + '</td>' +
+          '<td><span style="font-weight:800;color:' + kpiColor(x.kpi_score) + '">' + x.kpi_score + '</span></td>' +
+          '<td>' + x.learners + '</td>' +
+          '<td>' + (x.pass_rate == null ? '—' : x.pass_rate + '%') + '</td>' +
+          '<td>' + (x.avg_score == null ? '—' : x.avg_score + '%') + '</td>' +
+          '<td>' + starTxt(x.trainer_rating, x.trainer_rating_n) + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+
+      // my own activity (not scored against trainers)
+      html += '<div class="an-sect"><h4>My own delivery activity <span class="an-muted" style="font-weight:600">· as L&D Manager (not ranked)</span></h4>' +
+        '<div class="an-cards">' +
+        anCard((my.learners || 0), 'Learners I trained') +
+        anCard((my.deliveries || 0), 'Modules I delivered') +
+        anCard((my.pass_rate == null ? '—' : my.pass_rate + '%'), 'Their pass rate') +
+        anCard((my.avg_score == null ? '—' : my.avg_score + '%'), 'Their avg score') +
+        anCard((my.ojt_calls || 0), 'My OJT calls') +
+        anCardRaw(starTxt(my.trainer_rating, my.trainer_rating_n), 'My rating') +
+        '</div>' +
+        '<div class="an-muted" style="font-size:11.5px">Your own training work is shown here for visibility but is kept out of the trainer competition above.</div>' +
+        '</div>';
+
+      el.innerHTML = html;
     });
   }
 
@@ -563,6 +636,10 @@
   // small stat card helper (used by My Performance)
   function anCard(n, label) {
     return '<div class="an-card"><div class="n">' + escAn(n) + '</div><div class="l">' + escAn(label) + '</div></div>';
+  }
+  // value is already-safe HTML (e.g. a star string); label is escaped
+  function anCardRaw(htmlValue, label) {
+    return '<div class="an-card"><div class="n" style="font-size:18px">' + htmlValue + '</div><div class="l">' + escAn(label) + '</div></div>';
   }
 
   // ===================== FEEDBACK (dashboard) =====================
