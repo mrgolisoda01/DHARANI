@@ -777,8 +777,13 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     // designations, making someone an admin) are hidden for them.
     document.addEventListener("DOMContentLoaded", function(){
       if(window.IS_ADMIN){
-        // show the pending-approvals count on the tab as soon as the page loads
-        if(typeof refreshApprovalBadge === 'function') setTimeout(refreshApprovalBadge, 400);
+        // show the pending-approvals count on the tab as soon as the page loads,
+        // then keep it fresh with a light auto-refresh (catches items submitted
+        // by instructors while the admin is on another tab)
+        if(typeof refreshApprovalBadge === 'function'){
+          setTimeout(refreshApprovalBadge, 400);
+          setInterval(refreshApprovalBadge, 60000);
+        }
         return;  // admins see everything
       }
       var css = document.createElement("style");
@@ -905,12 +910,20 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     // ---- Central Approvals tab ----
     async function refreshApprovalBadge(){
+      if(!window.IS_ADMIN) return;  // only admins have approvals
       try{
-        const d = await (await fetch('/api/admin/all-approvals')).json();
-        if(!d.ok) return;
+        // main approvals + two-sided confirmation conflicts (C6), combined
+        const [aRes, cRes] = await Promise.all([
+          fetch('/api/admin/all-approvals').then(r=>r.json()).catch(()=>({})),
+          fetch('/api/training/confirmations').then(r=>r.json()).catch(()=>({}))
+        ]);
+        let total = (aRes && aRes.ok && typeof aRes.total === 'number') ? aRes.total : 0;
+        if(cRes && cRes.ok && cRes.summary && typeof cRes.summary.conflict === 'number'){
+          total += cRes.summary.conflict;
+        }
         const b = document.getElementById('apprBadge');
         if(b){
-          if(d.total > 0){ b.textContent = d.total; b.style.display = 'inline-block'; }
+          if(total > 0){ b.textContent = total; b.style.display = 'inline-block'; }
           else { b.style.display = 'none'; }
         }
       }catch(e){}
@@ -966,6 +979,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     }
 
     async function loadApprovals(){
+      if(typeof refreshApprovalBadge === 'function') refreshApprovalBadge();  // keep the tab badge in sync
       const box = document.getElementById('apprBody');
       box.innerHTML = '<div class="empty">Loading…</div>';
       let d;
