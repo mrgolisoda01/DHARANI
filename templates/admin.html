@@ -900,8 +900,11 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         // auto-refresh while the admin has a search typed in (it would wipe it)
         var el = document.getElementById('searchBox');
         if((CURRENT_TAB === 'emp' || CURRENT_TAB === 'home') && el && (el.value || '').trim()) return;
-        loadTabData(CURRENT_TAB);
-      }catch(e){}
+        // SILENT refresh: update data in place, no 'Loading…' flash / no jump
+        window.__SILENT_REFRESH = true;
+        try { loadTabData(CURRENT_TAB); }
+        finally { setTimeout(function(){ window.__SILENT_REFRESH = false; }, 50); }
+      }catch(e){ window.__SILENT_REFRESH = false; }
     }
     setInterval(autoRefreshTick, 30000);
 
@@ -910,7 +913,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       document.getElementById('apprBody').style.display = 'none';
       const box = document.getElementById('mySubBody');
       box.style.display = 'block';
-      box.innerHTML = '<div class="empty">Loading…</div>';
+      if(!window.__SILENT_REFRESH) box.innerHTML = '<div class="empty">Loading…</div>';
       let d;
       try{ d = await (await fetch('/api/my-submissions')).json(); }
       catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
@@ -1009,7 +1012,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     async function loadApprovals(){
       if(typeof refreshApprovalBadge === 'function') refreshApprovalBadge();  // keep the tab badge in sync
       const box = document.getElementById('apprBody');
-      box.innerHTML = '<div class="empty">Loading…</div>';
+      if(!window.__SILENT_REFRESH) box.innerHTML = '<div class="empty">Loading…</div>';
       let d;
       try{ d = await (await fetch('/api/admin/all-approvals')).json(); }
       catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
@@ -1456,7 +1459,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     async function loadCertExpiry(){
       const box = document.getElementById('progCertBody');
-      box.innerHTML = '<div class="empty">Loading…</div>';
+      if(!window.__SILENT_REFRESH) box.innerHTML = '<div class="empty">Loading…</div>';
       let d;
       try { d = await (await fetch('/api/admin/cert-expiry')).json(); }
       catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
@@ -1513,7 +1516,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     async function loadPersonProgress(){
       const box = document.getElementById('progPersonBody');
-      box.innerHTML = '<div class="empty">Loading…</div>';
+      if(!window.__SILENT_REFRESH) box.innerHTML = '<div class="empty">Loading…</div>';
       let d;
       try { d = await (await fetch('/api/admin/completion-by-person')).json(); }
       catch(e){ box.innerHTML = '<div class="empty">Could not load.</div>'; return; }
@@ -1582,7 +1585,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
 
     async function loadCompletionReport(){
       const body = document.getElementById('progBody');
-      body.innerHTML = '<div class="empty">Loading…</div>';
+      if(!window.__SILENT_REFRESH) body.innerHTML = '<div class="empty">Loading…</div>';
       let d;
       try { d = await (await fetch('/api/admin/completion-report')).json(); }
       catch(e){ body.innerHTML = '<div class="empty">Could not load report.</div>'; return; }
