@@ -351,9 +351,11 @@
       var resClass = "";
       if (ev.type === "assessment") resClass = ev.passed ? "t-pass" : "t-fail";
       var resHtml = resClass ? '<span class="tag ' + resClass + '">' + escAn(ev.result) + '</span>' : escAn(ev.result);
+      var trHtml = ev.trainer ? escAn(ev.trainer) : '<span class="an-muted">—</span>';
       return '<tr><td style="white-space:nowrap">' + escAn(ev.when) + '</td>' +
         '<td>' + escAn(ev.name) + '</td>' +
         '<td>' + escAn(ev.detail) + '</td>' +
+        '<td>' + trHtml + '</td>' +
         '<td>' + resHtml + '</td></tr>';
     }).join("");
     return '<div class="an-sect" style="padding:0;overflow:hidden">' +
@@ -362,7 +364,7 @@
         '<span class="an-muted" id="' + id + '_arw">▾</span>' +
       '</div>' +
       '<div id="' + id + '" style="padding:0 16px 12px">' +
-        '<table><thead><tr><th>Date</th><th>Employee</th><th>Detail</th><th>Result</th></tr></thead><tbody>' +
+        '<table><thead><tr><th>Date</th><th>Employee</th><th>Detail</th><th>Trainer</th><th>Result</th></tr></thead><tbody>' +
         rows + '</tbody></table></div></div>';
   }
 
