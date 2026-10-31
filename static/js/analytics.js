@@ -61,16 +61,17 @@
         '<button class="an-pill" id="anTabTr" onclick="window.__anView(\'trainers\')">🧑‍🏫 ' +
           (window.IS_ADMIN ? 'Trainers' : 'My Performance') + '</button>' +
         '<button class="an-pill" id="anTabFb" onclick="window.__anView(\'feedback\')">💬 Feedback</button>' +
+        (window.IS_ADMIN ? '<button class="an-pill" id="anTabRep" onclick="window.__anView(\'reports\')">📄 Reports</button>' : '') +
       '</div>' +
       '<div id="anViewBox"></div>';
   }
 
   function setActivePill() {
-    ["Ov", "Emp", "Act", "Tr", "Fb"].forEach(function (s) {
+    ["Ov", "Emp", "Act", "Tr", "Fb", "Rep"].forEach(function (s) {
       var b = $an("anTab" + s);
       if (b) b.classList.remove("on");
     });
-    var map = { overview: "Ov", employee: "Emp", activity: "Act", trainers: "Tr", feedback: "Fb" };
+    var map = { overview: "Ov", employee: "Emp", activity: "Act", trainers: "Tr", feedback: "Fb", reports: "Rep" };
     var b = $an("anTab" + map[AN.view]);
     if (b) b.classList.add("on");
   }
@@ -86,6 +87,7 @@
     if (AN.view === "activity") return renderActivity();
     if (AN.view === "trainers") return renderTrainers();
     if (AN.view === "feedback") return renderFeedback();
+    if (AN.view === "reports") return renderReports();
   }
 
   // ===================== OVERVIEW (dashboard) =====================
@@ -809,6 +811,70 @@
         var ov = $an("anFbEditOv"); if (ov) ov.remove();
         if (r && r.ok) { renderFeedback(); } else { alert((r && r.msg) || "Could not delete."); }
       });
+  };
+
+  // ===================== REPORTS / EXPORT (admin) =====================
+  var REPORTS = [
+    { kind: "trainers",  icon: "🧑‍🏫", title: "Trainer KPI scorecards",
+      desc: "Each trainer's KPI, pass rate, ratings, deliveries. Cumulative (as of today).", dated: false },
+    { kind: "employees", icon: "👤", title: "Employee training records",
+      desc: "Per employee: modules done, assessments passed, avg score, certificates, who trained them. Cumulative.", dated: false },
+    { kind: "activity",  icon: "🕒", title: "Activity log",
+      desc: "Completions, assessments, certificates and OJT calls within the chosen date range.", dated: true },
+    { kind: "feedback",  icon: "💬", title: "Feedback report",
+      desc: "All learner ratings and comments within the chosen date range.", dated: true }
+  ];
+
+  window.__anExport = function (kind) {
+    var f = ($an("anRepFrom") || {}).value || "";
+    var t = ($an("anRepTo") || {}).value || "";
+    var q = [];
+    if (f) q.push("from=" + encodeURIComponent(f));
+    if (t) q.push("to=" + encodeURIComponent(t));
+    var url = "/api/analytics/export/" + kind + (q.length ? ("?" + q.join("&")) : "");
+    // trigger a download without leaving the page
+    var a = document.createElement("a");
+    a.href = url; a.rel = "noopener";
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { a.remove(); }, 1500);
+  };
+
+  function renderReports() {
+    var box = $an("anViewBox");
+    // default range: this month start -> today
+    var now = new Date();
+    var first = new Date(now.getFullYear(), now.getMonth(), 1);
+    var iso = function (d) { return d.toISOString().slice(0, 10); };
+
+    var html = '<div class="an-sect"><h4>📄 Export reports</h4>' +
+      '<div class="an-muted" style="margin-bottom:10px">Pick a date range (used by the Activity and Feedback reports), then download. Files are Excel (.xlsx).</div>' +
+      '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">' +
+        '<div><label class="an-muted" style="display:block;margin-bottom:3px">From</label>' +
+        '<input type="date" id="anRepFrom" class="an-input" style="min-width:160px" value="' + iso(first) + '"></div>' +
+        '<div><label class="an-muted" style="display:block;margin-bottom:3px">To</label>' +
+        '<input type="date" id="anRepTo" class="an-input" style="min-width:160px" value="' + iso(now) + '"></div>' +
+        '<button class="an-pill" onclick="window.__anRepClear()">Clear dates (all time)</button>' +
+      '</div></div>';
+
+    html += '<div class="an-cards" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">';
+    REPORTS.forEach(function (r) {
+      html += '<div class="an-card" style="text-align:left">' +
+        '<div style="font-size:22px;margin-bottom:4px">' + r.icon + '</div>' +
+        '<div style="font-weight:700;color:var(--mg-ink);font-size:14px">' + escAn(r.title) + '</div>' +
+        '<div class="an-muted" style="margin:6px 0 12px;font-size:12px;line-height:1.5">' + escAn(r.desc) + '</div>' +
+        '<button class="an-pill" style="background:var(--mg-green,#1d9e75);color:#fff;border-color:var(--mg-green,#1d9e75)" ' +
+        'onclick="window.__anExport(\'' + r.kind + '\')">⬇ Download Excel</button>' +
+        (r.dated ? '' : '<div class="an-muted" style="margin-top:6px;font-size:11px">Date range not applied (cumulative report)</div>') +
+        '</div>';
+    });
+    html += '</div>';
+
+    box.innerHTML = html;
+  }
+
+  window.__anRepClear = function () {
+    var f = $an("anRepFrom"), t = $an("anRepTo");
+    if (f) f.value = ""; if (t) t.value = "";
   };
 
   // ---- entry point (called by switchTab('an')) ----
