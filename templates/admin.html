@@ -222,7 +222,7 @@
           <option value="">All managers</option>
           <option value="__none__">⚠ No manager set</option>
         </select>
-        <button class="btn admin-only" onclick="openBulk()">＋ Bulk add (CSV)</button>
+        <button class="btn" onclick="openBulk()">＋ Bulk add (CSV)</button>
         <button class="btn" onclick="window.location.href='/api/admin/enrolment-report.xlsx'">⬇ Enrolment report</button>
       </div>
     </div>
@@ -426,7 +426,7 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
         Add a new one here and it appears everywhere immediately.
         Renaming one also updates every employee already on it.
       </p>
-      <div class="admin-only" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
         <input class="search" id="dsgNew" placeholder="e.g. Manager" style="flex:1;min-width:200px" />
         <button class="btn primary" onclick="addDesignation()">Add designation</button>
       </div>
@@ -1083,13 +1083,18 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         html += card('🗑 Delete / resign requests ('+d.deletes.length+')', '#e24b4a', rows, 'deletes');
       }
 
-      // Question add / replace / clear requests (instructor -> admin)
+      // Question add / replace / clear requests + single edits (instructor -> admin)
       if(d.question_changes && d.question_changes.length){
         const rows = d.question_changes.map(a=>{
-          const verb = a.mode==='clear' ? ('Clear all '+(a.count||'')+' questions in')
-                     : a.mode==='replace' ? ('Replace ALL questions ('+(a.count||'')+' new) in')
-                     : ('Add '+(a.count||'')+' questions to');
-          const left = `<b>Question change:</b> ${verb} ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>`;
+          let verb;
+          if(a.mode==='edit_delete') verb = 'Delete a question in';
+          else if(a.mode==='edit_update') verb = 'Edit a question in';
+          else if(a.mode==='edit_add') verb = 'Add a question to';
+          else if(a.mode==='clear') verb = 'Clear all '+(a.count||'')+' questions in';
+          else if(a.mode==='replace') verb = 'Replace ALL questions ('+(a.count||'')+' new) in';
+          else verb = 'Add '+(a.count||'')+' questions to';
+          const preview = a.question_preview ? `<div style="font-size:11.5px;color:var(--mg-muted);margin-top:2px">“${esc(a.question_preview)}”</div>` : '';
+          const left = `<b>Question change:</b> ${verb} ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>${preview}`;
           let btns = '';
           if(a.mode!=='clear' && typeof previewQuestions==='function'){
             btns += `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="previewQuestions(${a.id})">Preview</button>`;
@@ -1099,6 +1104,17 @@ Priya S,MG087,9876500000,State Head,"></textarea>
           return rowWrap(left, btns);
         }).join('');
         html += card('📝 Question change requests ('+d.question_changes.length+')', '#c9a227', rows, 'questions');
+      }
+
+      // Other requests: designation changes, employee edits, reporting changes, activation
+      if(d.other_actions && d.other_actions.length){
+        const rows = d.other_actions.map(a=>{
+          const left = `<b>${esc(a.kind_label||'Request')}:</b> ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>`;
+          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprResolveDelete(${a.id},'approve')">Approve</button>`
+                     + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
+          return rowWrap(left, btns);
+        }).join('');
+        html += card('🏷 Other requests ('+d.other_actions.length+')', '#1f5fa9', rows);
       }
 
       box.innerHTML = html;
@@ -1618,11 +1634,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
             <div style="font-size:11.5px;color:var(--mg-muted)">${usedTxt}</div>
           </div>
           <div style="display:flex;gap:6px">
-            ${window.IS_ADMIN ? `<button class="btn" style="padding:4px 10px;font-size:12px"
+            <button class="btn" style="padding:4px 10px;font-size:12px"
               onclick="renameDesignation(${x.id}, '${escP(x.name).replace(/'/g,"\\\\'")}')">Rename</button>
             <button class="btn" style="padding:4px 10px;font-size:12px;color:var(--mg-red)"
-              onclick="removeDesignation(${x.id}, '${escP(x.name).replace(/'/g,"\\\\'")}')">Delete</button>`
-            : '<span style="font-size:11px;color:#9aa6ae">view only</span>'}
+              onclick="removeDesignation(${x.id}, '${escP(x.name).replace(/'/g,"\\\\'")}')">Delete</button>
           </div>
         </div>`;
       }).join('') : '<div class="empty">No designations yet.</div>';
