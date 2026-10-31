@@ -324,62 +324,135 @@
   }
 
   // ---- Productivity ----
+  var PROD_RANGE = "today";
+  window.__tcProdRange = function(r){ PROD_RANGE = r; renderProd(); };
+
   async function renderProd(){
     shell('<div class="empty">Loading…</div>');
-    var d=await getJ("/api/training/productivity");
-    var t=(d&&d.ok)?d.trainers:[];
-    var sm=(d&&d.summary)||{};
-    var meId=d&&d.me_id;
-    if(!t.length){ shell('<div class="empty" style="padding:16px">No approved training records yet. Mark some training first.</div>'); return; }
+    var meId = (S.cfg && S.cfg.me) ? S.cfg.me.emp_id : null;
 
-    // summary cards
+    // pull cumulative scorecard + the period activity together
+    var d = await getJ("/api/training/productivity");
+    var act = await getJ("/api/training/activity-by-trainer?range=" + encodeURIComponent(PROD_RANGE));
+
+    var all = (d && d.ok) ? d.trainers : [];
+    if(!all.length){ shell('<div class="empty" style="padding:16px">No approved training records yet. Mark some training first.</div>'); return; }
+
+    // split competition (L&D Executives) vs L&D Manager (you / others)
+    var t = all.filter(function(x){ return x.is_trainer; });
+    var mgr = all.filter(function(x){ return !x.is_trainer; });
+
     function card(v, l, col){ return '<div class="pcard"><div class="pv" style="color:'+(col||"#12284B")+'">'+v+'</div><div class="pl">'+l+'</div></div>'; }
-    var cards = '<div class="pcards">'+
-      card(sm.trainers!=null?sm.trainers:"—", "Active trainers")+
-      card(sm.trained!=null?sm.trained:"—", "People trained")+
-      card(sm.avg_score!=null?sm.avg_score+"%":"—", "Overall avg score", sm.avg_score!=null?(sm.avg_score>=70?"#1d9e75":"#c9a227"):"#12284B")+
-      card(sm.first_rate!=null?sm.first_rate+"%":"—", "Overall 1st-try pass rate", sm.first_rate!=null?(sm.first_rate>=70?"#1d9e75":(sm.first_rate>=50?"#c9a227":"#d64545")):"#12284B")+
+
+    // ---------- PERIOD ACTIVITY (who did what, today/week/month) ----------
+    var rngLabel = {today:"Today", week:"This week", month:"This month", all:"All time"}[PROD_RANGE] || "Today";
+    var pills = '<div class="subtabs" style="border:none;margin:0 0 12px">'+
+      [["today","Today"],["week","This week"],["month","This month"],["all","All time"]].map(function(p){
+        return '<button class="subtab'+(PROD_RANGE===p[0]?" on":"")+'" onclick="window.__tcProdRange(\''+p[0]+'\')">'+p[1]+'</button>';
+      }).join("")+'</div>';
+
+    var ts = (act && act.ok && act.team_summary) || {};
+    var periodCards = '<div class="pcards">'+
+      card((ts.active_trainers!=null?ts.active_trainers:0)+" / "+(ts.total_trainers!=null?ts.total_trainers:0), "Active trainers ("+rngLabel.toLowerCase()+")")+
+      card(ts.deliveries!=null?ts.deliveries:0, "Modules delivered")+
+      card(ts.completions!=null?ts.completions:0, "Modules completed")+
+      card((ts.assess_passed!=null?ts.assess_passed:0)+" / "+(ts.assess_taken!=null?ts.assess_taken:0), "Assessments passed/taken")+
+      card(ts.ojt_calls!=null?ts.ojt_calls:0, "OJT calls")+
     '</div>';
 
-    // bar chart: trainers by 1st-try rate
+    var aTr = (act && act.ok) ? (act.trainers||[]) : [];
+    var periodTable;
+    if(!aTr.length){
+      periodTable = '<div class="empty" style="padding:14px">No trainer activity '+rngLabel.toLowerCase()+'.</div>';
+    } else {
+      periodTable = '<div style="overflow-x:auto;width:100%"><table style="width:100%">'+
+        '<thead><tr><th>Trainer</th><th style="text-align:center">Delivered</th><th style="text-align:center">Completed</th>'+
+        '<th style="text-align:center">Assess (pass/taken)</th><th style="text-align:center">OJT calls</th><th style="text-align:center">Learners</th><th style="text-align:center">Status</th></tr></thead><tbody>'+
+        aTr.map(function(x){
+          var statusTag = x.active
+            ? '<span class="pill" style="background:#eaf7f0;color:#0f6b45">Active</span>'
+            : '<span class="pill" style="background:#faf1de;color:#845a0b">No activity</span>';
+          return '<tr><td style="white-space:nowrap"><b>'+esc(x.trainer)+'</b></td>'+
+            '<td style="text-align:center;font-weight:700">'+x.deliveries+'</td>'+
+            '<td style="text-align:center">'+x.completions+'</td>'+
+            '<td style="text-align:center">'+x.assess_passed+' / '+x.assess_taken+'</td>'+
+            '<td style="text-align:center">'+x.ojt_calls+'</td>'+
+            '<td style="text-align:center">'+x.learners+'</td>'+
+            '<td style="text-align:center">'+statusTag+'</td></tr>';
+        }).join("")+'</tbody></table></div>';
+    }
+
+    var periodSection = '<div class="card"><h4 style="margin:0 0 6px;font-size:14px;color:#12284B">🕒 Trainer activity — '+esc(rngLabel)+'</h4>'+
+      '<p style="font-size:12px;color:#62707a;margin:0 0 10px">Who did what in this period — modules delivered & completed, assessments taken/passed, OJT calls. (Attributed to the trainer who delivered each learner\'s module.)</p>'+
+      pills + periodCards + periodTable + '</div>';
+
+    // ---------- CUMULATIVE COMPETITION (L&D Executives, all-time) ----------
+    var sm=(d&&d.summary)||{};
+    var cards = '<div class="pcards">'+
+      card(t.length, "Trainers (competing)")+
+      card(sm.trained!=null?sm.trained:"—", "People trained (all)")+
+      card(sm.avg_score!=null?sm.avg_score+"%":"—", "Overall avg score", sm.avg_score!=null?(sm.avg_score>=70?"#1d9e75":"#c9a227"):"#12284B")+
+      card(sm.first_rate!=null?sm.first_rate+"%":"—", "Overall 1st-try rate", sm.first_rate!=null?(sm.first_rate>=70?"#1d9e75":(sm.first_rate>=50?"#c9a227":"#d64545")):"#12284B")+
+    '</div>';
+
     var maxRate = Math.max.apply(null, t.map(function(x){return x.first_rate||0;})) || 100;
-    var chart = '<div class="card"><h4 style="margin:0 0 12px;font-size:14px;color:#12284B">1st-try pass rate by trainer</h4>'+
+    var chart = '<div class="card"><h4 style="margin:0 0 12px;font-size:14px;color:#12284B">1st-try pass rate by trainer (all-time)</h4>'+
       t.map(function(x){
         var r=x.first_rate||0, col=r>=70?"#1d9e75":(r>=50?"#c9a227":"#d64545");
-        var mine = (x.trainer_id===meId);
-        return '<div class="pbar'+(mine?" mine":"")+'"><span class="pn">'+esc(x.trainer)+(mine?' <span style="font-size:10px;color:#1F5FA9">(you)</span>':'')+'</span>'+
+        return '<div class="pbar"><span class="pn">'+esc(x.trainer)+'</span>'+
           '<span class="pt"><i style="width:'+Math.round((x.first_rate||0)*100/maxRate)+'%;background:'+col+'"></i></span>'+
           '<span class="pvv">'+(x.first_rate==null?"—":x.first_rate+"%")+'</span></div>';
       }).join("")+'</div>';
 
-    // full table
-    var rows=t.map(function(x){
+    function scoreRow(x, idx){
       var fr = x.first_rate==null?"—":x.first_rate+"%";
       var frCol = x.first_rate==null?"#aaa":(x.first_rate>=70?"#1d9e75":(x.first_rate>=50?"#c9a227":"#d64545"));
       var avg = x.avg_score==null?"—":x.avg_score+"%";
       var tot = x.pass_events||0;
       function seg(n,col){ return tot&&n? '<span class="eff" style="flex:'+n+';background:'+col+'" title="'+n+'"></span>':''; }
       var bar = tot? '<div style="display:flex;gap:1px;align-items:center;width:140px;height:12px;border-radius:6px;overflow:hidden;background:#eef2f5">'+seg(x.first_try,"#1d9e75")+seg(x.second,"#c9a227")+seg(x.third_plus,"#d64545")+'</div>' : '<span style="color:#aaa">—</span>';
-      var medal = x.rank===1?"🥇 ":x.rank===2?"🥈 ":x.rank===3?"🥉 ":"";
-      var mine = (x.trainer_id===meId);
-      return '<tr'+(mine?' style="background:#eef5fc"':'')+'>'+
-        '<td style="white-space:nowrap">'+medal+'<b>'+esc(x.trainer)+'</b>'+(mine?' <span style="font-size:10px;color:#1F5FA9">(you)</span>':'')+'</td>'+
+      var medal = idx===0?"🥇 ":idx===1?"🥈 ":idx===2?"🥉 ":"";
+      return '<tr><td style="white-space:nowrap">'+(idx!=null?medal:'')+'<b>'+esc(x.trainer)+'</b></td>'+
         '<td style="text-align:center;font-weight:700">'+x.learners+'</td>'+
         '<td style="text-align:center">'+x.ind+' / '+x.trn+'</td>'+
         '<td style="text-align:center;font-weight:700">'+avg+'</td>'+
         '<td style="text-align:center;font-weight:800;color:'+frCol+'">'+fr+'</td>'+
         '<td>'+bar+'</td>'+
         '<td style="font-size:11px;color:#62707a;white-space:nowrap">1st '+x.first_try+' · 2nd '+x.second+' · 3rd+ '+x.third_plus+'</td></tr>';
-    }).join("");
-
-    shell(
-      cards + chart +
-      '<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto;width:100%"><table style="width:100%">'+
+    }
+    var compTable = '<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto;width:100%"><table style="width:100%">'+
       '<thead><tr><th>Trainer</th><th style="text-align:center">Trained</th><th style="text-align:center">Ind / Trn</th>'+
       '<th style="text-align:center">Avg score</th><th style="text-align:center">1st-try rate</th><th>Pass split</th><th>Breakdown</th></tr></thead>'+
-      '<tbody>'+rows+'</tbody></table></div></div>'+
-      '<div style="font-size:11.5px;color:#62707a;padding:4px 2px 20px">“1st-try pass rate” = of all assessments this trainer’s learners passed, how many on the first attempt. Higher = more effective training. Pass split bar: green 1st try · amber 2nd · red 3rd+.</div>'
-    );
+      '<tbody>'+t.map(function(x,i){return scoreRow(x,i);}).join("")+'</tbody></table></div></div>';
+
+    var compSection = '<div style="margin-top:6px"><h3 style="font-size:15px;color:#12284B;margin:16px 0 8px">🏆 Trainers — competition (all-time)</h3>'+
+      cards + chart + compTable +
+      '<div style="font-size:11.5px;color:#62707a;padding:4px 2px 12px">“1st-try pass rate” = of all assessments this trainer’s learners passed, how many on the first attempt. The L&D Manager is shown separately below, not in this ranking.</div></div>';
+
+    // ---------- L&D MANAGER (you) — separate ----------
+    var mgrSection = "";
+    if(mgr.length){
+      mgrSection = '<div style="margin-top:6px"><h3 style="font-size:15px;color:#12284B;margin:16px 0 8px">👤 L&D Manager — your own activity <span style="font-size:12px;color:#62707a;font-weight:400">(not in the competition)</span></h3>'+
+        '<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto;width:100%"><table style="width:100%">'+
+        '<thead><tr><th>Name</th><th style="text-align:center">Trained</th><th style="text-align:center">Ind / Trn</th>'+
+        '<th style="text-align:center">Avg score</th><th style="text-align:center">1st-try rate</th><th>Pass split</th></tr></thead><tbody>'+
+        mgr.map(function(x){
+          var fr = x.first_rate==null?"—":x.first_rate+"%";
+          var avg = x.avg_score==null?"—":x.avg_score+"%";
+          var tot=x.pass_events||0;
+          function seg(n,col){ return tot&&n? '<span class="eff" style="flex:'+n+';background:'+col+'"></span>':''; }
+          var bar = tot? '<div style="display:flex;gap:1px;align-items:center;width:120px;height:10px;border-radius:5px;overflow:hidden;background:#eef2f5">'+seg(x.first_try,"#1d9e75")+seg(x.second,"#c9a227")+seg(x.third_plus,"#d64545")+'</div>' : '—';
+          var you = (x.trainer_id===meId) ? ' <span style="font-size:10px;color:#1F5FA9">(you)</span>' : '';
+          return '<tr><td><b>'+esc(x.trainer)+'</b>'+you+'</td>'+
+            '<td style="text-align:center;font-weight:700">'+x.learners+'</td>'+
+            '<td style="text-align:center">'+x.ind+' / '+x.trn+'</td>'+
+            '<td style="text-align:center;font-weight:700">'+avg+'</td>'+
+            '<td style="text-align:center;font-weight:800">'+fr+'</td>'+
+            '<td>'+bar+'</td></tr>';
+        }).join("")+'</tbody></table></div></div></div>';
+    }
+
+    shell(periodSection + compSection + mgrSection);
   }
 
   // ---- By learner ----
