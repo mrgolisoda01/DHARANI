@@ -101,9 +101,13 @@
 
   function renderOverview() {
     var box = $an("anViewBox");
-    box.innerHTML = '<div id="anOvBody"><div class="an-empty">Loading dashboard…</div></div>';
+    // silent refresh: keep current content in place (no 'Loading…' flash)
+    if (!(window.__SILENT_REFRESH && $an("anOvBody"))) {
+      box.innerHTML = '<div id="anOvBody"><div class="an-empty">Loading dashboard…</div></div>';
+    }
     getJAn("/api/analytics/overview").then(function (d) {
       var body = $an("anOvBody");
+      if (!body) { box.innerHTML = '<div id="anOvBody"></div>'; body = $an("anOvBody"); }
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
       var o = d.overview || {}, p = d.pulse || {}, f = d.funnel || {};
       destroyCharts();
@@ -297,7 +301,13 @@
   }
 
   // ===================== ACTIVITY =====================
+  var ACT_RANGE = "today";
   function renderActivity() {
+    // silent refresh: keep the buttons + current range, just reload the body
+    if (window.__SILENT_REFRESH && $an("anActBody")) {
+      loadActivity(ACT_RANGE);
+      return;
+    }
     var box = $an("anViewBox");
     box.innerHTML =
       '<div class="an-sub">' +
@@ -305,6 +315,7 @@
         '<button class="an-pill" id="anR_week" onclick="window.__anRange(\'week\')">This week</button>' +
         '<button class="an-pill" id="anR_month" onclick="window.__anRange(\'month\')">This month</button>' +
       '</div><div id="anActBody"><div class="an-empty">Loading…</div></div>';
+    ACT_RANGE = "today";
     loadActivity("today");
   }
 
@@ -312,6 +323,7 @@
     ["today", "week", "month"].forEach(function (x) {
       var b = $an("anR_" + x); if (b) b.classList.toggle("on", x === r);
     });
+    ACT_RANGE = r;
     loadActivity(r);
   };
 
@@ -378,7 +390,7 @@
 
   function loadActivity(range) {
     var body = $an("anActBody");
-    body.innerHTML = '<div class="an-empty">Loading…</div>';
+    if (!window.__SILENT_REFRESH) body.innerHTML = '<div class="an-empty">Loading…</div>';
     getJAn("/api/analytics/activity?range=" + range).then(function (d) {
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
       var html = totalsBar(d.totals);
@@ -414,9 +426,12 @@
     if (!window.IS_ADMIN) return renderMyPerformance();
 
     var box = $an("anViewBox");
-    box.innerHTML = '<div id="anTrBody"><div class="an-empty">Loading…</div></div>';
+    if (!(window.__SILENT_REFRESH && $an("anTrBody"))) {
+      box.innerHTML = '<div id="anTrBody"><div class="an-empty">Loading…</div></div>';
+    }
     getJAn("/api/analytics/trainers").then(function (d) {
       var body = $an("anTrBody");
+      if (!body) { box.innerHTML = '<div id="anTrBody"></div>'; body = $an("anTrBody"); }
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
       if (!d.trainers.length) { body.innerHTML = '<div class="an-empty">No trainer deliveries recorded yet.</div>'; return; }
       var w = d.kpi_weights || {};
@@ -590,10 +605,13 @@
   // ===================== MY PERFORMANCE (trainer's own view) =====================
   function renderMyPerformance() {
     var box = $an("anViewBox");
-    box.innerHTML = '<div id="anMyBody"><div class="an-empty">Loading…</div></div>';
+    if (!(window.__SILENT_REFRESH && $an("anMyBody"))) {
+      box.innerHTML = '<div id="anMyBody"><div class="an-empty">Loading…</div></div>';
+    }
     // 1) own KPI summary card, then 2) own detail (learners/modules/comments)
     getJAn("/api/analytics/my-trainer").then(function (d) {
       var body = $an("anMyBody");
+      if (!body) { box.innerHTML = '<div id="anMyBody"></div>'; body = $an("anMyBody"); }
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
       var m = d.me || {};
       var w = d.kpi_weights || {};
@@ -649,9 +667,12 @@
 
   function renderFeedback() {
     var box = $an("anViewBox");
-    box.innerHTML = '<div id="anFbBody"><div class="an-empty">Loading…</div></div>';
+    if (!(window.__SILENT_REFRESH && $an("anFbBody"))) {
+      box.innerHTML = '<div id="anFbBody"><div class="an-empty">Loading…</div></div>';
+    }
     getJAn("/api/analytics/feedback").then(function (d) {
       var body = $an("anFbBody");
+      if (!body) { box.innerHTML = '<div id="anFbBody"></div>'; body = $an("anFbBody"); }
       if (!d || !d.ok) { body.innerHTML = '<div class="an-empty">Could not load.</div>'; return; }
       // cache for toggle re-render + edit popup
       AN._fbRows = (d.feedback || []);

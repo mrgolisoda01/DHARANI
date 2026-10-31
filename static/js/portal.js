@@ -48,9 +48,12 @@ function portalAutoRefresh(){
     if(typeof MOD_VIEWING !== 'undefined' && MOD_VIEWING) return;  // mid module view
     var active = document.querySelector('.pt-tab.active');
     var tab = active ? active.getAttribute('data-tab') : '';
-    if(tab) loadTabData(tab);
-    if(typeof loadPendingBadges === 'function') loadPendingBadges();  // keep tab badges fresh
-  }catch(e){}
+    window.__SILENT_REFRESH = true;
+    try {
+      if(tab) loadTabData(tab);
+      if(typeof loadPendingBadges === 'function') loadPendingBadges();  // keep tab badges fresh
+    } finally { setTimeout(function(){ window.__SILENT_REFRESH = false; }, 50); }
+  }catch(e){ window.__SILENT_REFRESH = false; }
 }
 setInterval(portalAutoRefresh, 30000);
 
