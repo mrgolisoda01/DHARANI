@@ -292,7 +292,24 @@ async function openEditAssess(id){
   EDIT_A = r.assessment; EDIT_A_QS = r.questions;
   A_ROLES = r.role_choices || A_ROLES;
   renderEditScreen();
+  fillLinkedModuleDropdown();
   $a("editAssessOv").classList.add("show");
+}
+
+// populate the "Linked training module" dropdown with live training modules
+let LINK_MODS = null;
+async function fillLinkedModuleDropdown(){
+  const sel = $a("eaLinkedModule");
+  if(!sel) return;
+  try{
+    if(LINK_MODS === null){
+      const d = await (await fetch("/api/admin/training-modules-list")).json();
+      LINK_MODS = (d && d.ok && d.modules) ? d.modules : [];
+    }
+  }catch(e){ LINK_MODS = []; }
+  const cur = (EDIT_A && EDIT_A.linked_module_id != null) ? String(EDIT_A.linked_module_id) : "";
+  sel.innerHTML = '<option value="">— none (not linked) —</option>' +
+    LINK_MODS.map(m => '<option value="'+m.id+'"'+(String(m.id)===cur?' selected':'')+'>'+escAttr(m.title)+'</option>').join("");
 }
 
 // Build the HTML for a list of question rows. Each row keeps its ORIGINAL
@@ -363,6 +380,10 @@ function renderEditScreen(){
         <div class="fld"><label>Time limit (min, 0=none)</label><input id="eaTime" type="number" value="${a.time_limit}"></div>
       </div>
       <div class="fld"><label>Who can see this?</label><div>${roleChecks}</div></div>
+      <div class="fld"><label>Linked training module <span style="font-weight:400;color:var(--mg-muted)">(so this assessment shows that module's trainer)</span></label>
+        <select id="eaLinkedModule"><option value="">— none (not linked) —</option></select>
+        <div style="font-size:11px;color:var(--mg-muted);margin-top:3px">Pick the training module this assessment tests. Leave blank for induction / shared assessments.</div>
+      </div>
       <div style="text-align:right"><button class="btn primary" onclick="saveAssessSettings()">Save settings</button></div>
     </div>
 
@@ -414,7 +435,8 @@ async function saveAssessSettings(){
     roles: roles.length ? roles.join(",") : "all",
     num_questions: $a("eaNumQ").value,
     pass_percent: $a("eaPass").value,
-    time_limit: $a("eaTime").value
+    time_limit: $a("eaTime").value,
+    linked_module_id: ($a("eaLinkedModule") ? $a("eaLinkedModule").value : "")
   };
   const r = await (await fetch("/api/admin/update-assessment",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
   if(r.ok){ toastA(r.msg); openEditAssess(EDIT_A.id); } else toastA(r.msg||"Failed.");
