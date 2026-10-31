@@ -272,10 +272,11 @@ def api_training_productivity():
         elif r["kind"] == "training":
             t["trn"].add(r["learner_id"])
 
-    # names
-    names = {}
-    for r in db.execute("SELECT emp_id, name FROM users").fetchall():
+    # names + designations
+    names, desgs = {}, {}
+    for r in db.execute("SELECT emp_id, name, designation FROM users").fetchall():
         names[r["emp_id"]] = r["name"]
+        desgs[r["emp_id"]] = (r["designation"] or "")
 
     # assessment attempts per learner: list of (passed) in time order, grouped by assessment
     # we compute per learner: avg percent of best attempts, and the pass-attempt (min attempt# that passed) across assessments
@@ -320,6 +321,7 @@ def api_training_productivity():
         first_rate = round(first_try * 100 / total_pass_events) if total_pass_events else None
         out.append({
             "trainer_id": tid, "trainer": names.get(tid, tid),
+            "is_trainer": _is_trainer_desg(desgs.get(tid, "")),
             "learners": len(learners), "ind": len(info["ind"]), "trn": len(info["trn"]),
             "avg_score": avg_score,
             "first_try": first_try, "second": second, "third_plus": third_plus,
@@ -346,6 +348,144 @@ def api_training_productivity():
     u = _current_user()
     return jsonify(ok=True, trainers=out, summary=summary,
                    me_id=u["emp_id"], is_admin=(u["role"] == "admin"))
+
+
+def _is_trainer_desg(desg):
+    """Competing trainer = L&D Executive (covers Sr. too). Manager/admin excluded."""
+    d = (desg or "").strip().lower()
+    return "learning & development executive" in d or "learning and development executive" in d
+
+
+@tc_bp.route("/api/training/activity-by-trainer")
+@_staff
+def api_training_activity_by_trainer():
+    """Per-trainer activity within a period (today/week/month/all), attributed
+    to the trainer who delivered each learner's module. Shows WHO did what and
+    when. Separates the competing trainers (L&D Executives) from the L&D
+    Manager, and flags trainers inactive in the period."""
+    _ensure()
+    from datetime import timedelta
+    db = _get_db()
+    rng = (request.args.get("range") or "today").strip()
+    today = (datetime.utcnow() + timedelta(hours=5, minutes=30)).date()
+    if rng == "week":
+        since = (today - timedelta(days=7)).isoformat()
+    elif rng == "month":
+        since = (today - timedelta(days=30)).isoformat()
+    elif rng == "all":
+        since = "0000-00-00"
+    else:
+        rng = "today"
+        since = today.isoformat()
+
+    names, desgs = {}, {}
+    for r in db.execute("SELECT emp_id, name, designation FROM users").fetchall():
+        names[r["emp_id"]] = r["name"]
+        desgs[r["emp_id"]] = (r["designation"] or "")
+
+    # attribution: (learner, module) -> set(trainer) from approved deliveries
+    attr = {}
+    for r in db.execute(
+        "SELECT learner_id, module_id, trainer_id FROM training_delivery WHERE status='approved'"
+    ).fetchall():
+        attr.setdefault((r["learner_id"], r["module_id"]), set()).add(r["trainer_id"])
+
+    # init a per-trainer bucket for everyone who has ever delivered
+    T = {}
+    def _bucket(tid):
+        return T.setdefault(tid, {
+            "trainer_id": tid, "trainer": names.get(tid, tid),
+            "designation": desgs.get(tid, ""),
+            "deliveries": 0, "completions": 0,
+            "assess_taken": 0, "assess_passed": 0, "ojt_calls": 0,
+            "learners": set(),
+        })
+    for (lid, mid), trs in attr.items():
+        for t in trs:
+            _bucket(t)
+
+    # 1) deliveries logged in the period (by created_at)
+    for r in db.execute(
+        "SELECT trainer_id, learner_id FROM training_delivery "
+        "WHERE status='approved' AND COALESCE(created_at,'') >= ?", (since,)
+    ).fetchall():
+        b = _bucket(r["trainer_id"]); b["deliveries"] += 1; b["learners"].add(r["learner_id"])
+
+    # 2) module completions in the period -> attributed to the delivering trainer
+    for r in db.execute(
+        "SELECT emp_id, module_id FROM module_completions WHERE COALESCE(completed_at,'') >= ?", (since,)
+    ).fetchall():
+        for t in attr.get((r["emp_id"], r["module_id"]), set()):
+            b = _bucket(t); b["completions"] += 1; b["learners"].add(r["emp_id"])
+
+    # 3) assessments in the period -> attributed via ANY module that trainer
+    #    delivered to that learner (a learner's trainer gets credit for their
+    #    assessment activity)
+    learner_trainers = {}   # learner -> set(trainer)
+    for (lid, mid), trs in attr.items():
+        learner_trainers.setdefault(lid, set()).update(trs)
+    for r in db.execute(
+        "SELECT emp_id, passed FROM assessment_results WHERE COALESCE(taken_at,'') >= ?", (since,)
+    ).fetchall():
+        for t in learner_trainers.get(r["emp_id"], set()):
+            b = _bucket(t); b["assess_taken"] += 1
+            if r["passed"]:
+                b["assess_passed"] += 1
+
+    # 4) OJT calls the trainer made in the period
+    if _table_exists_tc(db, "ojt_calls"):
+        try:
+            for r in db.execute(
+                "SELECT called_by, COUNT(*) c FROM ojt_calls WHERE COALESCE(called_at,'') >= ? GROUP BY called_by", (since,)
+            ).fetchall():
+                _bucket(r["called_by"])["ojt_calls"] = r["c"]
+        except Exception:
+            pass
+
+    # finalise + split
+    def _fin(b):
+        return {
+            "trainer_id": b["trainer_id"], "trainer": b["trainer"],
+            "deliveries": b["deliveries"], "completions": b["completions"],
+            "assess_taken": b["assess_taken"], "assess_passed": b["assess_passed"],
+            "ojt_calls": b["ojt_calls"], "learners": len(b["learners"]),
+            "active": (b["deliveries"] + b["completions"] + b["assess_taken"] + b["ojt_calls"]) > 0,
+        }
+    trainers, manager_rows = [], []
+    for tid, b in T.items():
+        row = _fin(b)
+        if _is_trainer_desg(desgs.get(tid, "")):
+            trainers.append(row)
+        else:
+            manager_rows.append(row)
+    # sort by period output
+    _score = lambda x: (x["deliveries"] + x["completions"] + x["assess_passed"] + x["ojt_calls"])
+    trainers.sort(key=lambda x: -_score(x))
+    manager_rows.sort(key=lambda x: -_score(x))
+
+    team_summary = {
+        "deliveries": sum(x["deliveries"] for x in trainers),
+        "completions": sum(x["completions"] for x in trainers),
+        "assess_taken": sum(x["assess_taken"] for x in trainers),
+        "assess_passed": sum(x["assess_passed"] for x in trainers),
+        "ojt_calls": sum(x["ojt_calls"] for x in trainers),
+        "active_trainers": sum(1 for x in trainers if x["active"]),
+        "total_trainers": len(trainers),
+    }
+    u = _current_user()
+    # the manager viewing (Dharani) — their own period row, if present
+    me_row = next((x for x in manager_rows if x["trainer_id"] == u["emp_id"]), None)
+    return jsonify(ok=True, range=rng, trainers=trainers,
+                   team_summary=team_summary, manager=manager_rows, me=me_row,
+                   is_admin=(u["role"] == "admin"))
+
+
+def _table_exists_tc(db, name):
+    try:
+        db.execute("SELECT 1 FROM " + name + " LIMIT 1")
+        return True
+    except Exception:
+        return False
 
 
 @tc_bp.route("/api/training/my-record")
