@@ -855,7 +855,9 @@ Priya S,MG087,9876500000,State Head,"></textarea>
     const TAB_BTNS = {
       home: 'tabHomeBtn', emp: 'tabEmpBtn', as: 'tabAsBtn', ind: 'tabIndBtn', trn: 'tabTrnBtn', vid: 'tabVidBtn', crt: 'tabCrtBtn', prog: 'tabProgBtn', an: 'tabAnBtn', appr: 'tabApprBtn', set: 'tabSetBtn', ojt: 'tabOjtBtn', audit: 'tabAuditBtn', tc: 'tabTcBtn'
     };
+    var CURRENT_TAB = 'home';
     function switchTab(which){
+      CURRENT_TAB = which;
       Object.keys(TABS).forEach(k=>{
         document.getElementById(TABS[k]).style.display = (k===which) ? 'block' : 'none';
         document.getElementById(TAB_BTNS[k]).classList.toggle('active', k===which);
@@ -865,6 +867,15 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         var _sb = document.getElementById('searchBox');
         if(_sb && _sb.value){ _sb.value = ''; if(typeof renderTable === 'function') renderTable(); }
       }
+      loadTabData(which);
+    }
+
+    // Load (or reload) the data for a given tab. Shared by switchTab and the
+    // 30-second auto-refresh so both go through the same code.
+    function loadTabData(which){
+      // Home and Employees both come from loadDashboard() (it loads the stats
+      // AND the employee list, then renders the table).
+      if(which === 'home' || which === 'emp'){ if(typeof loadDashboard === 'function') loadDashboard(); }
       if(which === 'as') loadAssessments();
       if(which === 'ind' || which === 'trn' || which === 'vid'){
         loadContent();
@@ -876,6 +887,23 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       if(which === 'appr'){ if(window.IS_ADMIN) loadApprovals(); else loadMySubmissions(); loadHistory(); }
       if(which === 'set'){ loadSettings(); loadDesignations(); if(typeof fillAddUserManagers==='function') fillAddUserManagers(); }
     }
+
+    // ---- Auto-refresh the current tab every 30s ----
+    // Only refreshes the tab you're actually viewing, pauses when the browser
+    // tab is hidden, and skips while a modal/form is open (so it never wipes
+    // what you're editing).
+    function autoRefreshTick(){
+      try{
+        if(document.hidden) return;                 // tab not visible — skip
+        if(document.querySelector('.ov.show')) return;  // a modal is open — skip
+        // on Employees/Home, loadDashboard clears the search box — so don't
+        // auto-refresh while the admin has a search typed in (it would wipe it)
+        var el = document.getElementById('searchBox');
+        if((CURRENT_TAB === 'emp' || CURRENT_TAB === 'home') && el && (el.value || '').trim()) return;
+        loadTabData(CURRENT_TAB);
+      }catch(e){}
+    }
+    setInterval(autoRefreshTick, 30000);
 
     // ---- Instructor read-only "My Submissions" view ----
     async function loadMySubmissions(){
