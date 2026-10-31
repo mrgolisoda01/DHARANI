@@ -863,11 +863,40 @@ def api_my_submissions():
     except Exception:
         pass
 
-    # delete requests this instructor raised
+    # every approval request this instructor raised (delete, resign, edit,
+    # activation, question change/edit, ...). Label by the real action type so
+    # the instructor sees exactly what each one was and whether it went through.
     try:
-        for r in db.execute("SELECT target_type, target_label, status, created_at FROM pending_actions WHERE requested_by=? ORDER BY created_at DESC", (me,)).fetchall():
-            st = {"approved": "Approved (deleted)", "pending": "Pending", "rejected": "Declined"}.get(r["status"], r["status"])
-            items.append({"kind": "Delete: " + (r["target_type"] or ""), "title": r["target_label"] or "",
+        import json as _json2
+        kind_label = {
+            "delete": "Delete request",
+            "resign": "Resignation request",
+            "assign_manager": "Reporting change",
+            "user_edit": "Employee edit",
+            "activate": "Activation request",
+            "question_replace": "Question upload",
+            "question_edit": "Question edit",
+            "edit": "Content edit",
+        }
+        for r in db.execute(
+            "SELECT action_type, target_type, target_label, payload, status, created_at "
+            "FROM pending_actions WHERE requested_by=? ORDER BY created_at DESC", (me,)
+        ).fetchall():
+            at = r["action_type"] or ""
+            kind = kind_label.get(at, (at.replace("_", " ").title() if at else "Request"))
+            # for a question edit, say add/edit/delete
+            if at == "question_edit":
+                try:
+                    op = (_json2.loads(r["payload"] or "{}")).get("op") or ""
+                    if op:
+                        kind = "Question " + ({"add": "add", "update": "edit", "delete": "delete"}.get(op, op))
+                except Exception:
+                    pass
+            if at == "delete":
+                st = {"approved": "Approved (deleted)", "pending": "Pending", "rejected": "Declined"}.get(r["status"], r["status"])
+            else:
+                st = {"approved": "Approved", "pending": "Pending", "rejected": "Declined"}.get(r["status"], r["status"])
+            items.append({"kind": kind, "title": r["target_label"] or "",
                           "status": st, "raw_status": r["status"], "created_at": r["created_at"]})
     except Exception:
         pass
@@ -1195,12 +1224,30 @@ def api_admin_all_approvals():
     except Exception:
         question_changes = []
 
+    # 5) other instructor action requests not covered by the buckets above
+    #    (employee edit, reporting change, activation, designation change)
+    other_actions = []
+    try:
+        for r in db.execute(
+            "SELECT * FROM pending_actions WHERE status='pending' "
+            "AND action_type IN ('assign_manager','user_edit','activate','designation_change') "
+            "ORDER BY created_at DESC"
+        ).fetchall():
+            row = dict(r)
+            _kl = {"assign_manager": "Reporting change", "user_edit": "Employee edit",
+                   "activate": "Activation", "designation_change": "Designation change"}
+            row["kind_label"] = _kl.get(row.get("action_type"), row.get("action_type") or "Request")
+            other_actions.append(row)
+    except Exception:
+        other_actions = []
+
     total = (len(employees) + len(modules) + len(videos) + len(assessments)
-             + len(certs) + len(deletes) + len(edits) + len(question_changes))
+             + len(certs) + len(deletes) + len(edits) + len(question_changes)
+             + len(other_actions))
     return jsonify(ok=True, total=total,
                    employees=employees, modules=modules, videos=videos,
                    assessments=assessments, certs=certs, deletes=deletes, edits=edits,
-                   question_changes=question_changes)
+                   question_changes=question_changes, other_actions=other_actions)
 
 
 @app.route("/api/admin/pending-actions")
@@ -1209,7 +1256,7 @@ def api_admin_pending_actions():
     """All pending action requests (instructor delete/resign/assign-manager/user-edit)."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit','activate','question_replace','question_edit') ORDER BY created_at DESC"
+        "SELECT * FROM pending_actions WHERE status='pending' AND action_type IN ('delete','resign','assign_manager','user_edit','activate','question_replace','question_edit','designation_change') ORDER BY created_at DESC"
     ).fetchall()
     out = [dict(r) for r in rows]
     return jsonify(ok=True, actions=out, count=len(out))
@@ -1434,6 +1481,50 @@ def api_admin_resolve_action():
                      details=f"{op}; requested by {act['requested_by_name'] or act['requested_by'] or ''}")
         return jsonify(ok=True, msg="Approved — question " + (op or "change") + " applied.")
 
+    # A designation add / rename / delete requested by an instructor.
+    if act["action_type"] == "designation_change":
+        import json as _json
+        try:
+            pay = _json.loads(act["payload"] or "{}")
+        except Exception:
+            pay = {}
+        op = pay.get("op")
+        name = (pay.get("name") or "").strip()
+        did = pay.get("id")
+        if op == "add":
+            # guard against a clash created meanwhile
+            clash = db.execute("SELECT 1 FROM designations WHERE LOWER(name)=?", (name.lower(),)).fetchone()
+            if not clash and name:
+                nxt = db.execute("SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM designations").fetchone()["n"]
+                db.execute("INSERT INTO designations (name, sort_order, created_at) VALUES (?,?,?)",
+                           (name, nxt, datetime.utcnow().isoformat()))
+        elif op == "rename" and did:
+            old = db.execute("SELECT name FROM designations WHERE id=?", (did,)).fetchone()
+            if old and name:
+                old_name = old["name"]
+                db.execute("UPDATE designations SET name=? WHERE id=?", (name, did))
+                if old_name.strip().lower() != name.strip().lower():
+                    db.execute("UPDATE users SET designation=? WHERE LOWER(TRIM(designation))=?",
+                               (name, old_name.strip().lower()))
+                    for table in ("assessments", "content_modules", "certificate_tracks"):
+                        try:
+                            for r in db.execute(f"SELECT id, roles FROM {table}").fetchall():
+                                parts = [p.strip() for p in (r["roles"] or "").split(",")]
+                                if any(p.lower() == old_name.strip().lower() for p in parts):
+                                    new_parts = [name if p.lower() == old_name.strip().lower() else p
+                                                 for p in parts if p]
+                                    db.execute(f"UPDATE {table} SET roles=? WHERE id=?",
+                                               (",".join(new_parts), r["id"]))
+                        except Exception:
+                            pass
+        elif op == "delete" and did:
+            db.execute("DELETE FROM designations WHERE id=?", (did,))
+        db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
+        db.commit()
+        log_activity("approved designation change", "designation", act["target_label"] or name,
+                     details=f"{op}; requested by {act['requested_by_name'] or act['requested_by'] or ''}")
+        return jsonify(ok=True, msg="Approved — designation " + (op or "change") + " applied.")
+
     # perform the delete that was requested
     tt = act["target_type"]
     tid = act["target_id"]
@@ -1623,9 +1714,11 @@ def api_admin_update_user():
 
 
 @app.route("/api/admin/reset-password", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_reset_password():
-    """Admin sets a temporary password for an employee."""
+    """Set a temporary password for an employee. Admins may reset anyone;
+    instructors may reset only LEARNERS (staff) — never an admin or another
+    instructor. The reset takes effect immediately and is logged."""
     d = request.get_json(force=True)
     emp_id = (d.get("emp_id") or "").strip()
     new_pw = d.get("new_password") or ""
@@ -1635,9 +1728,14 @@ def api_admin_reset_password():
         return jsonify(ok=False, msg="Temporary password must be at least 6 characters."), 400
 
     db = get_db()
-    target = db.execute("SELECT name FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
+    target = db.execute("SELECT name, role FROM users WHERE emp_id = ?", (emp_id,)).fetchone()
     if target is None:
         return jsonify(ok=False, msg="Employee not found."), 404
+
+    # instructors can only reset learners, not staff with elevated roles
+    _u = current_user()
+    if _u["role"] == "instructor" and target["role"] in ("admin", "instructor"):
+        return jsonify(ok=False, msg="You can only reset a learner's password. Ask an admin for this one."), 403
 
     db.execute("UPDATE users SET password_hash=?, must_reset=1 WHERE emp_id=?",
                (generate_password_hash(new_pw), emp_id))
@@ -2097,14 +2195,22 @@ def api_admin_enrolment_report_xlsx():
 
 
 @app.route("/api/admin/bulk-add", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_bulk_add():
     """Bulk add employees from CSV text.
     Expected columns: name, emp_id, phone, designation, password (optional).
-    If password missing, a default is set and must_reset flagged."""
+    If password missing, a default is set and must_reset flagged.
+    Admins may auto-approve; instructor uploads always land as PENDING for
+    admin approval (same as a single instructor-added employee)."""
     d = request.get_json(force=True)
     csv_text = d.get("csv") or ""
-    default_status = "approved" if d.get("auto_approve") else "pending"
+    _u = current_user()
+    me = _u["emp_id"]
+    # instructors never auto-approve — every row waits for admin approval
+    if _u["role"] == "instructor":
+        default_status = "pending"
+    else:
+        default_status = "approved" if d.get("auto_approve") else "pending"
     if not csv_text.strip():
         return jsonify(ok=False, msg="No CSV content received."), 400
 
@@ -2128,16 +2234,19 @@ def api_admin_bulk_add():
             skipped += 1
             continue
         db.execute(
-            "INSERT INTO users (emp_id,name,phone,designation,password_hash,status,role,created_at,must_reset) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO users (emp_id,name,phone,designation,password_hash,status,role,created_at,must_reset,added_by) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (emp_id, name, phone, desg, generate_password_hash(pw),
-             default_status, "staff", datetime.utcnow().isoformat(), 1)
+             default_status, "staff", datetime.utcnow().isoformat(), 1, me)
         )
         added += 1
 
     db.commit()
-    return jsonify(ok=True, added=added, skipped=skipped, errors=errors,
-                   msg=f"Added {added}, skipped {skipped} (already existed).")
+    if _u["role"] == "instructor":
+        tail = f"Added {added} for admin approval, skipped {skipped} (already existed)."
+    else:
+        tail = f"Added {added}, skipped {skipped} (already existed)."
+    return jsonify(ok=True, added=added, skipped=skipped, errors=errors, msg=tail)
 
 
 # ===============================================================
@@ -2705,11 +2814,13 @@ def api_admin_designations():
 
 
 @app.route("/api/admin/save-designation", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_save_designation():
     """Add a new designation, or rename an existing one.
     A rename cascades: every employee on the old name is updated, and the
-    old name is swapped inside assessment/module role lists."""
+    old name is swapped inside assessment/module role lists.
+    Instructor changes are queued for admin approval (nothing changes until
+    approved)."""
     d = request.get_json(force=True)
     did = d.get("id")
     name = (d.get("name") or "").strip()
@@ -2723,6 +2834,26 @@ def api_admin_save_designation():
     ).fetchone()
     if clash:
         return jsonify(ok=False, msg=f'"{name}" already exists.')
+
+    # instructor -> queue for admin approval instead of applying
+    _u = current_user()
+    if _u["role"] == "instructor":
+        import json as _json
+        old_name = ""
+        if did:
+            o = db.execute("SELECT name FROM designations WHERE id=?", (did,)).fetchone()
+            old_name = (o["name"] if o else "")
+        op = "rename" if did else "add"
+        payload = _json.dumps({"op": op, "id": did, "name": name, "old_name": old_name})
+        label = (f'Rename "{old_name}" → "{name}"' if did else f'Add "{name}"')
+        db.execute(
+            "INSERT INTO pending_actions (action_type, target_type, target_id, target_label, "
+            "payload, requested_by, requested_by_name, status, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            ("designation_change", "designation", str(did or ""), label,
+             payload, _u["emp_id"], _u["name"], "pending", datetime.utcnow().isoformat()))
+        db.commit()
+        return jsonify(ok=True, queued=True, msg="Sent for admin approval.")
 
     if did:
         old = db.execute("SELECT name FROM designations WHERE id=?", (did,)).fetchone()
@@ -2767,9 +2898,10 @@ def api_admin_save_designation():
 
 
 @app.route("/api/admin/delete-designation", methods=["POST"])
-@admin_required
+@view_admin_required
 def api_admin_delete_designation():
-    """Delete a designation. Reports usage first unless force=true."""
+    """Delete a designation. Reports usage first unless force=true.
+    Instructor deletes are queued for admin approval."""
     d = request.get_json(force=True)
     did = d.get("id")
     force = bool(d.get("force"))
@@ -2792,6 +2924,20 @@ def api_admin_delete_designation():
         return jsonify(ok=False, in_use=True, usage=use,
                        msg=f'"{row["name"]}" is being used by ' + ", ".join(bits) +
                            ". Rename it instead, or confirm to delete it anyway.")
+
+    # instructor -> queue for admin approval instead of deleting
+    _u = current_user()
+    if _u["role"] == "instructor":
+        import json as _json
+        payload = _json.dumps({"op": "delete", "id": did, "name": row["name"]})
+        db.execute(
+            "INSERT INTO pending_actions (action_type, target_type, target_id, target_label, "
+            "payload, requested_by, requested_by_name, status, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            ("designation_change", "designation", str(did or ""), f'Delete "{row["name"]}"',
+             payload, _u["emp_id"], _u["name"], "pending", datetime.utcnow().isoformat()))
+        db.commit()
+        return jsonify(ok=True, queued=True, msg="Delete sent for admin approval.")
 
     db.execute("DELETE FROM designations WHERE id=?", (did,))
     db.commit()
