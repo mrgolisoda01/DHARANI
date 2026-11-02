@@ -350,6 +350,18 @@ def _ensure_tables():
             svalue TEXT
         )
     """)
+    # Trainer marks a whole DAY as submitted for a trainee (stays editable; this
+    # is just a "this day is finalised" marker with a timestamp).
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS ojt_day_submits (
+            id            SERIAL PRIMARY KEY,
+            enrollment_id INTEGER NOT NULL,
+            day_no        INTEGER NOT NULL,
+            submitted_by  TEXT,
+            submitted_at  TEXT,
+            UNIQUE (enrollment_id, day_no)
+        )
+    """)
     # seed default weights once
     for k, v in (("w_tasks", "60"), ("w_activity", "40")):
         if not db.execute("SELECT 1 FROM ojt_settings WHERE skey=?", (k,)).fetchone():
@@ -811,6 +823,25 @@ def _timeline(enr, light=False):
             "SELECT id, day_no, outcome, note, called_at FROM ojt_calls WHERE enrollment_id=? ORDER BY id", (enr["id"],)).fetchall():
             calls_by_day.setdefault(r["day_no"], []).append(
                 {"id": r["id"], "outcome": r["outcome"], "note": r["note"] or "", "called_at": r["called_at"] or ""})
+    # daily-activity format for this role (the items the trainer fills each day)
+    if light:
+        activity_items = []; actlog_by_date = {}; submits = set()
+    else:
+        activity_items = [dict(r) for r in db.execute(
+            "SELECT id, label, kind, target, points, sort_no FROM ojt_activity_items "
+            "WHERE role=? AND active=1 ORDER BY sort_no, id", (enr["role"],)).fetchall()]
+        # logged activity values, keyed by (log_date, item_id)
+        actlog_by_date = {}
+        for r in db.execute(
+            "SELECT item_id, log_date, value, done, score, note FROM ojt_activity_log WHERE enrollment_id=?",
+            (enr["id"],)).fetchall():
+            actlog_by_date[(r["log_date"], r["item_id"])] = {
+                "value": r["value"], "done": r["done"], "score": r["score"], "note": r["note"] or ""}
+        # which days have been submitted
+        submits = {}
+        for r in db.execute(
+            "SELECT day_no, submitted_at FROM ojt_day_submits WHERE enrollment_id=?", (enr["id"],)).fetchall():
+            submits[r["day_no"]] = r["submitted_at"] or ""
     tasks = _tasks_by_day(enr["role"])
 
     days, total, done, due, due_done = [], 0, 0, 0, 0
@@ -859,13 +890,24 @@ def _timeline(enr, light=False):
                         due_done += 1
             nt = daynotes.get(n, {"problems": "", "work_done": ""})
             dr = day_remarks.get(n, {"remark": "", "tag_ids": []})
+            # per-day daily-activity rows: each format item + any value logged on this date
+            act_rows = []
+            for it in activity_items:
+                lg = actlog_by_date.get((ds, it["id"]), {})
+                act_rows.append({
+                    "item_id": it["id"], "label": it["label"], "kind": it["kind"],
+                    "target": it["target"], "points": it["points"],
+                    "value": lg.get("value"), "done": lg.get("done"),
+                    "score": lg.get("score"), "note": lg.get("note", "")})
             days.append({"day": n, "date": ds, "weekday": cur.strftime("%a"),
                          "kind": ("review" if is_review else "work"),
                          "is_today": cur == today, "past": cur < today,
                          "can_edit": True, "override": ov, "tasks": tl,
                          "problems": nt["problems"], "work_done": nt["work_done"],
                          "day_remark": dr["remark"], "day_tag_ids": dr["tag_ids"],
-                         "calls": calls_by_day.get(n, [])})
+                         "calls": calls_by_day.get(n, []),
+                         "activity": act_rows,
+                         "submitted_at": submits.get(n) if not light else None})
             end_date = cur
         else:
             # non-working calendar day (sunday / leave / weekoff) — shown, no task, no count
@@ -1753,6 +1795,109 @@ def api_ojt_edit_call():
     db.execute("UPDATE ojt_calls SET outcome=? WHERE id=? AND enrollment_id=?", (outcome, call_id, e["id"]))
     db.commit()
     return jsonify(ok=True)
+
+
+@ojt_bp.route("/api/ojt/activity-log-save", methods=["POST"])
+@_staff_required
+def api_ojt_activity_log_save():
+    """Trainer/admin records a daily-activity item for a trainee on one date.
+
+    Number item: send `value` (the count). Auto-score = min(100, value/target*100)
+    when a target is set. Check item: send `done` (0/1); score = 100 if done else 0.
+    An explicit `score` (0-100) always overrides the auto value. Blank value/done
+    clears the entry for that item+date."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    db = _get_db()
+    try:
+        item_id = int(d.get("item_id"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Invalid activity item."), 400
+    it = db.execute("SELECT id, kind, target, role FROM ojt_activity_items WHERE id=? AND active=1",
+                    (item_id,)).fetchone()
+    if not it or it["role"] != e["role"]:
+        return jsonify(ok=False, msg="Activity item not found."), 404
+    log_date = (d.get("log_date") or "")[:10]
+    if len(log_date) != 10:
+        return jsonify(ok=False, msg="Missing date."), 400
+
+    def _num(x):
+        if x == "" or x is None:
+            return None
+        try:
+            return int(float(x))
+        except (TypeError, ValueError):
+            return None
+
+    value = _num(d.get("value"))
+    done = d.get("done")
+    done = 1 if (done in (1, "1", True, "true")) else (0 if (done in (0, "0", False, "false")) else None)
+
+    # auto score from value/target or done, unless the trainer gave an explicit score
+    auto = None
+    if it["kind"] == "number":
+        if value is not None:
+            tg = it["target"] or 0
+            auto = min(100, int(round(value / tg * 100))) if tg > 0 else (100 if value > 0 else 0)
+    else:  # check item
+        if done is not None:
+            auto = 100 if done == 1 else 0
+    manual = _num(d.get("score"))
+    score = manual if manual is not None else auto
+    if score is not None:
+        score = max(0, min(100, score))
+
+    note_txt = (d.get("note") or "").strip()[:500]
+    # a completely empty entry (no value, no done, no score, no note) removes the row
+    if value is None and done is None and score is None and not note_txt:
+        db.execute("DELETE FROM ojt_activity_log WHERE enrollment_id=? AND item_id=? AND log_date=?",
+                   (e["id"], item_id, log_date))
+        db.commit()
+        return jsonify(ok=True, cleared=True)
+
+    if db.execute("SELECT 1 FROM ojt_activity_log WHERE enrollment_id=? AND item_id=? AND log_date=?",
+                  (e["id"], item_id, log_date)).fetchone():
+        db.execute("UPDATE ojt_activity_log SET value=?, done=?, score=?, note=?, filled_by=?, filled_at=? "
+                   "WHERE enrollment_id=? AND item_id=? AND log_date=?",
+                   (value, done, score, note_txt, _current_user()["emp_id"], _now(), e["id"], item_id, log_date))
+    else:
+        db.execute("INSERT INTO ojt_activity_log (enrollment_id, item_id, log_date, value, done, score, note, filled_by, filled_at) "
+                   "VALUES (?,?,?,?,?,?,?,?,?)",
+                   (e["id"], item_id, log_date, value, done, score, note_txt, _current_user()["emp_id"], _now()))
+    db.commit()
+    return jsonify(ok=True, score=score)
+
+
+@ojt_bp.route("/api/ojt/submit-day", methods=["POST"])
+@_staff_required
+def api_ojt_submit_day():
+    """Trainer/admin marks a whole day as submitted for the trainee. This is a
+    'this day is finalised' marker (with a timestamp) — everything on the day
+    stays editable. Posting with undo=1 removes the marker."""
+    d = request.get_json(force=True)
+    e, err = _get_enr_for_edit(d.get("enrollment_id"))
+    if err:
+        return err
+    try:
+        day_no = int(d.get("day_no"))
+    except Exception:
+        return jsonify(ok=False, msg="Missing day."), 400
+    db = _get_db()
+    if d.get("undo"):
+        db.execute("DELETE FROM ojt_day_submits WHERE enrollment_id=? AND day_no=?", (e["id"], day_no))
+        db.commit()
+        return jsonify(ok=True, submitted_at=None)
+    now = _now()
+    if db.execute("SELECT 1 FROM ojt_day_submits WHERE enrollment_id=? AND day_no=?", (e["id"], day_no)).fetchone():
+        db.execute("UPDATE ojt_day_submits SET submitted_by=?, submitted_at=? WHERE enrollment_id=? AND day_no=?",
+                   (_current_user()["emp_id"], now, e["id"], day_no))
+    else:
+        db.execute("INSERT INTO ojt_day_submits (enrollment_id, day_no, submitted_by, submitted_at) VALUES (?,?,?,?)",
+                   (e["id"], day_no, _current_user()["emp_id"], now))
+    db.commit()
+    return jsonify(ok=True, submitted_at=now)
 
 
 # ---------------------------------------------------------------
