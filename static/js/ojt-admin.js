@@ -352,6 +352,19 @@
           ' style="padding:3px 10px;border-radius:20px;font-size:11.5px;margin:2px;cursor:pointer;' + base + '">' + esc(t.label) + "</button>";
       }).join("");
     }
+    // small section wrapper so each part of a day is a clearly-separated card
+    function sec(n, title, bodyHtml, statusHtml){
+      return '<div class="ojt-sec" style="margin-top:9px;border:1px solid var(--mg-line);border-radius:9px;overflow:hidden">' +
+        '<div style="display:flex;align-items:center;gap:7px;padding:7px 11px;background:#f7f9fa;border-bottom:1px solid #eef1f3">' +
+          '<span style="font-size:11px;font-weight:800;color:#fff;background:var(--mg-blue);width:19px;height:19px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center">' + n + '</span>' +
+          '<span style="font-size:12.5px;font-weight:700;color:#2a3741">' + title + '</span>' +
+          (statusHtml ? '<span style="margin-left:auto">' + statusHtml + '</span>' : '') +
+        '</div>' +
+        '<div style="padding:10px 11px">' + bodyHtml + '</div>' +
+      '</div>';
+    }
+    var OC = { no_answer:"No answer", busy:"Busy", spoke_done:"Spoke – done", spoke_not_done:"Spoke – not done" };
+
     var daysHtml = tl.days.map(function(day){
       var isWork = (day.kind === "work" || day.kind === "review");
       var badge = day.kind === "sunday" ? '<span class="ojt-k k-sunday">Week off (Sun)</span>'
@@ -360,66 +373,50 @@
         : day.kind === "review" ? '<span class="ojt-k k-review">Final review</span>' : "";
       if(day.is_today) badge += ' <span class="ojt-k k-today">Today</span>';
 
-      // per-day edit controls (trainer/admin), only while active
+      // per-day status pills (leave / week-off / worked) — compact, grouped on the right
       var editBtns = "";
       if(active){
         var b = [];
-        if(day.weekday === "Sun" && day.override !== "worked"){
-          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="worked">Mark worked</button>');
-        }
-        if(day.override === "worked"){
-          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="clear">Back to week off</button>');
-        }
+        var pill = 'display:inline-block;font-size:11px;padding:3px 10px;margin-left:5px;border-radius:20px;border:1px solid var(--mg-line);background:#fff;color:#55636d;cursor:pointer';
+        function mk(kind, label, extra){ return '<button class="ojt-link" style="' + pill + (extra||'') + '" data-act="dayset" data-date="' + day.date + '" data-kind="' + kind + '">' + label + '</button>'; }
+        if(day.weekday === "Sun" && day.override !== "worked"){ b.push(mk("worked","Mark worked")); }
+        if(day.override === "worked"){ b.push(mk("clear","Back to week off")); }
         if(isWork && day.weekday !== "Sun"){
-          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="leave">Mark leave</button>');
-          b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="weekoff">Mark week off</button>');
+          b.push(mk("leave","Mark leave"));
+          b.push(mk("weekoff","Mark week off"));
         }
-        if(day.kind === "leave" || day.kind === "weekoff"){
-          if(day.override){ b.push('<button class="ojt-link" data-act="dayset" data-date="' + day.date + '" data-kind="clear">Undo</button>'); }
-        }
-        editBtns = b.join(' ');
+        if((day.kind === "leave" || day.kind === "weekoff") && day.override){ b.push(mk("clear","Undo")); }
+        editBtns = b.join('');
       }
 
-      var tasks = day.tasks.length ? day.tasks.map(function(t){
-        var claim = t.self_done
-          ? ' <span class="ojt-claim" style="font-size:11px;color:#c98a00;font-weight:600;white-space:nowrap">🟡 Trainee marked done</span>'
-          : '';
-        var savedRemark = t.remark ? '<div style="font-size:12px;color:#555;margin-top:2px">📝 ' + esc(t.remark) + '</div>' : '';
-        var savedReason = (!t.done && t.not_done_reason) ? '<div style="font-size:12px;color:#9e2b2b;margin-top:2px">⚠ Not done: ' + esc(t.not_done_reason) + '</div>' : '';
-        var scoreBadge = (t.score !== null && t.score !== undefined)
-          ? ' <span style="font-size:11px;font-weight:700;padding:1px 8px;border-radius:20px;'+(t.score>=70?'background:#eaf7f0;color:#0f6b45':'background:#fdeaea;color:#9e2b2b')+'">'+t.score+'%</span>' : '';
-        var editor = active ? (
-          '<div class="ojt-trow-edit" data-task="' + t.id + '" style="display:none;margin-top:6px;padding:8px;background:#f7f9fa;border-radius:8px">' +
-            (t.done ? '' : '<input type="text" class="ojt-reason" placeholder="Reason not done (required if not ticked)" value="' + esc(t.not_done_reason) + '" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;margin-bottom:5px">') +
-            '<textarea class="ojt-remark" placeholder="Trainer remark for this task" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(t.remark) + '</textarea>' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><label style="font-size:12px;color:#62707a">Score (0-100):</label>'+
-              '<input type="number" min="0" max="100" class="ojt-tscore" data-task="'+t.id+'" value="'+(t.score!==null&&t.score!==undefined?t.score:"")+'" placeholder="0-100" style="width:90px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">'+
-              '<button class="ojt-savescore" data-task="'+t.id+'" style="background:#1d9e75;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer">Save score</button></div>'+
-            '<div style="text-align:right;margin-top:5px"><button class="ojt-savetr" data-task="' + t.id + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark</button></div>' +
-          '</div>') : '';
-        var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark / score</button>' : '';
-        return '<div class="ojt-task-wrap" style="border-bottom:1px solid #f0f0f0;padding:6px 0">' +
-          '<label class="ojt-task" style="align-items:flex-start"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
-          (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim + scoreBadge + editLink +
-          (t.topic ? ' <span style="font-size:10px;color:#0c447c;background:#eef5fc;border:1px solid #cddff0;padding:1px 7px;border-radius:20px">'+esc(t.topic)+'</span>' : '') +
-          (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") +
-          savedRemark + savedReason +
-          "</span></label>" + editor + "</div>";
-      }).join("") : '<div class="muted">No tasks set for this day.</div>';
-
-      // trainee's own daily notes (read-only)
-      var noteBlock = "";
-      if((day.work_done && day.work_done.trim()) || (day.problems && day.problems.trim())){
-        noteBlock = '<div class="ojt-daynote" style="margin-top:6px;padding:8px 10px;background:#f7f9fa;border-radius:8px;font-size:12.5px">' +
-          (day.work_done ? '<div><b>Trainee — work done:</b> ' + esc(day.work_done) + '</div>' : '') +
-          (day.problems ? '<div style="margin-top:3px"><b>Trainee — problems:</b> ' + esc(day.problems) + '</div>' : '') +
-          '</div>';
-      }
-
-      // call log + day remark (trainer/admin) — only on working days
-      var callBlock = "";
+      // ---------- progress chip + submitted badge (working days only) ----------
+      var chip = "", submittedBadge = "";
       if(isWork){
-        var OC = { no_answer:"No answer", busy:"Busy", spoke_done:"Spoke – done", spoke_not_done:"Spoke – not done" };
+        var taskTotal = (day.tasks || []).length;
+        var taskDone = (day.tasks || []).filter(function(t){ return t.done; }).length;
+        var callN = (day.calls || []).length;
+        var actList = day.activity || [];
+        var actFilled = actList.filter(function(a){ return a.value !== null && a.value !== undefined || a.done !== null && a.done !== undefined || a.score !== null && a.score !== undefined; }).length;
+        var remarkOk = !!(day.day_remark && day.day_remark.trim());
+        function part(txt, ok){
+          return '<span style="font-size:10.5px;padding:2px 7px;border-radius:20px;margin-left:4px;' +
+            (ok ? 'background:#eaf7f0;color:#0f6b45;border:1px solid #c4e8d5' : 'background:#f1f3f5;color:#7a8893;border:1px solid #e3e7ea') + '">' + txt + '</span>';
+        }
+        chip = '<span style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:0">' +
+          part('📞 ' + callN, callN > 0) +
+          part('✅ Tasks ' + taskDone + '/' + taskTotal, taskTotal > 0 && taskDone === taskTotal) +
+          (actList.length ? part('📝 Activity ' + actFilled + '/' + actList.length, actFilled === actList.length) : '') +
+          part('🏷 Remark ' + (remarkOk ? '✓' : '—'), remarkOk) +
+          '</span>';
+        if(day.submitted_at){
+          var st2 = new Date(day.submitted_at + (day.submitted_at.slice(-1)==="Z"?"":"Z")).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"numeric",minute:"2-digit"});
+          submittedBadge = '<span class="ojt-k" style="background:#eaf7f0;color:#0f6b45;border:1px solid #b7e3ca">✅ Submitted · ' + esc(st2) + '</span>';
+        }
+      }
+
+      // ---------- ① CALL LOG ----------
+      var callSec = "";
+      if(isWork){
         var callList = (day.calls || []).map(function(c, idx){
           var t2 = c.called_at ? new Date(c.called_at + (c.called_at.slice(-1)==="Z"?"":"Z")).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"numeric",minute:"2-digit"}) : "";
           var col = (c.outcome === "spoke_done") ? "#0f6b45" : (c.outcome.indexOf("spoke")===0 ? "#0c447c" : "#9e2b2b");
@@ -433,30 +430,134 @@
             (c.note ? ' — ' + esc(c.note) : "") + editSel + "</div>";
         }).join("");
         var callBtns = active ? (
-          '<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:5px">' +
+          '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:5px">' +
           '<button class="ojt-call" data-day="' + day.day + '" data-oc="no_answer" style="font-size:11.5px;padding:4px 10px;border:1px solid #f3c0c0;background:#fdeaea;color:#9e2b2b;border-radius:6px;cursor:pointer">＋ No answer</button>' +
           '<button class="ojt-call" data-day="' + day.day + '" data-oc="busy" style="font-size:11.5px;padding:4px 10px;border:1px solid #f0d9b0;background:#faf1de;color:#845a0b;border-radius:6px;cursor:pointer">＋ Busy</button>' +
           '<button class="ojt-call" data-day="' + day.day + '" data-oc="spoke_done" style="font-size:11.5px;padding:4px 10px;border:1px solid #b7e3ca;background:#eaf7f0;color:#0f6b45;border-radius:6px;cursor:pointer">＋ Spoke – done</button>' +
           '<button class="ojt-call" data-day="' + day.day + '" data-oc="spoke_not_done" style="font-size:11.5px;padding:4px 10px;border:1px solid #cddff0;background:#eef5fc;color:#0c447c;border-radius:6px;cursor:pointer">＋ Spoke – not done</button>' +
           '</div>') : "";
+        var callBody = (callList || '<div class="muted" style="font-size:12px">No calls logged yet.</div>') + callBtns;
+        var callStatus = (day.calls && day.calls.length)
+          ? '<span style="font-size:11px;color:#0f6b45;font-weight:600">' + day.calls.length + ' logged</span>'
+          : '<span style="font-size:11px;color:#9aa6ae">none yet</span>';
+        callSec = sec(1, "Call log", callBody, callStatus);
+      }
+
+      // ---------- ② TASKS ----------
+      var tasksSec = "";
+      if(isWork){
+        var tasksBody = day.tasks.length ? day.tasks.map(function(t){
+          var claim = t.self_done
+            ? ' <span class="ojt-claim" style="font-size:11px;color:#c98a00;font-weight:600;white-space:nowrap">🟡 Trainee marked done</span>'
+            : '';
+          var savedRemark = t.remark ? '<div style="font-size:12px;color:#555;margin-top:2px">📝 ' + esc(t.remark) + '</div>' : '';
+          var savedReason = (!t.done && t.not_done_reason) ? '<div style="font-size:12px;color:#9e2b2b;margin-top:2px">⚠ Not done: ' + esc(t.not_done_reason) + '</div>' : '';
+          var scoreBadge = (t.score !== null && t.score !== undefined)
+            ? ' <span style="font-size:11px;font-weight:700;padding:1px 8px;border-radius:20px;'+(t.score>=70?'background:#eaf7f0;color:#0f6b45':'background:#fdeaea;color:#9e2b2b')+'">'+t.score+'%</span>' : '';
+          var editor = active ? (
+            '<div class="ojt-trow-edit" data-task="' + t.id + '" style="display:none;margin-top:6px;padding:8px;background:#f7f9fa;border-radius:8px">' +
+              (t.done ? '' : '<input type="text" class="ojt-reason" placeholder="Reason not done (required if not ticked)" value="' + esc(t.not_done_reason) + '" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;margin-bottom:5px">') +
+              '<textarea class="ojt-remark" placeholder="Trainer remark for this task" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(t.remark) + '</textarea>' +
+              '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><label style="font-size:12px;color:#62707a">Score (0-100):</label>'+
+                '<input type="number" min="0" max="100" class="ojt-tscore" data-task="'+t.id+'" value="'+(t.score!==null&&t.score!==undefined?t.score:"")+'" placeholder="0-100" style="width:90px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">'+
+                '<button class="ojt-savescore" data-task="'+t.id+'" style="background:#1d9e75;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer">Save score</button></div>'+
+              '<div style="text-align:right;margin-top:5px"><button class="ojt-savetr" data-task="' + t.id + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark</button></div>' +
+            '</div>') : '';
+          var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark / score</button>' : '';
+          return '<div class="ojt-task-wrap" style="border-bottom:1px solid #f0f0f0;padding:6px 0">' +
+            '<label class="ojt-task" style="align-items:flex-start"><input type="checkbox" data-act="sign" data-task="' + t.id + '"' +
+            (t.done ? " checked" : "") + (active ? "" : " disabled") + "><span><b>" + esc(t.title) + "</b>" + claim + scoreBadge + editLink +
+            (t.topic ? ' <span style="font-size:10px;color:#0c447c;background:#eef5fc;border:1px solid #cddff0;padding:1px 7px;border-radius:20px">'+esc(t.topic)+'</span>' : '') +
+            (t.description ? '<br><span class="muted">' + esc(t.description) + "</span>" : "") +
+            savedRemark + savedReason +
+            "</span></label>" + editor + "</div>";
+        }).join("") : '<div class="muted" style="font-size:12px">No tasks set for this day.</div>';
+        // trainee's own daily notes (read-only) sit with the tasks
+        if((day.work_done && day.work_done.trim()) || (day.problems && day.problems.trim())){
+          tasksBody += '<div class="ojt-daynote" style="margin-top:6px;padding:8px 10px;background:#f7f9fa;border-radius:8px;font-size:12.5px">' +
+            (day.work_done ? '<div><b>Trainee — work done:</b> ' + esc(day.work_done) + '</div>' : '') +
+            (day.problems ? '<div style="margin-top:3px"><b>Trainee — problems:</b> ' + esc(day.problems) + '</div>' : '') +
+            '</div>';
+        }
+        var tn = day.tasks.length, td = (day.tasks||[]).filter(function(t){return t.done;}).length;
+        var tasksStatus = tn ? '<span style="font-size:11px;font-weight:600;color:' + (td===tn?'#0f6b45':'#9aa6ae') + '">' + td + '/' + tn + ' done</span>' : '';
+        tasksSec = sec(2, "Tasks", tasksBody, tasksStatus);
+      }
+
+      // ---------- ③ DAILY ACTIVITY ----------
+      var actSec = "";
+      if(isWork){
+        var acts = day.activity || [];
+        var actBody;
+        if(!acts.length){
+          actBody = '<div class="muted" style="font-size:12px">No daily-activity items set for this role yet. ' +
+            'Add them in <b>📝 Daily Activity format</b> (top of the OJT tab), then they appear here each day.</div>';
+        } else {
+          actBody = '<div style="display:flex;flex-direction:column;gap:7px">' + acts.map(function(a){
+            var scoreBadge = (a.score !== null && a.score !== undefined)
+              ? ' <span style="font-size:11px;font-weight:700;padding:1px 8px;border-radius:20px;'+(a.score>=70?'background:#eaf7f0;color:#0f6b45':(a.score>=50?'background:#fef7e6;color:#8a6d00':'background:#fdeaea;color:#9e2b2b'))+'">'+a.score+'%</span>' : '';
+            var targetTxt = (a.kind === "number" && a.target) ? ' <span class="muted" style="font-size:11px">target ' + a.target + '</span>' : '';
+            var input;
+            if(a.kind === "number"){
+              input = '<input type="number" class="ojt-actval" data-item="' + a.item_id + '" data-day="' + day.day + '" data-date="' + day.date + '" min="0" value="' + (a.value!==null&&a.value!==undefined?a.value:"") + '" placeholder="0" ' +
+                (active?'':'disabled ') + 'style="width:74px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">';
+            } else {
+              input = '<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer"><input type="checkbox" class="ojt-actchk" data-item="' + a.item_id + '" data-day="' + day.day + '" data-date="' + day.date + '"' + (a.done===1?' checked':'') + (active?'':' disabled') + '> done</label>';
+            }
+            var overBtn = active ? ' <button class="ojt-link ojt-actover" data-item="' + a.item_id + '" style="font-size:11px">✎ score</button>' : '';
+            return '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:4px 0;border-bottom:1px solid #f3f4f5">' +
+              '<span style="flex:1;min-width:120px;font-size:12.5px;font-weight:600;color:#2a3741">' + esc(a.label) + targetTxt + '</span>' +
+              input + scoreBadge + overBtn +
+              '</div>';
+          }).join("") + '</div>' +
+          (active ? '<div style="text-align:right;margin-top:8px"><button class="ojt-saveact" data-day="' + day.day + '" data-date="' + day.date + '" style="background:#1d9e75;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save activity</button></div>' : '');
+        }
+        var af = acts.filter(function(a){ return (a.value!==null&&a.value!==undefined)||(a.done!==null&&a.done!==undefined)||(a.score!==null&&a.score!==undefined); }).length;
+        var actStatus = acts.length ? '<span style="font-size:11px;font-weight:600;color:' + (af===acts.length?'#0f6b45':'#9aa6ae') + '">' + af + '/' + acts.length + ' filled</span>' : '';
+        actSec = sec(3, "Daily activity", actBody, actStatus);
+      }
+
+      // ---------- ④ DAY REMARK & TAGS ----------
+      var remarkSec = "";
+      if(isWork){
         var dayRemarkChips = tagChips(day.day_tag_ids);
-        var dayRemarkEditor = active ? (
-          '<div style="margin-top:6px">' +
-          '<textarea class="ojt-dayremark" data-day="' + day.day + '" placeholder="Overall remark for the day (what was discussed)" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(day.day_remark || "") + '</textarea>' +
-          '<div class="ojt-tagbox" data-day="' + day.day + '" data-sel="' + (day.day_tag_ids || []).join(",") + '" style="margin:5px 0">' + tagPicker(day.day_tag_ids || []) + '</div>' +
-          '<div style="text-align:right"><button class="ojt-savedayr" data-day="' + day.day + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save day remark</button></div>' +
-          '</div>') : (day.day_remark ? '<div style="font-size:12px;color:#555;margin-top:4px">📝 ' + esc(day.day_remark) + '</div>' + (dayRemarkChips ? '<div>' + dayRemarkChips + '</div>' : '') : '');
-        callBlock = '<div style="margin-top:8px;padding:9px 11px;border:1px dashed var(--mg-line);border-radius:8px">' +
-          '<div style="font-size:12px;font-weight:600;margin-bottom:4px">Trainer call log & remark</div>' +
-          (callList || '<div class="muted" style="font-size:12px">No calls logged.</div>') + callBtns + dayRemarkEditor + "</div>";
+        var remarkBody = active ? (
+          '<textarea class="ojt-dayremark" data-day="' + day.day + '" placeholder="Overall remark for the day (what was discussed)" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:40px;font-family:inherit">' + esc(day.day_remark || "") + '</textarea>' +
+          '<div style="font-size:11px;color:#8a97a0;margin:7px 0 3px">Tap tags that apply:</div>' +
+          '<div class="ojt-tagbox" data-day="' + day.day + '" data-sel="' + (day.day_tag_ids || []).join(",") + '" style="margin:0 0 4px">' + tagPicker(day.day_tag_ids || []) + '</div>' +
+          '<div style="text-align:right"><button class="ojt-savedayr" data-day="' + day.day + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark & tags</button></div>'
+        ) : (day.day_remark ? '<div style="font-size:12.5px;color:#444">📝 ' + esc(day.day_remark) + '</div>' + (dayRemarkChips ? '<div style="margin-top:4px">' + dayRemarkChips + '</div>' : '') : '<div class="muted" style="font-size:12px">No remark.</div>');
+        var remarkStatus = (day.day_remark && day.day_remark.trim()) ? '<span style="font-size:11px;color:#0f6b45;font-weight:600">✓ saved</span>' : '<span style="font-size:11px;color:#9aa6ae">empty</span>';
+        remarkSec = sec(4, "Day remark &amp; tags", remarkBody, remarkStatus);
+      }
+
+      // ---------- ⑤ SUBMIT ----------
+      var submitSec = "";
+      if(isWork && active){
+        var subBody = '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px">' +
+          (day.submitted_at
+            ? '<span style="font-size:12.5px;color:#0f6b45;font-weight:600">✅ This day is submitted.</span>' +
+              '<button class="ojt-submitday" data-day="' + day.day + '" data-resubmit="1" style="background:var(--mg-blue);color:#fff;border:none;border-radius:7px;padding:6px 15px;font-size:12.5px;cursor:pointer">Re-submit (update time)</button>' +
+              '<button class="ojt-unsubmitday ojt-link" data-day="' + day.day + '" style="font-size:12px;color:#9e2b2b">Undo submit</button>'
+            : '<span style="font-size:12.5px;color:#55636d">When the day\'s work is done, submit it for the trainee.</span>' +
+              '<button class="ojt-submitday" data-day="' + day.day + '" style="background:#1d9e75;color:#fff;border:none;border-radius:7px;padding:7px 18px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">✅ Submit this day</button>'
+          ) + '</div>' +
+          '<div class="muted" style="font-size:11px;margin-top:6px">Submitting just marks the day finalised (with a time) — everything above stays editable.</div>';
+        submitSec = sec(5, "Submit", subBody, "");
       }
 
       var dayLabel = (day.day !== null && day.day !== undefined)
         ? ("<b>Day " + day.day + "</b> · ")
         : '<b class="muted">—</b> · ';
+      var headerLine =
+        '<div class="ojt-tl-h" style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap">' +
+          '<span>' + dayLabel + day.weekday + ", " + fmtD(day.date) + " " + badge + " " + submittedBadge + "</span>" +
+          (editBtns ? '<span style="margin-left:auto;text-align:right">' + editBtns + "</span>" : "") +
+        "</div>" +
+        (chip ? '<div style="margin-top:6px">' + chip + '</div>' : '');
       return '<div class="ojt-tl-day' + (day.is_today ? " today" : "") + (isWork ? "" : " off") + '">' +
-        '<div class="ojt-tl-h"><span>' + dayLabel + day.weekday + ", " + fmtD(day.date) + " " + badge + "</span>" + editBtns + "</div>" +
-        (isWork ? (tasks + noteBlock + callBlock) : "") + "</div>";
+        headerLine +
+        (isWork ? (callSec + tasksSec + actSec + remarkSec + submitSec) : "") + "</div>";
     }).join("");
 
     var closeBox = active
@@ -939,6 +1040,67 @@
       var r3 = await postJ("/api/ojt/day-remark", { enrollment_id: enrId, day_no: dayNo,
         remark: ta ? ta.value : "", tag_ids: ids2 });
       if(!r3.ok){ note(r3.msg || "Could not save."); } else { note("Day remark saved."); openTrainee(enrId); }
+      return;
+    }
+
+    // ---- Daily activity: save all items on a day at once ----
+    var sa = e.target.closest(".ojt-saveact");
+    if(sa){
+      var dt = sa.dataset.date, dayN = sa.dataset.day;
+      var vals = document.querySelectorAll('.ojt-actval[data-day="'+dayN+'"]');
+      var chks = document.querySelectorAll('.ojt-actchk[data-day="'+dayN+'"]');
+      var okAll = true;
+      for(var i=0;i<vals.length;i++){
+        var rv = await postJ("/api/ojt/activity-log-save", { enrollment_id: enrId, item_id: vals[i].dataset.item, log_date: dt, value: vals[i].value });
+        if(!rv.ok) okAll = false;
+      }
+      for(var j=0;j<chks.length;j++){
+        var rc = await postJ("/api/ojt/activity-log-save", { enrollment_id: enrId, item_id: chks[j].dataset.item, log_date: dt, done: chks[j].checked ? 1 : 0 });
+        if(!rc.ok) okAll = false;
+      }
+      note(okAll ? "Daily activity saved." : "Some items didn't save.");
+      openTrainee(enrId);
+      return;
+    }
+
+    // ---- Daily activity: override one item's score ----
+    var ao = e.target.closest(".ojt-actover");
+    if(ao){
+      var ns = prompt("Set a score for this activity item (0-100), or blank to go back to auto:");
+      if(ns === null) return;
+      var ro = await postJ("/api/ojt/activity-log-save", { enrollment_id: enrId, item_id: ao.dataset.item,
+        log_date: (ao.closest(".ojt-tl-day").querySelector('.ojt-saveact')||{}).dataset ? ao.closest(".ojt-tl-day").querySelector('.ojt-saveact').dataset.date : null,
+        score: ns });
+      if(!ro.ok){ note(ro.msg || "Could not save score."); } else { note("Score saved."); openTrainee(enrId); }
+      return;
+    }
+
+    // ---- Submit / re-submit / undo-submit a day ----
+    var sb = e.target.closest(".ojt-submitday");
+    if(sb){
+      var dN = sb.dataset.day;
+      // "anytime, but warn" — if parts are unfilled, confirm first
+      var dayObj = (S.current && S.current.timeline && S.current.timeline.days || []).filter(function(x){ return String(x.day) === String(dN); })[0];
+      if(dayObj && !sb.dataset.resubmit){
+        var tn2 = (dayObj.tasks||[]).length, td2 = (dayObj.tasks||[]).filter(function(t){return t.done;}).length;
+        var acts2 = dayObj.activity || [];
+        var af2 = acts2.filter(function(a){ return (a.value!==null&&a.value!==undefined)||(a.done!==null&&a.done!==undefined)||(a.score!==null&&a.score!==undefined); }).length;
+        var miss = [];
+        if(!(dayObj.calls||[]).length) miss.push("no call logged");
+        if(tn2 && td2 < tn2) miss.push("tasks " + td2 + "/" + tn2);
+        if(acts2.length && af2 < acts2.length) miss.push("activity " + af2 + "/" + acts2.length);
+        if(!(dayObj.day_remark && dayObj.day_remark.trim())) miss.push("no day remark");
+        if(miss.length && !confirm("This day still has: " + miss.join(", ") + ".\n\nSubmit anyway?")) return;
+      }
+      var rs = await postJ("/api/ojt/submit-day", { enrollment_id: enrId, day_no: dN });
+      if(!rs.ok){ note(rs.msg || "Could not submit."); } else { note("Day submitted."); openTrainee(enrId); }
+      return;
+    }
+    var su = e.target.closest(".ojt-unsubmitday");
+    if(su){
+      if(!confirm("Undo the submit for this day?")) return;
+      var ru = await postJ("/api/ojt/submit-day", { enrollment_id: enrId, day_no: su.dataset.day, undo: 1 });
+      if(!ru.ok){ note(ru.msg || "Could not undo."); } else { note("Submit undone."); openTrainee(enrId); }
       return;
     }
   });
