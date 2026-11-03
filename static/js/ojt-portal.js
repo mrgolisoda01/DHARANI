@@ -46,22 +46,41 @@
   }
   var S = {};   // holds the current enrollment for the change/click handlers
 
+  function sv(x){ return (x!==null&&x!==undefined)?x+"%":"—"; }
+  function scol(x){ return (x===null||x===undefined)?"#9aa6ae":(x>=70?"#0f6b45":(x>=50?"#8a6d00":"#9e2b2b")); }
+
   function render(d){
     var box = $("myOjt");
     if(!box) return;
     if(!d.ok){ box.innerHTML = '<div class="m" style="padding:20px">Could not load your OJT. Please try again.</div>'; return; }
     if(!d.enrolled){ box.innerHTML = '<div class="m" style="padding:20px">Your OJT starts after your audit session.</div>'; return; }
-    var e = d.enrollment, tl = d.timeline;
+    var e = d.enrollment, tl = d.timeline, sc = d.score || {};
     S.enrollment = e;
     var pct = tl.total ? Math.round(tl.done * 100 / tl.total) : 0;
     var today = tl.days.find(function(x){ return x.is_today; });
+
+    // ---- overall OJT score (read-only, same blend as the trainer sees) ----
+    var wtk = (sc.w_tasks!==undefined?sc.w_tasks:60), wac = (sc.w_activity!==undefined?sc.w_activity:40);
+    var oj = sc.ojt_score;
+    var scoreBox = '<div class="oc" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:linear-gradient(135deg,#f7fbff,#f3f7fa)">'+
+      '<div style="text-align:center;min-width:92px">'+
+        '<div style="font-size:30px;font-weight:800;line-height:1;color:'+scol(oj)+'">'+((oj!==null&&oj!==undefined)?oj+"%":"—")+'</div>'+
+        '<div style="font-size:11px;color:#62707a;margin-top:3px;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Your OJT score</div>'+
+      '</div>'+
+      '<div style="flex:1;min-width:190px;font-size:12.5px;color:#43515b">'+
+        '<div style="display:flex;justify-content:space-between;max-width:300px;padding:2px 0"><span>📋 Tasks <span class="m">(weight '+wtk+'%)</span></span><b style="color:'+scol(sc.task_avg)+'">'+sv(sc.task_avg)+'</b></div>'+
+        '<div style="display:flex;justify-content:space-between;max-width:300px;padding:2px 0"><span>📝 Daily activity <span class="m">(weight '+wac+'%)</span></span><b style="color:'+scol(sc.activity_avg)+'">'+sv(sc.activity_avg)+'</b></div>'+
+        '<div style="font-size:11px;color:#8a97a0;margin-top:4px">Your trainer records these. A part with no marks yet isn\'t counted against you.</div>'+
+      '</div>'+
+    '</div>';
+
     var head = '<div class="oc"><b style="font-size:16px">' + esc(e.day_label) + "</b>" +
       '<div class="m">' + esc(e.role) + " OJT · " + fmtD(e.start_date) + " → " + fmtD(tl.end_date) + " · Trainer: " + esc(e.trainer) + "</div>" +
       '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
       '<div class="m">' + tl.done + " of " + tl.total + " tasks signed off by your trainer" +
-      (tl.overdue ? " · <b style=\"color:var(--mg-red)\">" + tl.overdue + " due tasks not yet signed off</b>" : "") + "</div></div>";
+      (tl.overdue ? " · <b style=\"color:var(--mg-red)\">" + tl.overdue + " due tasks not yet signed off</b>" : "") + "</div>" +
+      '<div class="m" style="margin-top:6px;font-style:italic">This is a view of your progress — your trainer records everything here.</div></div>';
 
-    var active = (S.enrollment && S.enrollment.status === "active");
     var days = tl.days.map(function(day){
       var isWork = (day.kind === "work" || day.kind === "review");
       var badge = day.kind === "sunday" ? '<span class="k k-sunday">Week off (Sun)</span>'
@@ -69,60 +88,58 @@
         : day.kind === "leave" ? '<span class="k k-holiday">Leave</span>'
         : day.kind === "review" ? '<span class="k k-review">Final review</span>' : "";
       if(day.is_today) badge += '<span class="k k-today">Today</span>';
+
+      // ---- tasks: read-only, show trainer's confirmation + score ----
       var tasks = day.tasks.map(function(t){
-        // trainer's official confirmation
         var trainerMark = t.done
-          ? '<span class="ojt-conf" style="color:#1d9e75;font-weight:600">✔ Trainer confirmed</span>'
-          : '<span class="ojt-conf m">Awaiting trainer</span>';
-        // trainee's own self-mark checkbox (their claim)
-        var selfBox = '<label class="ojt-self"><input type="checkbox" data-act="selfmark" data-task="' + t.id + '"' +
-          (t.self_done ? " checked" : "") + (active ? "" : " disabled") + "> I've done this</label>";
-        return '<div class="t" style="flex-direction:column;align-items:flex-start;gap:4px">' +
-          '<div><span>' + (t.done ? "✅" : (t.self_done ? "🟡" : "⬜")) + "</span> <b>" + esc(t.title) + "</b>" +
+          ? '<span style="color:#1d9e75;font-weight:600">✔ Trainer confirmed</span>'
+          : '<span class="m">Awaiting trainer</span>';
+        var scoreBadge = (t.score!==null&&t.score!==undefined)
+          ? ' <span style="font-size:11px;font-weight:700;padding:1px 8px;border-radius:20px;'+(t.score>=70?"background:#eaf7f0;color:#0f6b45":"background:#fdeaea;color:#9e2b2b")+'">'+t.score+'%</span>' : '';
+        return '<div class="t" style="flex-direction:column;align-items:flex-start;gap:3px">' +
+          '<div><span>' + (t.done ? "✅" : "⬜") + "</span> <b>" + esc(t.title) + "</b>" + scoreBadge +
           (t.description ? '<br><span class="m">' + esc(t.description) + "</span>" : "") + "</div>" +
-          '<div style="display:flex;gap:14px;align-items:center;font-size:12px;padding-left:22px">' + selfBox + trainerMark + "</div>" +
+          '<div style="font-size:12px;padding-left:22px">' + trainerMark + "</div>" +
+          (t.remark ? '<div class="m" style="padding-left:22px;font-size:12px">📝 '+esc(t.remark)+'</div>' : '') +
           "</div>";
       }).join("");
-      // daily notes (problems faced / work done) — editable by trainee
-      var notes = "";
-      if(isWork){
-        notes = '<div class="ojt-notes" style="margin-top:8px;padding:10px;border:1px dashed var(--mg-line);border-radius:8px">' +
-          '<div style="font-size:12px;font-weight:600;margin-bottom:5px">Daily update</div>' +
-          '<textarea data-note="work" data-day="' + day.day + '" placeholder="What did you do today?" ' +
-            (active ? "" : "disabled") + ' style="width:100%;min-height:46px;font-size:13px;padding:7px;border:1px solid var(--mg-line);border-radius:6px;margin-bottom:6px;font-family:inherit">' + esc(day.work_done || "") + '</textarea>' +
-          '<textarea data-note="problems" data-day="' + day.day + '" placeholder="Any problems you faced today?" ' +
-            (active ? "" : "disabled") + ' style="width:100%;min-height:46px;font-size:13px;padding:7px;border:1px solid var(--mg-line);border-radius:6px;font-family:inherit">' + esc(day.problems || "") + '</textarea>' +
-          (active ? '<div style="text-align:right;margin-top:6px"><button class="ojt-savebtn" data-act="savenote" data-day="' + day.day + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer">Save update</button></div>' : "") +
-          "</div>";
+
+      // ---- daily activity the trainer logged (read-only) ----
+      var actBlock = "";
+      var acts = (day.activity || []).filter(function(a){ return (a.value!==null&&a.value!==undefined)||(a.done!==null&&a.done!==undefined)||(a.score!==null&&a.score!==undefined); });
+      if(isWork && acts.length){
+        actBlock = '<div style="margin-top:8px;padding:9px 11px;border:1px solid var(--mg-line);border-radius:8px;background:#fafcfe">'+
+          '<div style="font-size:12px;font-weight:700;color:#0c6fb0;margin-bottom:4px">📝 Daily activity (by your trainer)</div>'+
+          acts.map(function(a){
+            var val = (a.kind==="number") ? ((a.value!==null&&a.value!==undefined)?a.value:"—")+(a.target?(" / "+a.target):"")
+                                          : ((a.done===1)?"✓ done":"✗ not done");
+            var sb = (a.score!==null&&a.score!==undefined)?' <b style="color:'+scol(a.score)+'">'+a.score+'%</b>':'';
+            return '<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:2px 0"><span>'+esc(a.label)+'</span><span>'+val+sb+'</span></div>';
+          }).join("")+
+          '</div>';
       }
+
+      // ---- trainer's day remark (read-only) ----
+      var remarkBlock = "";
+      if(isWork && day.day_remark && day.day_remark.trim()){
+        remarkBlock = '<div style="margin-top:8px;font-size:12.5px;padding:8px 10px;background:#f7f9fa;border-radius:8px">'+
+          '<b>Trainer remark:</b> '+esc(day.day_remark)+'</div>';
+      }
+
       var dayLabel = (day.day !== null && day.day !== undefined) ? ("Day " + day.day) : "—";
       return '<div class="od' + (day.is_today ? " today" : "") + (isWork ? "" : " off") + '"' +
         (day.is_today ? ' id="myOjtToday"' : "") + ">" +
         "<b>" + dayLabel + '</b> <span class="m">· ' + day.weekday + ", " + fmtD(day.date) + "</span>" + badge +
-        (isWork ? ((tasks || '<div class="m">No tasks for this day.</div>') + notes) : "") + "</div>";
+        (isWork ? ((tasks || '<div class="m">No tasks for this day.</div>') + actBlock + remarkBlock) : "") + "</div>";
     }).join("");
-    box.innerHTML = head + days;
+    box.innerHTML = scoreBox + head + days;
     if(today){ var t = $("myOjtToday"); if(t) setTimeout(function(){ t.scrollIntoView({ block:"center" }); }, 50); }
   }
 
-  // handle trainee self-mark + save-note clicks/changes
-  document.addEventListener("change", async function(e){
-    var el = e.target.closest('[data-act="selfmark"]');
-    if(!el) return;
-    var r = await postJ("/api/ojt/my-selfmark", { task_id: el.dataset.task, on: el.checked });
-    if(!r.ok){ note(r.msg || "Could not save."); el.checked = !el.checked; }
-    else { render(await fetchMy()); }
-  });
-  document.addEventListener("click", async function(e){
-    var el = e.target.closest('[data-act="savenote"]');
-    if(!el) return;
-    var day = el.dataset.day;
-    var work = document.querySelector('textarea[data-note="work"][data-day="' + day + '"]');
-    var prob = document.querySelector('textarea[data-note="problems"][data-day="' + day + '"]');
-    var r = await postJ("/api/ojt/my-daynote", { day_no: day,
-      work_done: work ? work.value : "", problems: prob ? prob.value : "" });
-    note(r.ok ? "Update saved." : (r.msg || "Could not save."));
-  });
+  // (The trainee's OJT view is fully READ-ONLY — no self-mark, no note editing.
+  //  Everything shown here is recorded by the trainer; the learner only views
+  //  their progress and score. The old self-mark / save-note handlers are
+  //  intentionally removed.)
 
   // show the tab button only if an OJT exists
   document.addEventListener("DOMContentLoaded", async function(){
