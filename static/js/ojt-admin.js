@@ -608,7 +608,19 @@
       '</div>'+
     '</div>';
 
-    var scoreCard = ojtScoreBox + '<div class="ojt-scorecard" style="margin-top:10px;padding:12px;border:1px solid var(--mg-line);border-radius:10px;background:#fff">'+
+    // ---- Daily activity period summary (Today / Week / Month) ----
+    var actSummary = '<div style="margin-top:10px;padding:12px;border:1px solid var(--mg-line);border-radius:10px;background:#fff">'+
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+
+        '<span style="font-size:14px;font-weight:700;color:#12284B">📈 Activity summary</span>'+
+        '<span style="margin-left:auto;display:inline-flex;border:1px solid var(--mg-line);border-radius:8px;overflow:hidden">'+
+          ['today','week','month'].map(function(rg){ var lbl={today:"Today",week:"This week",month:"This month"}[rg];
+            return '<button class="ojt-actrange" data-enr="'+e.id+'" data-range="'+rg+'" style="border:none;background:'+(rg==="week"?"var(--mg-blue);color:#fff":"#fff;color:#55636d")+';font-size:11.5px;padding:5px 11px;cursor:pointer">'+lbl+'</button>'; }).join("")+
+        '</span>'+
+      '</div>'+
+      '<div id="ojtActSum" data-enr="'+e.id+'"><div class="muted" style="font-size:12.5px">Loading…</div></div>'+
+    '</div>';
+
+    var scoreCard = ojtScoreBox + actSummary + '<div class="ojt-scorecard" style="margin-top:10px;padding:12px;border:1px solid var(--mg-line);border-radius:10px;background:#fff">'+
       '<div style="font-size:14px;font-weight:700;color:#12284B;margin-bottom:4px">📊 Competency scorecard</div>'+
       '<div style="font-size:11.5px;color:#62707a;margin-bottom:6px">Each topic score is the average of that topic\'s task scores (auto). Type a number to override; leave blank to keep the auto average. Below 70% is flagged.</div>'+
       (scRows || '<div class="muted" style="font-size:12.5px">No topics set. Admin can add them under 🏷 in the OJT tab.</div>')+
@@ -639,6 +651,44 @@
         '</div>' : "") +
       scoreCard + daysHtml + closeBox, 760
     );
+    // load the default activity summary (this week) once the modal is in the DOM
+    setTimeout(function(){ loadActivitySummary(e.id, "week"); }, 30);
+  }
+
+  // Render the Daily-activity period summary (Today / Week / Month) into #ojtActSum.
+  async function loadActivitySummary(enrId, range){
+    var box = document.getElementById("ojtActSum");
+    if(!box) return;
+    box.innerHTML = '<div class="muted" style="font-size:12.5px">Loading…</div>';
+    var d = await getJ("/api/ojt/activity-summary?enrollment=" + enrId + "&range=" + encodeURIComponent(range));
+    if(!d || !d.ok){ box.innerHTML = '<div class="muted" style="font-size:12.5px">Could not load.</div>'; return; }
+    box.innerHTML = ojtActSummaryHTML(d);
+    // reflect the active range button
+    Array.prototype.forEach.call(document.querySelectorAll('.ojt-actrange[data-enr="'+enrId+'"]'), function(b){
+      var on = b.dataset.range === d.range;
+      b.style.background = on ? "var(--mg-blue)" : "#fff";
+      b.style.color = on ? "#fff" : "#55636d";
+    });
+  }
+  function ojtActSummaryHTML(d){
+    var items = d.items || [];
+    if(!items.length){
+      return '<div class="muted" style="font-size:12.5px">No daily-activity items set for this role yet. Add them in 📝 Daily Activity format.</div>';
+    }
+    var lbl = {today:"today",week:"this week",month:"this month"}[d.range] || "this period";
+    var ps = (d.period_score!==null&&d.period_score!==undefined)
+      ? '<b style="color:'+(d.period_score>=70?"#0f6b45":(d.period_score>=50?"#8a6d00":"#9e2b2b"))+'">'+d.period_score+'%</b>' : '—';
+    var rows = items.map(function(it){
+      var val;
+      if(it.kind === "number"){
+        val = '<b>'+it.total+'</b>'+(it.target?(' <span class="muted" style="font-weight:400;font-size:11px">(target '+it.target+'/day)</span>'):'');
+      } else {
+        val = '<b>'+it.done_days+'</b> <span class="muted" style="font-weight:400;font-size:11px">day'+(it.done_days===1?'':'s')+' done</span>';
+      }
+      return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid #f3f4f5;font-size:12.5px">'+
+        '<span>'+esc(it.label)+'</span><span>'+val+'</span></div>';
+    }).join("");
+    return '<div style="font-size:12px;color:#62707a;margin-bottom:6px">Totals for <b>'+lbl+'</b> · '+(d.days_logged||0)+' day'+((d.days_logged===1)?'':'s')+' logged · activity score '+ps+'</div>'+rows;
   }
 
   /* ================= DAY-WISE TASKS ================= */
@@ -969,6 +1019,10 @@
       if(!rda.ok){ note(rda.msg || "Could not remove."); } else { note(rda.msg || "Removed."); loadActivityFormat(); }
       return;
     }
+
+    // Daily-activity period summary range buttons (self-contained; uses data-enr)
+    var arb = e.target.closest(".ojt-actrange");
+    if(arb){ loadActivitySummary(arb.dataset.enr, arb.dataset.range); return; }
 
     if(!S.current || !S.current.enrollment) return;
     var enrId = S.current.enrollment.id;

@@ -74,6 +74,18 @@
       '</div>'+
     '</div>';
 
+    // ---- activity period summary (Today / Week / Month) — read-only ----
+    var actSum = '<div class="oc">'+
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'+
+        '<b style="font-size:14px;color:#12284B">📈 Your activity summary</b>'+
+        '<span style="margin-left:auto;display:inline-flex;border:1px solid var(--mg-line);border-radius:8px;overflow:hidden">'+
+          ["today","week","month"].map(function(rg){ var lbl={today:"Today",week:"This week",month:"This month"}[rg];
+            return '<button class="myojt-range" data-enr="'+e.id+'" data-range="'+rg+'" style="border:none;background:'+(rg==="week"?"var(--mg-blue);color:#fff":"#fff;color:#55636d")+';font-size:11.5px;padding:5px 11px;cursor:pointer">'+lbl+'</button>'; }).join("")+
+        '</span>'+
+      '</div>'+
+      '<div id="myOjtActSum"><div class="m" style="font-size:12.5px">Loading…</div></div>'+
+    '</div>';
+
     var head = '<div class="oc"><b style="font-size:16px">' + esc(e.day_label) + "</b>" +
       '<div class="m">' + esc(e.role) + " OJT · " + fmtD(e.start_date) + " → " + fmtD(tl.end_date) + " · Trainer: " + esc(e.trainer) + "</div>" +
       '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
@@ -132,14 +144,53 @@
         "<b>" + dayLabel + '</b> <span class="m">· ' + day.weekday + ", " + fmtD(day.date) + "</span>" + badge +
         (isWork ? ((tasks || '<div class="m">No tasks for this day.</div>') + actBlock + remarkBlock) : "") + "</div>";
     }).join("");
-    box.innerHTML = scoreBox + head + days;
+    box.innerHTML = scoreBox + actSum + head + days;
+    setTimeout(function(){ loadMyActSummary(e.id, "week"); }, 30);
     if(today){ var t = $("myOjtToday"); if(t) setTimeout(function(){ t.scrollIntoView({ block:"center" }); }, 50); }
+  }
+
+  // read-only period summary (Today / Week / Month) for the trainee
+  async function loadMyActSummary(enrId, range){
+    var box = $("myOjtActSum");
+    if(!box) return;
+    box.innerHTML = '<div class="m" style="font-size:12.5px">Loading…</div>';
+    var d;
+    try{ d = await (await fetch("/api/ojt/activity-summary?enrollment=" + enrId + "&range=" + encodeURIComponent(range), { credentials:"same-origin" })).json(); }
+    catch(err){ d = { ok:false }; }
+    if(!d || !d.ok){ box.innerHTML = '<div class="m" style="font-size:12.5px">Could not load.</div>'; return; }
+    var items = d.items || [];
+    if(!items.length){ box.innerHTML = '<div class="m" style="font-size:12.5px">No activity set up for your role yet.</div>'; }
+    else {
+      var lbl = {today:"today",week:"this week",month:"this month"}[d.range] || "this period";
+      var ps = (d.period_score!==null&&d.period_score!==undefined)
+        ? '<b style="color:'+scol(d.period_score)+'">'+d.period_score+'%</b>' : '—';
+      var rows = items.map(function(it){
+        var val = (it.kind==="number")
+          ? '<b>'+it.total+'</b>'+(it.target?(' <span class="m" style="font-size:11px">(target '+it.target+'/day)</span>'):'')
+          : '<b>'+it.done_days+'</b> <span class="m" style="font-size:11px">day'+(it.done_days===1?'':'s')+' done</span>';
+        return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid #f3f4f5;font-size:12.5px"><span>'+esc(it.label)+'</span><span>'+val+'</span></div>';
+      }).join("");
+      box.innerHTML = '<div class="m" style="font-size:12px;margin-bottom:6px">Totals for <b>'+lbl+'</b> · '+(d.days_logged||0)+' day'+((d.days_logged===1)?'':'s')+' logged · activity score '+ps+'</div>'+rows;
+    }
+    // reflect active range button
+    Array.prototype.forEach.call(document.querySelectorAll('.myojt-range[data-enr="'+enrId+'"]'), function(b){
+      var on = b.dataset.range === d.range;
+      b.style.background = on ? "var(--mg-blue)" : "#fff";
+      b.style.color = on ? "#fff" : "#55636d";
+    });
   }
 
   // (The trainee's OJT view is fully READ-ONLY — no self-mark, no note editing.
   //  Everything shown here is recorded by the trainer; the learner only views
   //  their progress and score. The old self-mark / save-note handlers are
   //  intentionally removed.)
+
+  // the only interactive bit: the activity-summary period buttons (read-only data)
+  document.addEventListener("click", function(e){
+    var b = e.target.closest ? e.target.closest(".myojt-range") : null;
+    if(!b) return;
+    loadMyActSummary(b.dataset.enr, b.dataset.range);
+  });
 
   // show the tab button only if an OJT exists
   document.addEventListener("DOMContentLoaded", async function(){
