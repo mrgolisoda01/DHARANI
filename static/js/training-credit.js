@@ -228,6 +228,9 @@
       if(!d || !d.ok){ shell('<div class="empty" style="padding:16px">Could not load.</div>'); return; }
       var sm = d.summary || {};
       function card(v,l,col){ return '<div class="pcard"><div class="pv" style="color:'+(col||"#12284B")+'">'+v+'</div><div class="pl">'+l+'</div></div>'; }
+      function fdate(s){ if(!s) return ""; var p=String(s).slice(0,10).split("-"); return p.length===3?(p[2]+"/"+p[1]+"/"+p[0]):s; }
+      function kindTag(k){ if(!k) return ""; var ind=(k==="induction"); return ' <span style="font-size:10px;padding:1px 7px;border-radius:20px;'+(ind?"background:#eef5fc;color:#0c447c;border:1px solid #cddff0":"background:#f0f7ee;color:#3c6b1f;border:1px solid #cfe6c0")+'">'+(ind?"Induction":"Training")+'</span>'; }
+
       var cards = '<div class="pcards">'+
         card(sm.confirmed!=null?sm.confirmed:0,"✅ Confirmed (both agree)","#1d9e75")+
         card(sm.conflict!=null?sm.conflict:0,"⚠️ Conflicts — need you",(sm.conflict?"#d64545":"#1d9e75"))+
@@ -236,12 +239,37 @@
       '</div>';
 
       var trainerOpts = (S.cfg.trainers||[]).map(function(t){ return '<option value="'+esc(t.emp_id)+'">'+esc(t.name)+'</option>'; }).join("");
-
-      // conflicts
       var conf = d.conflicts || [];
+      var aw   = d.awaiting_trainer_list || [];
+      var awl  = d.awaiting_learner_list || [];
+
+      // ----- trainer filter (applies to both lists) -----
+      // which trainers appear anywhere, with counts, for the dropdown
+      var tcount = {};  // emp_id -> {name, conf, aw}
+      conf.forEach(function(c){ (c.record_says_ids||[]).concat([c.learner_says_id]).forEach(function(id){ if(!id)return; var nm=(id===c.learner_says_id)?c.learner_says:((c.record_says||"").split(", ")[(c.record_says_ids||[]).indexOf(id)]||id); tcount[id]=tcount[id]||{name:nm,conf:0,aw:0}; }); });
+      conf.forEach(function(c){ var id=c.learner_says_id; if(id){ tcount[id]=tcount[id]||{name:c.learner_says,conf:0,aw:0}; tcount[id].conf++; } });
+      aw.forEach(function(a){ var id=a.learner_says_id; if(id){ tcount[id]=tcount[id]||{name:a.learner_says,conf:0,aw:0}; tcount[id].aw++; } });
+      var tfOpts = '<option value="">All trainers ('+conf.length+' conflicts · '+aw.length+' awaiting)</option>' +
+        Object.keys(tcount).sort(function(a,b){return (tcount[a].name||"").localeCompare(tcount[b].name||"");}).map(function(id){
+          var t=tcount[id]; return '<option value="'+esc(id)+'"'+(window.__tcConfTrainer===id?' selected':'')+'>'+esc(t.name)+' — '+t.aw+' awaiting'+(t.conf?(' · '+t.conf+' conflict'):'')+'</option>';
+        }).join("");
+      var filterBar = '<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+        '<span style="font-size:13px;font-weight:600;color:#12284B">Filter by trainer:</span>'+
+        '<select id="tcConfTrainer" style="max-width:320px">'+tfOpts+'</select>'+
+        (window.__tcConfTrainer?'<button class="btn sec" id="tcConfClear" style="padding:4px 10px;font-size:12px">Clear</button>':'')+
+        '</div>';
+
+      // apply the filter
+      var tf = window.__tcConfTrainer || "";
+      if(tf){
+        conf = conf.filter(function(c){ return c.learner_says_id===tf || (c.record_says_ids||[]).indexOf(tf)>=0; });
+        aw   = aw.filter(function(a){ return a.learner_says_id===tf; });
+      }
+
+      // ----- conflicts (one-by-one; each needs a decision) -----
       var confHtml = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#b4231d">⚠️ Conflicts — learner & trainer record disagree ('+conf.length+')</h4>'+
         '<p style="font-size:12px;color:#62707a;margin:0 0 10px">Pick the correct trainer. That becomes the confirmed delivery and the learner\'s rating is aligned to match.</p>';
-      if(!conf.length){ confHtml += '<div class="empty" style="padding:10px">No conflicts. 👍</div>'; }
+      if(!conf.length){ confHtml += '<div class="empty" style="padding:10px">No conflicts'+(tf?" for this trainer":"")+'. 👍</div>'; }
       else {
         confHtml += conf.map(function(c){
           var key = esc(c.learner_id)+'|'+c.module_id;
@@ -249,7 +277,7 @@
             '<option value="'+esc(c.learner_says_id)+'">'+esc(c.learner_says)+' (learner\'s pick)</option>'+
             (c.record_says_ids||[]).map(function(id,i){ return '<option value="'+esc(id)+'">'+esc((c.record_says||"").split(", ")[i]||id)+' (record)</option>'; }).join("")+
             trainerOpts+'</select>';
-          return '<div class="arow" style="flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>'+esc(c.learner)+'</b> · '+esc(c.module)+
+          return '<div class="arow" style="flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>'+esc(c.learner)+'</b> · '+esc(c.module)+kindTag(c.kind)+(c.date?' <span style="font-size:11px;color:#9aa6ae">· '+fdate(c.date)+'</span>':'')+
             '<br><span style="font-size:12px;color:#62707a">Learner says <b>'+esc(c.learner_says)+'</b> · Record says <b>'+esc(c.record_says)+'</b></span></div>'+
             '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'+sel+
             '<button class="btn ok" style="padding:5px 12px;font-size:12px" data-cres="'+key+'" data-lid="'+esc(c.learner_id)+'" data-mid="'+c.module_id+'">Confirm</button>'+
@@ -259,22 +287,79 @@
       }
       confHtml += '</div>';
 
-      // awaiting trainer (learner claimed, no trainer record) — admin can confirm on the trainer's behalf
-      var aw = d.awaiting_trainer_list || [];
-      var awHtml = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#845a0b">🕐 Awaiting trainer confirmation ('+aw.length+')</h4>'+
+      // ----- awaiting trainer (learner claimed, no record) + Confirm-all -----
+      var awLabel = tf ? ('Confirm all '+aw.length+' for '+esc((tcount[tf]||{}).name||"")) : ('Confirm all '+aw.length);
+      var awHtml = '<div class="card"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 4px">'+
+        '<h4 style="margin:0;font-size:14px;color:#845a0b">🕐 Awaiting trainer confirmation ('+aw.length+')</h4>'+
+        (aw.length?'<button class="btn ok" id="tcConfAll" style="margin-left:auto;padding:6px 14px;font-size:12.5px;font-weight:600">✅ '+awLabel+'</button>':'')+
+        '</div>'+
         '<p style="font-size:12px;color:#62707a;margin:0 0 10px">A learner marked who trained them, but that trainer hasn\'t logged it. Confirm to record it.</p>';
-      if(!aw.length){ awHtml += '<div class="empty" style="padding:10px">Nothing waiting.</div>'; }
+      if(!aw.length){ awHtml += '<div class="empty" style="padding:10px">Nothing waiting'+(tf?" for this trainer":"")+'.</div>'; }
       else {
         awHtml += aw.map(function(a){
           var key = esc(a.learner_id)+'|'+a.module_id;
-          return '<div class="arow"><div style="flex:1"><b>'+esc(a.learner)+'</b> · '+esc(a.module)+
+          return '<div class="arow"><div style="flex:1"><b>'+esc(a.learner)+'</b> · '+esc(a.module)+kindTag(a.kind)+(a.date?' <span style="font-size:11px;color:#9aa6ae">· '+fdate(a.date)+'</span>':'')+
             '<br><span style="font-size:12px;color:#62707a">Learner says trainer: <b>'+esc(a.learner_says)+'</b></span></div>'+
             '<button class="btn ok" style="padding:5px 12px;font-size:12px" data-aw="'+key+'" data-lid="'+esc(a.learner_id)+'" data-tid="'+esc(a.learner_says_id)+'" data-mid="'+a.module_id+'">Confirm</button></div>';
         }).join("");
       }
       awHtml += '</div>';
 
-      shell(cards + confHtml + awHtml);
+      // ----- awaiting learner (trainer logged, learner hasn't rated) — collapsed -----
+      var awlHtml = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#55636d">🕐 Awaiting learner rating ('+awl.length+') '+
+        '<button class="btn sec" id="tcAwlToggle" style="padding:3px 10px;font-size:11.5px;margin-left:6px">'+(window.__tcAwlOpen?"Hide":"Show")+'</button></h4>'+
+        '<p style="font-size:12px;color:#62707a;margin:0 0 6px">Trainer logged the delivery; the learner hasn\'t rated the module yet, so it can\'t auto-confirm. Nudge these learners to rate.</p>';
+      if(window.__tcAwlOpen){
+        if(!awl.length){ awlHtml += '<div class="empty" style="padding:10px">None.</div>'; }
+        else {
+          awlHtml += '<div style="max-height:320px;overflow:auto">'+awl.map(function(a){
+            return '<div class="arow"><div style="flex:1"><b>'+esc(a.learner)+'</b> · '+esc(a.module)+kindTag(a.kind)+(a.date?' <span style="font-size:11px;color:#9aa6ae">· '+fdate(a.date)+'</span>':'')+
+              '<br><span style="font-size:12px;color:#62707a">Trainer on record: <b>'+esc(a.record_says)+'</b> — waiting on learner\'s rating</span></div></div>';
+          }).join("")+'</div>';
+        }
+      }
+      awlHtml += '</div>';
+
+      shell(cards + filterBar + confHtml + awHtml + awlHtml);
+
+      // trainer filter wiring
+      var tsel = $("tcConfTrainer");
+      if(tsel){ tsel.addEventListener("change", function(){ window.__tcConfTrainer = tsel.value || ""; renderConfirmations(); }); }
+      var tclr = $("tcConfClear");
+      if(tclr){ tclr.addEventListener("click", function(){ window.__tcConfTrainer=""; renderConfirmations(); }); }
+      var awlT = $("tcAwlToggle");
+      if(awlT){ awlT.addEventListener("click", function(){ window.__tcAwlOpen = !window.__tcAwlOpen; renderConfirmations(); }); }
+
+      // Confirm-all (awaiting-trainer), scoped to the selected trainer if any
+      var allBtn = $("tcConfAll");
+      if(allBtn){
+        allBtn.addEventListener("click", async function(){
+          var scope = window.__tcConfTrainer || "";
+          var n = aw.length;
+          if(!confirm("Confirm "+n+" awaiting delivery(ies)"+(scope?(" for "+((tcount[scope]||{}).name||"this trainer")):"")+"?\n\nEach records the trainer the learner named. You can undo right after.")) return;
+          var r = await postJ("/api/training/confirm-claim-bulk", scope?{trainer_id:scope}:{});
+          if(r.ok){
+            note(r.msg||("Confirmed "+(r.confirmed||0)+"."));
+            window.__tcLastBulk = r.done || [];   // remember for undo
+            renderConfirmations();
+            // offer undo
+            if((r.confirmed||0)>0){
+              setTimeout(function(){
+                var bar = document.createElement("div");
+                bar.id="tcUndoBar";
+                bar.style.cssText="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#12284B;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.25);z-index:9999;display:flex;gap:12px;align-items:center";
+                bar.innerHTML='Confirmed '+(r.confirmed||0)+' delivery(ies). <button id="tcUndoBtn" style="background:#fff;color:#12284B;border:none;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer">Undo</button>';
+                document.body.appendChild(bar);
+                $("tcUndoBtn").addEventListener("click", async function(){
+                  var ru = await postJ("/api/training/confirm-undo",{items: window.__tcLastBulk||[]});
+                  note(ru.ok?(ru.msg||"Undone."):(ru.msg||"Could not undo.")); bar.remove(); renderConfirmations();
+                });
+                setTimeout(function(){ var b=$("tcUndoBar"); if(b) b.remove(); }, 12000);
+              }, 60);
+            }
+          } else note(r.msg||"Failed.");
+        });
+      }
 
       // wire conflict resolve/dismiss
       $("tcRoot").querySelectorAll("[data-cres]").forEach(function(b){
@@ -291,10 +376,16 @@
           if(r.ok){ note(r.msg||"Left as-is."); renderConfirmations(); } else note(r.msg||"Failed.");
         });
       });
+      // single awaiting-trainer confirm (with an undo offer)
       $("tcRoot").querySelectorAll("[data-aw]").forEach(function(b){
         b.addEventListener("click", async function(){
-          var r = await postJ("/api/training/confirm-claim",{learner_id:b.dataset.lid,trainer_id:b.dataset.tid,module_id:b.dataset.mid});
-          if(r.ok){ note(r.msg||"Confirmed."); renderConfirmations(); } else note(r.msg||"Failed.");
+          var payload={learner_id:b.dataset.lid,trainer_id:b.dataset.tid,module_id:b.dataset.mid};
+          var r = await postJ("/api/training/confirm-claim",payload);
+          if(r.ok){
+            note(r.msg||"Confirmed.");
+            window.__tcLastBulk=[payload];
+            renderConfirmations();
+          } else note(r.msg||"Failed.");
         });
       });
       return;
