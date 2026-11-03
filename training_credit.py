@@ -595,29 +595,38 @@ def api_training_confirmations():
     except Exception:
         pass
 
-    # learner's mark: trainer picked when rating a MODULE
+    def _d10(s):
+        return (s or "")[:10]
+
+    # learner's mark: trainer picked when rating a MODULE (keep the rating date)
     learner_pick = {}   # (learner_id, module_id) -> trainer_id
+    learner_date = {}   # (learner_id, module_id) -> YYYY-MM-DD the learner rated
     try:
         for r in db.execute(
-            "SELECT emp_id, module_id, trainer_id FROM training_ratings "
+            "SELECT emp_id, module_id, trainer_id, created_at FROM training_ratings "
             "WHERE target_type='module' AND module_id IS NOT NULL "
             "AND trainer_id IS NOT NULL AND trainer_id<>''"
         ).fetchall():
             learner_pick[(r["emp_id"], r["module_id"])] = r["trainer_id"]
+            learner_date[(r["emp_id"], r["module_id"])] = _d10(r["created_at"])
     except Exception:
         pass
 
     # trainer's mark: approved deliveries (a module could have >1 trainer record)
     trainer_recs = {}   # (learner_id, module_id) -> set(trainer_id)
+    trainer_date = {}   # (learner_id, module_id) -> YYYY-MM-DD the trainer logged
     for r in db.execute(
-        "SELECT learner_id, module_id, trainer_id FROM training_delivery "
+        "SELECT learner_id, module_id, trainer_id, created_at FROM training_delivery "
         "WHERE status='approved' AND module_id IS NOT NULL"
     ).fetchall():
         trainer_recs.setdefault((r["learner_id"], r["module_id"]), set()).add(r["trainer_id"])
+        k2 = (r["learner_id"], r["module_id"])
+        if k2 not in trainer_date or _d10(r["created_at"]) > trainer_date[k2]:
+            trainer_date[k2] = _d10(r["created_at"])
 
     keys = set(learner_pick.keys()) | set(trainer_recs.keys())
     confirmed = conflict = awaiting_trainer = awaiting_learner = 0
-    conflicts, awaiting_tr = [], []
+    conflicts, awaiting_tr, awaiting_lr = [], [], []
 
     for (lid, mid) in keys:
         lp = learner_pick.get((lid, mid))
@@ -637,23 +646,32 @@ def api_training_confirmations():
             row["learner_says"] = names.get(lp, lp)
             row["record_says_ids"] = sorted(trs)
             row["record_says"] = ", ".join(names.get(t, t) for t in sorted(trs))
+            row["date"] = learner_date.get((lid, mid)) or trainer_date.get((lid, mid)) or ""
             conflicts.append(row)
         elif lp and not trs:
             awaiting_trainer += 1
             row = dict(base)
             row["learner_says_id"] = lp
             row["learner_says"] = names.get(lp, lp)
+            row["date"] = learner_date.get((lid, mid)) or ""
             awaiting_tr.append(row)
         elif not lp and trs:
             awaiting_learner += 1
+            row = dict(base)
+            row["record_says_ids"] = sorted(trs)
+            row["record_says"] = ", ".join(names.get(t, t) for t in sorted(trs))
+            row["date"] = trainer_date.get((lid, mid)) or ""
+            awaiting_lr.append(row)
 
     conflicts.sort(key=lambda x: (x["learner"] or "", x["module"] or ""))
     awaiting_tr.sort(key=lambda x: (x["learner_says"] or "", x["learner"] or ""))
+    awaiting_lr.sort(key=lambda x: (x["learner"] or "", x["module"] or ""))
     return jsonify(ok=True,
                    summary={"confirmed": confirmed, "conflict": conflict,
                             "awaiting_trainer": awaiting_trainer,
                             "awaiting_learner": awaiting_learner},
-                   conflicts=conflicts, awaiting_trainer_list=awaiting_tr)
+                   conflicts=conflicts, awaiting_trainer_list=awaiting_tr,
+                   awaiting_learner_list=awaiting_lr)
 
 
 @tc_bp.route("/api/training/confirm-resolve", methods=["POST"])
@@ -751,6 +769,100 @@ def api_training_confirm_claim():
                    (tid, lid, mid, kind, "approved", u["emp_id"], _now(), u["emp_id"], _now()))
     db.commit()
     return jsonify(ok=True, msg="Confirmed.")
+
+
+@tc_bp.route("/api/training/confirm-claim-bulk", methods=["POST"])
+@_admin
+def api_training_confirm_claim_bulk():
+    """Admin confirms MANY awaiting-trainer items at once. Re-derives the current
+    awaiting-trainer set server-side (so we never confirm stale rows), optionally
+    narrowed to one trainer, and approves each learner-claimed delivery.
+    Returns how many were confirmed and the keys (for an undo)."""
+    _ensure()
+    u = _current_user()
+    d = request.get_json(force=True)
+    only_trainer = (d.get("trainer_id") or "").strip()   # blank = all trainers
+
+    db = _get_db()
+    # learner picks (module ratings)
+    learner_pick = {}
+    for r in db.execute(
+        "SELECT emp_id, module_id, trainer_id FROM training_ratings "
+        "WHERE target_type='module' AND module_id IS NOT NULL AND trainer_id IS NOT NULL AND trainer_id<>''"
+    ).fetchall():
+        learner_pick[(r["emp_id"], r["module_id"])] = r["trainer_id"]
+    # approved deliveries
+    has_delivery = set()
+    for r in db.execute(
+        "SELECT learner_id, module_id FROM training_delivery WHERE status='approved' AND module_id IS NOT NULL"
+    ).fetchall():
+        has_delivery.add((r["learner_id"], r["module_id"]))
+
+    # awaiting-trainer = learner picked a trainer, no approved delivery yet
+    todo = []
+    for (lid, mid), tid in learner_pick.items():
+        if (lid, mid) in has_delivery:
+            continue
+        if only_trainer and tid != only_trainer:
+            continue
+        todo.append((lid, mid, tid))
+
+    done = []
+    for (lid, mid, tid) in todo:
+        kr = db.execute("SELECT kind FROM content_modules WHERE id=?", (mid,)).fetchone()
+        kind = (kr["kind"] if kr else None)
+        row = db.execute("SELECT id FROM training_delivery WHERE trainer_id=? AND learner_id=? AND module_id=?",
+                         (tid, lid, mid)).fetchone()
+        if row:
+            db.execute("UPDATE training_delivery SET status='approved', kind=?, approved_by=?, approved_at=? WHERE id=?",
+                       (kind, u["emp_id"], _now(), row["id"]))
+        else:
+            db.execute("INSERT INTO training_delivery (trainer_id, learner_id, module_id, kind, status, created_by, created_at, approved_by, approved_at) "
+                       "VALUES (?,?,?,?,?,?,?,?,?)",
+                       (tid, lid, mid, kind, "approved", u["emp_id"], _now(), u["emp_id"], _now()))
+        done.append({"learner_id": lid, "module_id": mid, "trainer_id": tid})
+    db.commit()
+    if not done:
+        return jsonify(ok=True, confirmed=0, done=[], msg="Nothing left to confirm.")
+    who = ""
+    if only_trainer:
+        nm = db.execute("SELECT name FROM users WHERE emp_id=?", (only_trainer,)).fetchone()
+        who = " for " + (nm["name"] if nm else only_trainer)
+    return jsonify(ok=True, confirmed=len(done), done=done,
+                   msg="Confirmed " + str(len(done)) + " delivery(ies)" + who + ".")
+
+
+@tc_bp.route("/api/training/confirm-undo", methods=["POST"])
+@_admin
+def api_training_confirm_undo():
+    """Undo one or more just-confirmed deliveries (delete the approved delivery
+    row(s) so the pair goes back to awaiting-trainer). Accepts a single
+    {learner_id, module_id, trainer_id} or a list in `items`."""
+    _ensure()
+    d = request.get_json(force=True)
+    items = d.get("items")
+    if not items:
+        items = [{"learner_id": d.get("learner_id"), "module_id": d.get("module_id"),
+                  "trainer_id": d.get("trainer_id")}]
+    db = _get_db()
+    n = 0
+    for it in items:
+        lid = (it.get("learner_id") or "").strip()
+        tid = (it.get("trainer_id") or "").strip()
+        try:
+            mid = int(it.get("module_id"))
+        except (TypeError, ValueError):
+            continue
+        if not lid or not tid:
+            continue
+        cur = db.execute("DELETE FROM training_delivery WHERE learner_id=? AND module_id=? AND trainer_id=? AND status='approved'",
+                         (lid, mid, tid))
+        try:
+            n += cur.rowcount if cur and cur.rowcount and cur.rowcount > 0 else 0
+        except Exception:
+            n += 1
+    db.commit()
+    return jsonify(ok=True, undone=n, msg=("Undone." if n else "Nothing to undo."))
 
 
 @tc_bp.route("/api/training/by-learner")
