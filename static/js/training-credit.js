@@ -195,12 +195,17 @@
     var pending = items.filter(function(it){ return it.status==="pending"; });
     if(!pending.length){ shell('<div class="empty" style="padding:16px">Nothing waiting for approval. 👍</div>'); return; }
 
-    // apply trainer + kind filters
+    // apply trainer + kind + search filters
     var tf = window.__tcPendTrainer || "";
     var kf = window.__tcPendKind || "";
+    var sq = (window.__tcPendSearch || "").trim().toLowerCase();
     var view = pending.filter(function(it){
       if(tf && String(it.trainer_id)!==tf) return false;
       if(kf && (it.kind||"")!==kf) return false;
+      if(sq){
+        var hay = ((it.learner_name||"")+" "+(it.learner_id||"")+" "+(it.module_title||"")).toLowerCase();
+        if(hay.indexOf(sq) < 0) return false;
+      }
       return true;
     });
 
@@ -216,22 +221,34 @@
       return '<option value="'+k+'"'+(kf===k?' selected':'')+'>'+lbl+'</option>';
     }).join("");
 
+    // build the export link with current filters
+    var expQs = [];
+    if(tf) expQs.push("trainer_id="+encodeURIComponent(tf));
+    if(kf) expQs.push("kind="+encodeURIComponent(kf));
+    var expUrl = "/api/training/pending-export" + (expQs.length?("?"+expQs.join("&")):"");
+
     var filterBar = '<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px">'+
       '<span style="font-size:13px;font-weight:600;color:#12284B">Filter:</span>'+
-      '<select id="tcPendTrainer" style="max-width:260px">'+tOpts+'</select>'+
+      '<select id="tcPendTrainer" style="max-width:240px">'+tOpts+'</select>'+
       '<select id="tcPendKind">'+kOpts+'</select>'+
-      ((tf||kf)?'<button class="btn sec" id="tcPendClear" style="padding:4px 10px;font-size:12px">Clear</button>':'')+
-      '<span style="margin-left:auto;font-size:12px;color:#62707a">Showing <b>'+view.length+'</b> of '+pending.length+'</span>'+
+      '<input id="tcPendSearch" type="text" placeholder="Search learner / module…" value="'+esc(window.__tcPendSearch||"")+'" style="flex:1;min-width:150px;border:1px solid var(--mg-line,#ccc);border-radius:7px;padding:6px 9px;font-size:12.5px">'+
+      ((tf||kf||sq)?'<button class="btn sec" id="tcPendClear" style="padding:4px 10px;font-size:12px">Clear</button>':'')+
+      '<a class="btn sec" href="'+expUrl+'" style="padding:4px 11px;font-size:12px;text-decoration:none">⬇ Excel</a>'+
+      '<span style="font-size:12px;color:#62707a">Showing <b>'+view.length+'</b> of '+pending.length+'</span>'+
       '</div>';
 
-    // fast bulk-approve bar (approve-only; reject stays per-row)
+    // fast bulk-approve bar + delete-selected (delete ONLY the ticked rows)
     var scopeLabel = tf ? (' for '+esc((tc[tf]||{}).name||'')) : '';
     if(kf) scopeLabel += ' · '+(kf==='induction'?'Induction':'Training');
     var bulkBar = '<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px">'+
       '<button class="btn ok" id="tcApproveFiltered" style="padding:6px 16px;font-size:13px;font-weight:600">✓ Approve all '+view.length+(scopeLabel?('<span style="font-weight:400">'+scopeLabel+'</span>'):'')+'</button>'+
-      '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="tcSelAll"> Select</label>'+
-      '<button class="btn ok" id="tcApproveSel" style="padding:6px 14px;font-size:12.5px;display:none">✓ Approve selected (<span id="tcSelN">0</span>)</button>'+
-      '<span style="margin-left:auto;font-size:11.5px;color:#9aa6ae">Reject is per-row (no bulk delete)</span>'+
+      '<span style="width:1px;height:22px;background:#e3e7ea"></span>'+
+      '<span style="font-size:12px;color:#62707a">Select:</span>'+
+      '<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="tcSelAll"> All</label>'+
+      '<button class="btn sec" id="tcSelNone" style="padding:3px 9px;font-size:11.5px">None</button>'+
+      '<button class="btn sec" id="tcSelInvert" style="padding:3px 9px;font-size:11.5px">Invert</button>'+
+      '<button class="btn ok" id="tcApproveSel" style="padding:6px 13px;font-size:12.5px;display:none">✓ Approve selected (<span id="tcSelNa">0</span>)</button>'+
+      '<button class="btn no" id="tcDeleteSel" style="padding:6px 13px;font-size:12.5px;display:none">🗑 Delete selected (<span id="tcSelNd">0</span>)</button>'+
       '</div>';
 
     // group the filtered rows by trainer, each group collapsible
@@ -269,7 +286,21 @@
     // --- wiring ---
     var tsel=$("tcPendTrainer"); if(tsel) tsel.addEventListener("change", function(){ window.__tcPendTrainer=tsel.value||""; renderPending(); });
     var ksel=$("tcPendKind");    if(ksel) ksel.addEventListener("change", function(){ window.__tcPendKind=ksel.value||""; renderPending(); });
-    var clr=$("tcPendClear");    if(clr) clr.addEventListener("click", function(){ window.__tcPendTrainer=""; window.__tcPendKind=""; renderPending(); });
+    var clr=$("tcPendClear");    if(clr) clr.addEventListener("click", function(){ window.__tcPendTrainer=""; window.__tcPendKind=""; window.__tcPendSearch=""; renderPending(); });
+    // search: debounce, re-render, and put the cursor back in the box
+    var sb=$("tcPendSearch");
+    if(sb){
+      sb.addEventListener("input", function(){
+        window.__tcPendSearch = sb.value;
+        clearTimeout(window.__tcPendSearchT);
+        window.__tcPendSearchT = setTimeout(function(){
+          var pos = sb.selectionStart;
+          renderPending();
+          var nb = $("tcPendSearch");
+          if(nb){ nb.focus(); try{ nb.setSelectionRange(pos,pos); }catch(e){} }
+        }, 250);
+      });
+    }
 
     // group collapse/expand
     $("tcRoot").querySelectorAll("[data-gtoggle]").forEach(function(h){
@@ -291,39 +322,56 @@
         renderPending();
       });
     });
-    // approve all (filtered) — one fast request, by filter
+    // approve all (filtered) — one fast request
     var aF=$("tcApproveFiltered");
     if(aF) aF.addEventListener("click", async function(){
+      if(!view.length){ note("Nothing to approve."); return; }
       if(!confirm("Approve all "+view.length+" shown deliveries"+(scopeLabel.replace(/<[^>]+>/g,''))+"?")) return;
-      var payload = {};
-      if(tf) payload.trainer_id = tf;
-      if(kf) payload.kind = kf;
-      // if no filter, approve exactly the shown ids to be safe
-      if(!tf && !kf) payload = {ids: view.map(function(x){return x.id;})};
+      var payload;
+      // filter-mode only when the server filter fully describes the view (no search).
+      if((tf || kf) && !sq){ payload = {}; if(tf) payload.trainer_id=tf; if(kf) payload.kind=kf; }
+      else { payload = {ids: view.map(function(x){return x.id;})}; }  // search or no-filter -> exact ids
       var r = await postJ("/api/training/resolve-bulk", payload);
       if(r.ok){ note(r.msg||("Approved "+(r.approved||0)+".")); } else note(r.msg||"Failed.");
       renderPending();
     });
-    // select mode + approve selected
-    var selAll=$("tcSelAll"), aSel=$("tcApproveSel");
+
+    // ---- selection tools (All / None / Invert) ----
+    var selAll=$("tcSelAll"), aSel=$("tcApproveSel"), dSel=$("tcDeleteSel");
+    function chks(){ return $("tcRoot").querySelectorAll(".tcPendChk"); }
     function updSel(){
       var n=$("tcRoot").querySelectorAll(".tcPendChk:checked").length;
-      if($("tcSelN")) $("tcSelN").textContent=n;
+      if($("tcSelNa")) $("tcSelNa").textContent=n;
+      if($("tcSelNd")) $("tcSelNd").textContent=n;
       if(aSel) aSel.style.display = n>0 ? "inline-block" : "none";
+      if(dSel) dSel.style.display = n>0 ? "inline-block" : "none";
     }
-    if(selAll) selAll.addEventListener("change", function(){
-      $("tcRoot").querySelectorAll(".tcPendChk").forEach(function(c){ c.checked=selAll.checked; }); updSel();
-    });
-    $("tcRoot").querySelectorAll(".tcPendChk").forEach(function(c){ c.addEventListener("change", updSel); });
+    if(selAll) selAll.addEventListener("change", function(){ chks().forEach(function(c){ c.checked=selAll.checked; }); updSel(); });
+    var sNone=$("tcSelNone"); if(sNone) sNone.addEventListener("click", function(){ chks().forEach(function(c){ c.checked=false; }); if(selAll) selAll.checked=false; updSel(); });
+    var sInv=$("tcSelInvert"); if(sInv) sInv.addEventListener("click", function(){ chks().forEach(function(c){ c.checked=!c.checked; }); updSel(); });
+    chks().forEach(function(c){ c.addEventListener("change", updSel); });
+    function selectedIds(){ var ids=[]; $("tcRoot").querySelectorAll(".tcPendChk:checked").forEach(function(c){ ids.push(c.dataset.id); }); return ids; }
+
+    // approve selected
     if(aSel) aSel.addEventListener("click", async function(){
-      var ids=[]; $("tcRoot").querySelectorAll(".tcPendChk:checked").forEach(function(c){ ids.push(c.dataset.id); });
+      var ids=selectedIds();
       if(!ids.length){ note("Nothing selected."); return; }
       if(!confirm("Approve "+ids.length+" selected delivery(ies)?")) return;
       var r = await postJ("/api/training/resolve-bulk",{ids:ids});
       if(r.ok){ note(r.msg||("Approved "+(r.approved||0)+".")); } else note(r.msg||"Failed.");
       renderPending();
     });
-    // per-row approve / reject (reject stays single — no bulk delete)
+    // DELETE selected (only the ticked rows; permanent; clear warning)
+    if(dSel) dSel.addEventListener("click", async function(){
+      var ids=selectedIds();
+      if(!ids.length){ note("Nothing selected."); return; }
+      if(!confirm("⚠ Delete "+ids.length+" selected delivery(ies)?\n\nThis permanently removes ONLY the rows you ticked. It cannot be undone.")) return;
+      var r = await postJ("/api/training/delete-bulk",{ids:ids});
+      if(r.ok){ note(r.msg||("Deleted "+(r.deleted||0)+".")); } else note(r.msg||"Failed.");
+      renderPending();
+    });
+
+    // per-row approve / reject (single reject stays; no blanket bulk delete)
     $("tcRoot").querySelectorAll("[data-ap]").forEach(function(b){ b.addEventListener("click", function(){ resolve(b.dataset.ap,"approve"); }); });
     $("tcRoot").querySelectorAll("[data-rj]").forEach(function(b){ b.addEventListener("click", function(){ if(confirm("Reject (delete) this one delivery?")) resolve(b.dataset.rj,"reject"); }); });
   }
