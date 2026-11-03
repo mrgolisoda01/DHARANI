@@ -40,14 +40,31 @@ function loadTabData(name){
 
 // ---- Auto-refresh the current tab every 30s ----
 // Only the tab you're viewing, pauses when the browser tab is hidden, and
-// skips while a module viewer or rating popup is open (so it won't interrupt).
+// skips while something is in progress (a module viewer, a rating popup, OR an
+// assessment being taken) so it NEVER interrupts the trainee.
+function isAssessmentInProgress(){
+  // the exam is open when the quiz or result view is showing, or a question set
+  // is loaded (AS_CUR). Checking the DOM is the reliable signal.
+  var q = document.getElementById('as-quiz');
+  var r = document.getElementById('as-result');
+  if(q && !q.classList.contains('hide')) return true;
+  if(r && !r.classList.contains('hide')) return true;
+  if(typeof AS_CUR !== 'undefined' && AS_CUR) return true;
+  return false;
+}
 function portalAutoRefresh(){
   try{
     if(document.hidden) return;                       // not visible
     if(document.querySelector('.fm-ov.show')) return; // a module/rating modal is open
     if(typeof MOD_VIEWING !== 'undefined' && MOD_VIEWING) return;  // mid module view
+    var rt = document.getElementById('rtModal');
+    if(rt && rt.classList.contains('show')) return;   // rating popup open
+    if(isAssessmentInProgress()) return;              // ⬅ trainee is mid-assessment — don't touch
     var active = document.querySelector('.pt-tab.active');
     var tab = active ? active.getAttribute('data-tab') : '';
+    // extra safety: never auto-reload the Assessments tab itself (even on the
+    // list view a reload is pointless and risks interrupting a start).
+    if(tab === 'assess') { if(typeof loadPendingBadges === 'function') loadPendingBadges(); return; }
     window.__SILENT_REFRESH = true;
     try {
       if(tab) loadTabData(tab);
@@ -55,6 +72,11 @@ function portalAutoRefresh(){
     } finally { setTimeout(function(){ window.__SILENT_REFRESH = false; }, 50); }
   }catch(e){ window.__SILENT_REFRESH = false; }
 }
+// 30-second auto-refresh — re-enabled 3 Nov 2026 with an assessment guard above.
+// It pauses automatically while a trainee is taking an assessment (and while a
+// module/rating popup is open), so exams are never interrupted; everything else
+// still updates live. Earlier it was fully disabled because it kicked trainees
+// back to Q1 — that can't happen now.
 setInterval(portalAutoRefresh, 30000);
 
 // red count badges on the Induction / Training / Assessments tabs
@@ -481,6 +503,7 @@ function goHome(){
 let AS_CUR = null, AS_QS = [], AS_ANS = {}, AS_TIMER = null, AS_LEFT = 0, AS_LASTCERT = null;
 
 async function loadAssessments(){
+  clearInterval(AS_TIMER);   // leaving the exam: stop its timer so it can't auto-submit later
   showAsView('list');
   const box = $('asListBox');
   try{
