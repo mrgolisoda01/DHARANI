@@ -267,23 +267,24 @@
         '</div></div>';
       var body = open ? g.items.map(function(it){
         var isInd = (it.kind||"")==="induction";
-        // clean, labelled rows: Trained / Trainer / Induction|Training → value
+        // clean, labelled rows: Trained / Trainer / Induction|Training → value,
+        // each value kept on ONE line (no wrapping at the space in a name).
         function line(label, value, valColor){
-          return '<div style="display:flex;gap:8px;line-height:1.5">'+
-            '<span style="flex:0 0 66px;font-size:11.5px;color:#8a97a0;font-weight:600;text-transform:uppercase;letter-spacing:.3px">'+label+'</span>'+
-            '<span style="font-size:13px;color:'+(valColor||'#2a3741')+';font-weight:600">'+value+'</span></div>';
+          return '<div style="display:flex;gap:10px;line-height:1.6;align-items:baseline">'+
+            '<span style="flex:0 0 72px;font-size:11px;color:#8a97a0;font-weight:600;text-transform:uppercase;letter-spacing:.3px">'+label+'</span>'+
+            '<span style="font-size:13px;color:'+(valColor||'#2a3741')+';font-weight:600;white-space:nowrap">'+value+'</span></div>';
         }
         var modLabel = isInd ? 'Induction' : 'Training';
         var details =
           line('Trained', esc(it.learner_name||it.learner_id)) +
           line('Trainer', esc(it.trainer_name||it.trainer_id)) +
           line(modLabel, esc(it.module_title||'—'), (isInd?'#0c447c':'#3c6b1f'));
-        return '<div class="arow" style="padding-left:18px;align-items:flex-start">'+
-          '<div style="display:flex;align-items:flex-start;gap:11px">'+
-            '<input type="checkbox" class="tcPendChk" data-id="'+it.id+'" style="margin-top:3px">'+
-            '<div>'+details+'</div>'+
+        return '<div class="arow" style="padding-left:18px;align-items:flex-start;gap:12px">'+
+          '<div style="display:flex;align-items:flex-start;gap:11px;flex:1;min-width:0">'+
+            '<input type="checkbox" class="tcPendChk" data-id="'+it.id+'" style="margin-top:4px;flex:0 0 auto">'+
+            '<div style="min-width:0">'+details+'</div>'+
           '</div>'+
-          '<div style="text-align:right;white-space:nowrap">'+
+          '<div style="text-align:right;white-space:nowrap;flex:0 0 auto">'+
             '<button class="btn ok" style="padding:4px 11px;font-size:12px" data-ap="'+it.id+'">Approve</button> '+
             '<button class="btn no" style="padding:4px 11px;font-size:12px" data-rj="'+it.id+'">Reject</button>'+
           '</div></div>';
