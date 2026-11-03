@@ -56,15 +56,29 @@ def _now():
 
 
 def _role_from_designation(desg):
-    """Map an employee's designation to one of the OJT roles."""
+    """Map an employee's designation to one of the four OJT roles.
+
+    Designations in the system are stored as full titles ("Business Development
+    Executive") rather than the short codes ("BDE"), so we match both. Senior /
+    national / franchise-side titles that merely CONTAIN these words
+    ("National Business Development Manager", "Franchise Manager") must NOT be
+    pulled into an OJT role, so those are excluded first.
+    """
     d = (desg or "").strip().lower()
+    # Exclude senior & franchise-side roles that are not OJT trainees even though
+    # their titles contain "business development" / "manager" / "executive".
+    if ("national" in d or "regional" in d or "franchise" in d
+            or "back office" in d or "production" in d):
+        return None
     if "state head" in d or d == "sh":
         return "State Head"
-    if "bdm" in d:
+    # BDM — "Business Development Manager" or the short code "bdm"
+    if "bdm" in d or "business development manager" in d:
         return "BDM"
-    if "bde" in d:
+    # BDE — "Business Development Executive" or the short code "bde"
+    if "bde" in d or "business development executive" in d:
         return "BDE"
-    # Territory Launch Executive (also matches "launch executive" / "TLE")
+    # TLE — "Territory Launch Executive" / "launch executive" / "tle"
     if "territory launch" in d or "launch executive" in d or d == "tle":
         return "TLE"
     return None
