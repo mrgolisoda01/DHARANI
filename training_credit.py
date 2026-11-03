@@ -6,10 +6,11 @@
 #  - Productivity view: per trainer, how many delivered, their learners'
 #    average assessment scores, and pass-attempt efficiency.
 # ===============================================================
+import io
 import json
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 
 tc_bp = Blueprint("training_credit", __name__)
 _get_db = None
@@ -328,6 +329,85 @@ def api_training_delete():
     db.execute("DELETE FROM training_delivery WHERE id=?", (d.get("id"),))
     db.commit()
     return jsonify(ok=True, msg="Removed.")
+
+
+@tc_bp.route("/api/training/delete-bulk", methods=["POST"])
+@_admin
+def api_training_delete_bulk():
+    """Admin deletes ONLY the explicitly-selected pending deliveries (the rows the
+    admin ticked). Never a blanket delete — it acts on the given `ids` and only
+    on rows still 'pending'. Permanent."""
+    _ensure()
+    d = request.get_json(force=True)
+    ids = d.get("ids") or []
+    clean = [int(x) for x in ids if str(x).lstrip("-").isdigit()]
+    if not clean:
+        return jsonify(ok=True, deleted=0, msg="Nothing selected.")
+    db = _get_db()
+    ph = ",".join(["?"] * len(clean))
+    # only delete still-pending rows (don't nuke an already-approved one by a stale id)
+    cur = db.execute("DELETE FROM training_delivery WHERE status='pending' AND id IN (" + ph + ")", tuple(clean))
+    db.commit()
+    try:
+        n = cur.rowcount if (cur and cur.rowcount and cur.rowcount > 0) else len(clean)
+    except Exception:
+        n = len(clean)
+    return jsonify(ok=True, deleted=n, msg="Deleted " + str(n) + " pending delivery(ies).")
+
+
+@tc_bp.route("/api/training/pending-export")
+@_admin
+def api_training_pending_export():
+    """Admin: download the current pending deliveries as Excel, honoring the
+    trainer/kind filter (same params the UI filters by)."""
+    _ensure()
+    db = _get_db()
+    q = ("SELECT d.id, tr.name AS trainer, lr.name AS learner, d.kind, m.title AS module, d.created_at "
+         "FROM training_delivery d "
+         "LEFT JOIN users tr ON tr.emp_id=d.trainer_id "
+         "LEFT JOIN users lr ON lr.emp_id=d.learner_id "
+         "LEFT JOIN content_modules m ON m.id=d.module_id "
+         "WHERE d.status='pending'")
+    params = []
+    tid = (request.args.get("trainer_id") or "").strip()
+    kind = (request.args.get("kind") or "").strip().lower()
+    if tid:
+        q += " AND d.trainer_id=?"; params.append(tid)
+    if kind in ("induction", "training"):
+        q += " AND d.kind=?"; params.append(kind)
+    q += " ORDER BY tr.name, d.kind, lr.name"
+    rows = db.execute(q, tuple(params)).fetchall()
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = Workbook(); ws = wb.active; ws.title = "Pending approvals"
+    ws["A1"] = "Mr. Golisoda — Pending Training Approvals"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = "Generated " + datetime.utcnow().strftime("%d %b %Y %H:%M UTC") + " · " + str(len(rows)) + " pending"
+    ws["A2"].font = Font(italic=True, color="666666")
+    hdr = ["#", "Trainer", "Learner", "Kind", "Module", "Logged on"]
+    hr = 4
+    for c, h in enumerate(hdr, start=1):
+        cell = ws.cell(row=hr, column=c, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="12284B")
+        cell.alignment = Alignment(horizontal="left")
+    for i, r in enumerate(rows, start=1):
+        ws.cell(row=hr + i, column=1, value=i)
+        ws.cell(row=hr + i, column=2, value=r["trainer"] or "")
+        ws.cell(row=hr + i, column=3, value=r["learner"] or "")
+        ws.cell(row=hr + i, column=4, value=(r["kind"] or "").title())
+        ws.cell(row=hr + i, column=5, value=r["module"] or "")
+        ws.cell(row=hr + i, column=6, value=(r["created_at"] or "")[:10])
+    widths = [5, 24, 24, 12, 40, 14]
+    for c, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + c)].width = w
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return send_file(bio, as_attachment=True, download_name="pending_approvals.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # ---------------------------------------------------------------
