@@ -1325,6 +1325,79 @@ def api_ojt_activity_weights_save():
     return jsonify(ok=True, w_tasks=wt, w_activity=wa, msg=f"Weights saved — Tasks {wt}% / Activity {wa}%.")
 
 
+def _period_bounds(rng):
+    """Return (from_date, to_date) inclusive ISO strings for a range keyword,
+    in IST. today = today only; week = Mon..today; month = 1st..today."""
+    today = _today_ist()
+    if rng == "today":
+        start = today
+    elif rng == "month":
+        start = today.replace(day=1)
+    else:  # week (default) — Monday of this week
+        start = today - timedelta(days=today.weekday())
+    return start.isoformat(), today.isoformat()
+
+
+@ojt_bp.route("/api/ojt/activity-summary")
+@_login_only
+def api_ojt_activity_summary():
+    """Per-item totals + period activity score for one enrollment over a range
+    (today | week | month). Admin/trainer can pass any enrollment; a learner may
+    only see their OWN. Used by the admin trainee view and the trainee portal."""
+    db = _get_db()
+    u = _current_user()
+    enr_id = request.args.get("enrollment") or request.args.get("id")
+    e = db.execute("SELECT * FROM ojt_enrollments WHERE id=?", (enr_id,)).fetchone()
+    if not e:
+        return jsonify(ok=False, msg="Not found."), 404
+    # access: staff see all; a learner only their own enrollment
+    if u["role"] not in ("admin", "instructor") and e["emp_id"] != u["emp_id"]:
+        return jsonify(ok=False, msg="Not authorised."), 403
+
+    rng = (request.args.get("range") or "week").strip().lower()
+    if rng not in ("today", "week", "month"):
+        rng = "week"
+    d_from, d_to = _period_bounds(rng)
+
+    # the role's active activity items (the format) — so every item shows even if 0
+    items = db.execute(
+        "SELECT id, label, kind, target FROM ojt_activity_items WHERE role=? AND active=1 ORDER BY sort_no, id",
+        (e["role"],)).fetchall()
+
+    # logged rows in the window
+    logs = db.execute(
+        "SELECT item_id, log_date, value, done, score FROM ojt_activity_log "
+        "WHERE enrollment_id=? AND substr(log_date,1,10) >= ? AND substr(log_date,1,10) <= ?",
+        (e["id"], d_from, d_to)).fetchall()
+
+    by_item = {}
+    score_vals = []
+    days_set = set()
+    for r in logs:
+        by_item.setdefault(r["item_id"], []).append(r)
+        if r["score"] is not None:
+            score_vals.append(r["score"])
+        days_set.add((r["log_date"] or "")[:10])
+
+    rows = []
+    for it in items:
+        recs = by_item.get(it["id"], [])
+        if it["kind"] == "number":
+            total = sum((r["value"] or 0) for r in recs if r["value"] is not None)
+            filled = sum(1 for r in recs if r["value"] is not None)
+            rows.append({"label": it["label"], "kind": "number", "target": it["target"],
+                         "total": total, "days_filled": filled})
+        else:  # check
+            done_days = sum(1 for r in recs if r["done"] == 1)
+            filled = sum(1 for r in recs if r["done"] is not None)
+            rows.append({"label": it["label"], "kind": "check",
+                         "done_days": done_days, "days_filled": filled})
+
+    period_score = round(sum(score_vals) / len(score_vals)) if score_vals else None
+    return jsonify(ok=True, range=rng, date_from=d_from, date_to=d_to,
+                   items=rows, period_score=period_score, days_logged=len(days_set))
+
+
 @ojt_bp.route("/api/ojt/scorecard")
 @_staff_required
 def api_ojt_scorecard():
