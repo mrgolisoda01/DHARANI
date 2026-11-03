@@ -7,7 +7,7 @@
 #    average assessment scores, and pass-attempt efficiency.
 # ===============================================================
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify
 
@@ -15,6 +15,11 @@ tc_bp = Blueprint("training_credit", __name__)
 _get_db = None
 _current_user = None
 _ready = False
+
+# A learner-named (auto-credit) delivery is 'provisional' for this many hours.
+# If nobody disputes it in that window, it auto-promotes to 'approved' and then
+# counts toward KPI. (D: learner's word counts, but only after a cooling window.)
+WINDOW_HOURS = 48
 
 
 def _now():
@@ -62,7 +67,7 @@ def _ensure():
             learner_id   TEXT NOT NULL,      -- emp_id of the learner trained
             module_id    INTEGER,           -- content_modules.id (NULL = whole kind)
             kind         TEXT,              -- 'induction' | 'training'
-            status       TEXT NOT NULL DEFAULT 'pending',  -- pending | approved
+            status       TEXT NOT NULL DEFAULT 'pending',  -- pending|provisional|approved|disputed
             created_by   TEXT,
             created_at   TEXT,
             approved_by  TEXT,
@@ -70,8 +75,52 @@ def _ensure():
             UNIQUE (trainer_id, learner_id, module_id)
         )
     """)
+    # A trainer (or admin) can dispute a credit assigned to them ("I didn't train
+    # this learner"). The dispute goes to the admin, who approves (credit removed)
+    # or rejects (credit stands). One open dispute per delivery.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS training_disputes (
+            id            SERIAL PRIMARY KEY,
+            delivery_id   INTEGER,
+            trainer_id    TEXT,
+            learner_id    TEXT,
+            module_id     INTEGER,
+            reason        TEXT,
+            status        TEXT NOT NULL DEFAULT 'open',   -- open | approved | rejected
+            raised_by     TEXT,
+            raised_at     TEXT,
+            resolved_by   TEXT,
+            resolved_at   TEXT
+        )
+    """)
     db.commit()
     _ready = True
+
+
+def _promote_due_provisionals(db):
+    """Auto-confirm learner-named deliveries once their 48h window has passed with
+    no open dispute: status 'provisional' -> 'approved' (approved_by='auto').
+    Called lazily by the read endpoints so it works without a scheduler. Returns
+    how many were promoted."""
+    try:
+        cutoff = (datetime.utcnow() - timedelta(hours=WINDOW_HOURS)).isoformat()
+        rows = db.execute(
+            "SELECT id FROM training_delivery WHERE status='provisional' AND COALESCE(created_at,'') <> '' AND created_at <= ?",
+            (cutoff,)).fetchall()
+        n = 0
+        for r in rows:
+            # skip if an open dispute exists for this delivery
+            dsp = db.execute("SELECT 1 FROM training_disputes WHERE delivery_id=? AND status='open'", (r["id"],)).fetchone()
+            if dsp:
+                continue
+            db.execute("UPDATE training_delivery SET status='approved', approved_by='auto', approved_at=? WHERE id=?",
+                       (_now(), r["id"]))
+            n += 1
+        if n:
+            db.commit()
+        return n
+    except Exception:
+        return 0
 
 
 def _modules(db, kind):
@@ -251,6 +300,7 @@ def api_training_productivity():
     (first-try / 2nd / 3rd+ pass counts, and first-attempt pass rate)."""
     _ensure()
     db = _get_db()
+    _promote_due_provisionals(db)   # settle any 48h-matured learner credits first
 
     # approved deliveries -> trainer -> set(learner), counts by kind.
     # Exclude resigned learners so they don't affect a trainer's productivity.
@@ -585,6 +635,7 @@ def api_training_confirmations():
     KPI is NOT affected — this is a trust/confirmation layer only."""
     _ensure()
     db = _get_db()
+    _promote_due_provisionals(db)   # settle any 48h-matured learner credits first
     names = {}
     for r in db.execute("SELECT emp_id, name FROM users").fetchall():
         names[r["emp_id"]] = r["name"]
@@ -597,6 +648,15 @@ def api_training_confirmations():
 
     def _d10(s):
         return (s or "")[:10]
+
+    def _hours_left(created_at):
+        try:
+            c = datetime.fromisoformat((created_at or "")[:26])
+            due = c + timedelta(hours=WINDOW_HOURS)
+            left = (due - datetime.utcnow()).total_seconds() / 3600.0
+            return max(0, round(left, 1))
+        except Exception:
+            return None
 
     # learner's mark: trainer picked when rating a MODULE (keep the rating date)
     learner_pick = {}   # (learner_id, module_id) -> trainer_id
@@ -624,6 +684,44 @@ def api_training_confirmations():
         if k2 not in trainer_date or _d10(r["created_at"]) > trainer_date[k2]:
             trainer_date[k2] = _d10(r["created_at"])
 
+    # provisional deliveries (learner-named, inside the 48h window, not yet KPI)
+    provisional_list = []
+    prov_keys = set()
+    for r in db.execute(
+        "SELECT id, learner_id, module_id, trainer_id, created_at FROM training_delivery "
+        "WHERE status='provisional' AND module_id IS NOT NULL"
+    ).fetchall():
+        prov_keys.add((r["learner_id"], r["module_id"]))
+        mi = mtitle.get(r["module_id"], {})
+        provisional_list.append({
+            "delivery_id": r["id"],
+            "learner_id": r["learner_id"], "learner": names.get(r["learner_id"], r["learner_id"]),
+            "module_id": r["module_id"], "module": mi.get("title") or ("Module " + str(r["module_id"])),
+            "kind": mi.get("kind") or "",
+            "trainer_id": r["trainer_id"], "trainer": names.get(r["trainer_id"], r["trainer_id"]),
+            "date": _d10(r["created_at"]), "hours_left": _hours_left(r["created_at"]),
+        })
+
+    # disputed deliveries -> their open dispute (admin decides)
+    disputed_list = []
+    for r in db.execute(
+        "SELECT d.id AS delivery_id, d.learner_id, d.module_id, d.trainer_id, "
+        "       x.reason, x.raised_by, x.raised_at "
+        "FROM training_delivery d "
+        "JOIN training_disputes x ON x.delivery_id=d.id AND x.status='open' "
+        "WHERE d.status='disputed' AND d.module_id IS NOT NULL"
+    ).fetchall():
+        mi = mtitle.get(r["module_id"], {})
+        disputed_list.append({
+            "delivery_id": r["delivery_id"],
+            "learner_id": r["learner_id"], "learner": names.get(r["learner_id"], r["learner_id"]),
+            "module_id": r["module_id"], "module": mi.get("title") or ("Module " + str(r["module_id"])),
+            "kind": mi.get("kind") or "",
+            "trainer_id": r["trainer_id"], "trainer": names.get(r["trainer_id"], r["trainer_id"]),
+            "reason": r["reason"] or "", "raised_by": names.get(r["raised_by"], r["raised_by"] or ""),
+            "date": _d10(r["raised_at"]),
+        })
+
     keys = set(learner_pick.keys()) | set(trainer_recs.keys())
     confirmed = conflict = awaiting_trainer = awaiting_learner = 0
     conflicts, awaiting_tr, awaiting_lr = [], [], []
@@ -649,12 +747,17 @@ def api_training_confirmations():
             row["date"] = learner_date.get((lid, mid)) or trainer_date.get((lid, mid)) or ""
             conflicts.append(row)
         elif lp and not trs:
-            awaiting_trainer += 1
-            row = dict(base)
-            row["learner_says_id"] = lp
-            row["learner_says"] = names.get(lp, lp)
-            row["date"] = learner_date.get((lid, mid)) or ""
-            awaiting_tr.append(row)
+            # a provisional delivery already covers this pair -> it's not "awaiting",
+            # it's counting down in the provisional bucket; skip it here.
+            if (lid, mid) in prov_keys:
+                pass
+            else:
+                awaiting_trainer += 1
+                row = dict(base)
+                row["learner_says_id"] = lp
+                row["learner_says"] = names.get(lp, lp)
+                row["date"] = learner_date.get((lid, mid)) or ""
+                awaiting_tr.append(row)
         elif not lp and trs:
             awaiting_learner += 1
             row = dict(base)
@@ -666,12 +769,18 @@ def api_training_confirmations():
     conflicts.sort(key=lambda x: (x["learner"] or "", x["module"] or ""))
     awaiting_tr.sort(key=lambda x: (x["learner_says"] or "", x["learner"] or ""))
     awaiting_lr.sort(key=lambda x: (x["learner"] or "", x["module"] or ""))
+    provisional_list.sort(key=lambda x: (x["hours_left"] if x["hours_left"] is not None else 999))
+    disputed_list.sort(key=lambda x: (x["date"] or ""))
     return jsonify(ok=True,
                    summary={"confirmed": confirmed, "conflict": conflict,
                             "awaiting_trainer": awaiting_trainer,
-                            "awaiting_learner": awaiting_learner},
+                            "awaiting_learner": awaiting_learner,
+                            "provisional": len(provisional_list),
+                            "disputed": len(disputed_list)},
                    conflicts=conflicts, awaiting_trainer_list=awaiting_tr,
-                   awaiting_learner_list=awaiting_lr)
+                   awaiting_learner_list=awaiting_lr,
+                   provisional_list=provisional_list,
+                   disputed_list=disputed_list)
 
 
 @tc_bp.route("/api/training/confirm-resolve", methods=["POST"])
@@ -855,7 +964,7 @@ def api_training_confirm_undo():
             continue
         if not lid or not tid:
             continue
-        cur = db.execute("DELETE FROM training_delivery WHERE learner_id=? AND module_id=? AND trainer_id=? AND status='approved'",
+        cur = db.execute("DELETE FROM training_delivery WHERE learner_id=? AND module_id=? AND trainer_id=? AND status IN ('approved','provisional')",
                          (lid, mid, tid))
         try:
             n += cur.rowcount if cur and cur.rowcount and cur.rowcount > 0 else 0
@@ -863,6 +972,122 @@ def api_training_confirm_undo():
             n += 1
     db.commit()
     return jsonify(ok=True, undone=n, msg=("Undone." if n else "Nothing to undo."))
+
+
+@tc_bp.route("/api/training/my-credits")
+@_staff
+def api_training_my_credits():
+    """Credits assigned to the signed-in trainer (admin: any trainer via ?trainer_id),
+    so they can review and dispute a credit they didn't earn. Shows provisional
+    (counting down) and approved deliveries, with any open dispute flagged."""
+    _ensure()
+    db = _get_db()
+    _promote_due_provisionals(db)
+    u = _current_user()
+    tid = u["emp_id"]
+    if u["role"] == "admin" and (request.args.get("trainer_id") or "").strip():
+        tid = request.args.get("trainer_id").strip()
+    names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+    mt = {}
+    try:
+        for r in db.execute("SELECT id, title, kind FROM content_modules").fetchall():
+            mt[r["id"]] = {"title": r["title"], "kind": r["kind"]}
+    except Exception:
+        pass
+    open_disp = {r["delivery_id"] for r in db.execute(
+        "SELECT delivery_id FROM training_disputes WHERE status='open'").fetchall()}
+    out = []
+    for r in db.execute(
+        "SELECT id, learner_id, module_id, status, created_at FROM training_delivery "
+        "WHERE trainer_id=? AND status IN ('provisional','approved') AND module_id IS NOT NULL "
+        "ORDER BY created_at DESC", (tid,)).fetchall():
+        mi = mt.get(r["module_id"], {})
+        def _hl(ca):
+            try:
+                left = (datetime.fromisoformat((ca or "")[:26]) + timedelta(hours=WINDOW_HOURS) - datetime.utcnow()).total_seconds()/3600.0
+                return max(0, round(left, 1))
+            except Exception:
+                return None
+        out.append({
+            "delivery_id": r["id"],
+            "learner_id": r["learner_id"], "learner": names.get(r["learner_id"], r["learner_id"]),
+            "module_id": r["module_id"], "module": mi.get("title") or ("Module " + str(r["module_id"])),
+            "kind": mi.get("kind") or "", "status": r["status"],
+            "hours_left": (_hl(r["created_at"]) if r["status"] == "provisional" else None),
+            "disputed": (r["id"] in open_disp),
+            "date": (r["created_at"] or "")[:10],
+        })
+    return jsonify(ok=True, trainer_id=tid, trainer=names.get(tid, tid), credits=out)
+
+
+@tc_bp.route("/api/training/dispute", methods=["POST"])
+@_staff
+def api_training_dispute():
+    """A trainer (or admin) disputes a credit assigned to them: 'I didn't train
+    this learner on this module.' Marks the delivery 'disputed' and opens a
+    dispute for the admin to approve (remove credit) or reject (keep it).
+    An instructor may only dispute credits assigned to themselves."""
+    _ensure()
+    u = _current_user()
+    d = request.get_json(force=True)
+    try:
+        did = int(d.get("delivery_id"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Bad delivery."), 400
+    reason = (d.get("reason") or "").strip()[:500]
+    db = _get_db()
+    dv = db.execute("SELECT id, trainer_id, learner_id, module_id, status FROM training_delivery WHERE id=?", (did,)).fetchone()
+    if not dv:
+        return jsonify(ok=False, msg="Credit not found."), 404
+    if u["role"] != "admin" and dv["trainer_id"] != u["emp_id"]:
+        return jsonify(ok=False, msg="You can only dispute your own credits."), 403
+    if dv["status"] not in ("provisional", "approved"):
+        return jsonify(ok=False, msg="This credit can't be disputed."), 400
+    # one open dispute per delivery
+    if db.execute("SELECT 1 FROM training_disputes WHERE delivery_id=? AND status='open'", (did,)).fetchone():
+        return jsonify(ok=False, msg="A dispute is already open on this credit."), 400
+    db.execute("INSERT INTO training_disputes (delivery_id, trainer_id, learner_id, module_id, reason, status, raised_by, raised_at) "
+               "VALUES (?,?,?,?,?,?,?,?)",
+               (did, dv["trainer_id"], dv["learner_id"], dv["module_id"], reason, "open", u["emp_id"], _now()))
+    db.execute("UPDATE training_delivery SET status='disputed' WHERE id=?", (did,))
+    db.commit()
+    return jsonify(ok=True, msg="Dispute raised — sent to admin. This credit won't count until it's reviewed.")
+
+
+@tc_bp.route("/api/training/dispute-resolve", methods=["POST"])
+@_admin
+def api_training_dispute_resolve():
+    """Admin resolves a dispute. decision='approve' -> the trainer didn't train
+    them: delete the delivery (credit removed). decision='reject' -> credit stands:
+    delivery goes back to 'approved'."""
+    _ensure()
+    u = _current_user()
+    d = request.get_json(force=True)
+    decision = (d.get("decision") or "").strip()
+    db = _get_db()
+    # locate the open dispute (by dispute_id or delivery_id)
+    disp = None
+    if d.get("dispute_id"):
+        disp = db.execute("SELECT * FROM training_disputes WHERE id=? AND status='open'", (d.get("dispute_id"),)).fetchone()
+    elif d.get("delivery_id"):
+        disp = db.execute("SELECT * FROM training_disputes WHERE delivery_id=? AND status='open'", (d.get("delivery_id"),)).fetchone()
+    if not disp:
+        return jsonify(ok=False, msg="Open dispute not found."), 404
+    did = disp["delivery_id"]
+    if decision == "approve":
+        db.execute("DELETE FROM training_delivery WHERE id=?", (did,))
+        db.execute("UPDATE training_disputes SET status='approved', resolved_by=?, resolved_at=? WHERE id=?",
+                   (u["emp_id"], _now(), disp["id"]))
+        db.commit()
+        return jsonify(ok=True, msg="Dispute approved — credit removed.")
+    elif decision == "reject":
+        db.execute("UPDATE training_delivery SET status='approved', approved_by=?, approved_at=? WHERE id=?",
+                   (u["emp_id"], _now(), did))
+        db.execute("UPDATE training_disputes SET status='rejected', resolved_by=?, resolved_at=? WHERE id=?",
+                   (u["emp_id"], _now(), disp["id"]))
+        db.commit()
+        return jsonify(ok=True, msg="Dispute rejected — credit stands.")
+    return jsonify(ok=False, msg="Pick approve or reject."), 400
 
 
 @tc_bp.route("/api/training/by-learner")

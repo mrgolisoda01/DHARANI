@@ -423,6 +423,24 @@ def _build_trainer_kpis(db, only_trainers=True, keep_ids=None):
     excluding the L&D Manager and generic admins from the ranked competition.
     keep_ids, if given, restricts to those emp_ids (used for the manager's own
     numbers). Shared by the admin Trainers view and the per-trainer view."""
+    # settle any learner-named credits whose 48h window has passed (no dispute),
+    # so the KPI leaderboard reflects matured auto-credits. Self-contained + guarded.
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        _cut = (_dt.utcnow() - _td(hours=48)).isoformat()
+        _due = db.execute(
+            "SELECT d.id FROM training_delivery d WHERE d.status='provisional' "
+            "AND COALESCE(d.created_at,'')<>'' AND d.created_at <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM training_disputes x WHERE x.delivery_id=d.id AND x.status='open')",
+            (_cut,)).fetchall()
+        if _due:
+            for _r in _due:
+                db.execute("UPDATE training_delivery SET status='approved', approved_by='auto', approved_at=? WHERE id=?",
+                           (_dt.utcnow().isoformat(), _r["id"]))
+            db.commit()
+    except Exception:
+        pass
+
     names = _name_map(db)
     desgs = _desg_map(db)
 
@@ -1261,6 +1279,32 @@ def api_rating_submit():
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (u["emp_id"], "module", mid, tid, content, trainer, comment, now)
             )
+        # --- C6 auto-credit: the learner naming a trainer creates a PROVISIONAL
+        #     delivery. It does NOT count toward KPI yet (KPI = status 'approved').
+        #     After a 48h window with no dispute it auto-promotes to approved.
+        #     Never downgrade an existing approved/disputed record; only (re)create
+        #     a provisional for the trainer the learner actually picked. Guarded so
+        #     a delivery-side hiccup never blocks the rating itself.
+        try:
+            kr = db.execute("SELECT kind FROM content_modules WHERE id=?", (mid,)).fetchone()
+            mkind = (kr["kind"] if kr else None)
+            ex = db.execute(
+                "SELECT id, status, trainer_id FROM training_delivery "
+                "WHERE learner_id=? AND module_id=? AND trainer_id=?",
+                (u["emp_id"], mid, tid)).fetchone()
+            if ex:
+                # refresh the window only if it's still provisional (don't touch
+                # an approved or disputed one for the SAME trainer)
+                if ex["status"] == "provisional":
+                    db.execute("UPDATE training_delivery SET created_at=?, created_by=?, kind=? WHERE id=?",
+                               (now, u["emp_id"], mkind, ex["id"]))
+            else:
+                db.execute(
+                    "INSERT INTO training_delivery (trainer_id, learner_id, module_id, kind, status, created_by, created_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (tid, u["emp_id"], mid, mkind, "provisional", u["emp_id"], now))
+        except Exception:
+            pass
         db.commit()
         return jsonify(ok=True, msg="Thanks for your feedback!")
 
