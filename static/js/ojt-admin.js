@@ -590,7 +590,25 @@
     var avgLine = '<div style="margin-top:8px;font-size:13px"><b>Overall topic score:</b> '+
       (sc.topic_avg!==null&&sc.topic_avg!==undefined?'<b style="color:'+(sc.topic_avg>=70?"#0f6b45":"#9e2b2b")+'">'+sc.topic_avg+'%</b>':'—')+
       '  ·  <b>Task-score average:</b> '+(sc.task_avg!==null&&sc.task_avg!==undefined?sc.task_avg+'%':'—')+'</div>';
-    var scoreCard = '<div class="ojt-scorecard" style="margin-top:14px;padding:12px;border:1px solid var(--mg-line);border-radius:10px;background:#fff">'+
+
+    // ---- blended OJT score header (Tasks × w_tasks + Activity × w_activity) ----
+    var wtk = (sc.w_tasks!==undefined?sc.w_tasks:60), wac = (sc.w_activity!==undefined?sc.w_activity:40);
+    function sv(x){ return (x!==null&&x!==undefined)?x+'%':'—'; }
+    function scol(x){ return (x===null||x===undefined)?'#9aa6ae':(x>=70?'#0f6b45':(x>=50?'#8a6d00':'#9e2b2b')); }
+    var oj = sc.ojt_score;
+    var ojtScoreBox = '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 14px;border:1px solid var(--mg-line);border-radius:10px;background:linear-gradient(135deg,#f7fbff,#f3f7fa);margin-top:14px">'+
+      '<div style="text-align:center;min-width:92px">'+
+        '<div style="font-size:30px;font-weight:800;line-height:1;color:'+scol(oj)+'">'+((oj!==null&&oj!==undefined)?oj+'%':'—')+'</div>'+
+        '<div style="font-size:11px;color:#62707a;margin-top:3px;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Overall OJT score</div>'+
+      '</div>'+
+      '<div style="flex:1;min-width:200px;font-size:12.5px;color:#43515b">'+
+        '<div style="display:flex;justify-content:space-between;max-width:320px;padding:2px 0"><span>📋 Tasks <span class="muted">(weight '+wtk+'%)</span></span><b style="color:'+scol(sc.task_avg)+'">'+sv(sc.task_avg)+'</b></div>'+
+        '<div style="display:flex;justify-content:space-between;max-width:320px;padding:2px 0"><span>📝 Daily activity <span class="muted">(weight '+wac+'%)</span></span><b style="color:'+scol(sc.activity_avg)+'">'+sv(sc.activity_avg)+(sc.activity_days?(' <span class="muted" style="font-weight:400">· '+sc.activity_days+' day'+(sc.activity_days===1?'':'s')+'</span>'):'')+'</b></div>'+
+        '<div style="font-size:11px;color:#8a97a0;margin-top:4px">Blend = Tasks×'+wtk+'% + Activity×'+wac+'%. A side with no scores yet is skipped (not counted as zero).</div>'+
+      '</div>'+
+    '</div>';
+
+    var scoreCard = ojtScoreBox + '<div class="ojt-scorecard" style="margin-top:10px;padding:12px;border:1px solid var(--mg-line);border-radius:10px;background:#fff">'+
       '<div style="font-size:14px;font-weight:700;color:#12284B;margin-bottom:4px">📊 Competency scorecard</div>'+
       '<div style="font-size:11.5px;color:#62707a;margin-bottom:6px">Each topic score is the average of that topic\'s task scores (auto). Type a number to override; leave blank to keep the auto average. Below 70% is flagged.</div>'+
       (scRows || '<div class="muted" style="font-size:12.5px">No topics set. Admin can add them under 🏷 in the OJT tab.</div>')+
