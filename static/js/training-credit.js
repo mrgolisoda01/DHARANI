@@ -233,6 +233,8 @@
 
       var cards = '<div class="pcards">'+
         card(sm.confirmed!=null?sm.confirmed:0,"✅ Confirmed (both agree)","#1d9e75")+
+        card(sm.provisional!=null?sm.provisional:0,"⏳ Provisional (auto-confirming)",(sm.provisional?"#0c6fb0":"#62707a"))+
+        card(sm.disputed!=null?sm.disputed:0,"🚩 Disputed — need you",(sm.disputed?"#d64545":"#1d9e75"))+
         card(sm.conflict!=null?sm.conflict:0,"⚠️ Conflicts — need you",(sm.conflict?"#d64545":"#1d9e75"))+
         card(sm.awaiting_trainer!=null?sm.awaiting_trainer:0,"🕐 Awaiting trainer","#c9a227")+
         card(sm.awaiting_learner!=null?sm.awaiting_learner:0,"🕐 Awaiting learner","#62707a")+
@@ -242,6 +244,8 @@
       var conf = d.conflicts || [];
       var aw   = d.awaiting_trainer_list || [];
       var awl  = d.awaiting_learner_list || [];
+      var prov = d.provisional_list || [];
+      var disp = d.disputed_list || [];
 
       // ----- trainer filter (applies to both lists) -----
       // which trainers appear anywhere, with counts, for the dropdown
@@ -320,7 +324,80 @@
       }
       awlHtml += '</div>';
 
-      shell(cards + filterBar + confHtml + awHtml + awlHtml);
+      // apply trainer filter to provisional + disputed too
+      if(tf){
+        prov = prov.filter(function(p){ return p.trainer_id===tf; });
+        disp = disp.filter(function(x){ return x.trainer_id===tf; });
+      }
+
+      // ----- 🚩 DISPUTED — trainer says they didn't train this; admin decides -----
+      var dispHtml = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#b4231d">🚩 Disputed credits — a trainer says this is wrong ('+disp.length+')</h4>'+
+        '<p style="font-size:12px;color:#62707a;margin:0 0 10px">Approve to remove the credit (they didn\'t train this learner), or reject to let it stand.</p>';
+      if(!disp.length){ dispHtml += '<div class="empty" style="padding:10px">No disputes'+(tf?" for this trainer":"")+'. 👍</div>'; }
+      else {
+        dispHtml += disp.map(function(x){
+          return '<div class="arow" style="flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>'+esc(x.learner)+'</b> · '+esc(x.module)+kindTag(x.kind)+(x.date?' <span style="font-size:11px;color:#9aa6ae">· '+fdate(x.date)+'</span>':'')+
+            '<br><span style="font-size:12px;color:#62707a">Credit was to <b>'+esc(x.trainer)+'</b> — they dispute it'+(x.reason?(': “'+esc(x.reason)+'”'):'')+(x.raised_by?(' <span style="color:#9aa6ae">(raised by '+esc(x.raised_by)+')</span>'):'')+'</span></div>'+
+            '<div style="display:flex;gap:6px;align-items:center">'+
+            '<button class="btn ok" style="padding:5px 12px;font-size:12px" data-dapp="'+x.delivery_id+'">Approve — remove credit</button>'+
+            '<button class="btn sec" style="padding:5px 10px;font-size:12px" data-drej="'+x.delivery_id+'">Reject — keep it</button>'+
+            '</div></div>';
+        }).join("");
+      }
+      dispHtml += '</div>';
+
+      // ----- ⏳ PROVISIONAL — learner-named, auto-confirming (info; admin can act) -----
+      var provHtml = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#0c6fb0">⏳ Provisional — auto-confirming ('+prov.length+') '+
+        '<button class="btn sec" id="tcProvToggle" style="padding:3px 10px;font-size:11.5px;margin-left:6px">'+(window.__tcProvOpen?"Hide":"Show")+'</button></h4>'+
+        '<p style="font-size:12px;color:#62707a;margin:0 0 6px">A learner named the trainer. These count toward KPI automatically once the 48h window passes — unless the trainer disputes. You can confirm now or revoke early.</p>';
+      if(window.__tcProvOpen){
+        if(!prov.length){ provHtml += '<div class="empty" style="padding:10px">None'+(tf?" for this trainer":"")+'.</div>'; }
+        else {
+          provHtml += '<div style="max-height:360px;overflow:auto">'+prov.map(function(p){
+            var hl = (p.hours_left!=null)?(p.hours_left<=0?'<b style="color:#0f6b45">due now</b>':('in <b>'+p.hours_left+'h</b>')):'';
+            return '<div class="arow"><div style="flex:1"><b>'+esc(p.learner)+'</b> · '+esc(p.module)+kindTag(p.kind)+(p.date?' <span style="font-size:11px;color:#9aa6ae">· '+fdate(p.date)+'</span>':'')+
+              '<br><span style="font-size:12px;color:#62707a">Credit to <b>'+esc(p.trainer)+'</b> — auto-confirms '+hl+'</span></div>'+
+              '<div style="display:flex;gap:6px;align-items:center">'+
+              '<button class="btn ok" style="padding:4px 10px;font-size:11.5px" data-provok="'+p.delivery_id+'" data-lid="'+esc(p.learner_id)+'" data-tid="'+esc(p.trainer_id)+'" data-mid="'+p.module_id+'">Confirm now</button>'+
+              '<button class="btn sec" style="padding:4px 10px;font-size:11.5px" data-provno="'+p.delivery_id+'" data-lid="'+esc(p.learner_id)+'" data-tid="'+esc(p.trainer_id)+'" data-mid="'+p.module_id+'">Revoke</button>'+
+              '</div></div>';
+          }).join("")+'</div>';
+        }
+      }
+      provHtml += '</div>';
+
+      shell(cards + filterBar + dispHtml + provHtml + confHtml + awHtml + awlHtml);
+
+      // disputed resolve wiring
+      $("tcRoot").querySelectorAll("[data-dapp]").forEach(function(b){
+        b.addEventListener("click", async function(){
+          if(!confirm("Approve this dispute and REMOVE the credit? This takes it off the trainer's KPI.")) return;
+          var r = await postJ("/api/training/dispute-resolve",{delivery_id:b.dataset.dapp,decision:"approve"});
+          if(r.ok){ note(r.msg||"Credit removed."); renderConfirmations(); } else note(r.msg||"Failed.");
+        });
+      });
+      $("tcRoot").querySelectorAll("[data-drej]").forEach(function(b){
+        b.addEventListener("click", async function(){
+          var r = await postJ("/api/training/dispute-resolve",{delivery_id:b.dataset.drej,decision:"reject"});
+          if(r.ok){ note(r.msg||"Credit stands."); renderConfirmations(); } else note(r.msg||"Failed.");
+        });
+      });
+      // provisional toggle + act-now
+      var provT = $("tcProvToggle");
+      if(provT){ provT.addEventListener("click", function(){ window.__tcProvOpen=!window.__tcProvOpen; renderConfirmations(); }); }
+      $("tcRoot").querySelectorAll("[data-provok]").forEach(function(b){
+        b.addEventListener("click", async function(){
+          var r = await postJ("/api/training/confirm-claim",{learner_id:b.dataset.lid,trainer_id:b.dataset.tid,module_id:b.dataset.mid});
+          if(r.ok){ note(r.msg||"Confirmed now."); renderConfirmations(); } else note(r.msg||"Failed.");
+        });
+      });
+      $("tcRoot").querySelectorAll("[data-provno]").forEach(function(b){
+        b.addEventListener("click", async function(){
+          if(!confirm("Revoke this provisional credit? It won't count toward KPI.")) return;
+          var r = await postJ("/api/training/confirm-undo",{items:[{learner_id:b.dataset.lid,trainer_id:b.dataset.tid,module_id:b.dataset.mid}]});
+          if(r.ok){ note(r.msg||"Revoked."); renderConfirmations(); } else note(r.msg||"Failed.");
+        });
+      });
 
       // trainer filter wiring
       var tsel = $("tcConfTrainer");
@@ -405,11 +482,40 @@
       }).join("");
     }
     html += '</div>';
-    shell(html);
+
+    // ----- your credits (dispute if wrong) -----
+    var mc = await getJ("/api/training/my-credits");
+    var credits = (mc && mc.ok) ? (mc.credits || []) : [];
+    function kTag(k){ if(!k) return ""; var ind=(k==="induction"); return ' <span style="font-size:10px;padding:1px 7px;border-radius:20px;'+(ind?"background:#eef5fc;color:#0c447c;border:1px solid #cddff0":"background:#f0f7ee;color:#3c6b1f;border:1px solid #cfe6c0")+'">'+(ind?"Induction":"Training")+'</span>'; }
+    var ch = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#12284B">📒 Credits assigned to you ('+credits.length+')</h4>'+
+      '<p style="font-size:12px;color:#62707a;margin:0 0 10px">These count toward your KPI. If a learner named you by mistake, tap <b>Dispute</b> — it goes to the admin to remove.</p>';
+    if(!credits.length){ ch += '<div class="empty" style="padding:10px">No credits yet.</div>'; }
+    else {
+      ch += credits.map(function(c){
+        var badge = c.disputed
+          ? '<span style="font-size:11px;color:#b4231d;font-weight:600">🚩 Disputed — with admin</span>'
+          : (c.status==="provisional"
+              ? '<span style="font-size:11px;color:#0c6fb0">⏳ Auto-confirms'+(c.hours_left!=null?(' in '+c.hours_left+'h'):'')+'</span>'
+              : '<span style="font-size:11px;color:#0f6b45">✅ Counting</span>');
+        var btn = c.disputed ? '' : '<button class="btn sec" style="padding:4px 10px;font-size:11.5px" data-disp="'+c.delivery_id+'">Dispute</button>';
+        return '<div class="arow"><div style="flex:1"><b>'+esc(c.learner)+'</b> · '+esc(c.module)+kTag(c.kind)+'<br>'+badge+'</div>'+btn+'</div>';
+      }).join("");
+    }
+    ch += '</div>';
+
+    shell(html + ch);
     $("tcRoot").querySelectorAll("[data-aw]").forEach(function(b){
       b.addEventListener("click", async function(){
         var r = await postJ("/api/training/confirm-claim",{learner_id:b.dataset.lid,trainer_id:b.dataset.tid,module_id:b.dataset.mid});
         if(r.ok){ note(r.msg||"Confirmed."); renderConfirmations(); } else note(r.msg||"Failed.");
+      });
+    });
+    $("tcRoot").querySelectorAll("[data-disp]").forEach(function(b){
+      b.addEventListener("click", async function(){
+        var why = prompt("Dispute this credit — why wasn't it you? (optional)");
+        if(why === null) return;  // cancelled
+        var r = await postJ("/api/training/dispute",{delivery_id:b.dataset.disp,reason:why||""});
+        if(r.ok){ note(r.msg||"Dispute raised."); renderConfirmations(); } else note(r.msg||"Failed.");
       });
     });
   }
