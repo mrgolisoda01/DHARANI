@@ -177,43 +177,155 @@
     shell('<div class="empty">Loading…</div>');
     var d=await getJ("/api/training/pending");
     var items=(d&&d.ok)?d.items:[];
-    var rows = items.length ? items.map(function(it){
-      var stat = it.status==="approved" ? '<span class="pill" style="background:#eaf7f0;color:#0f6b45">Approved</span>'
-        : '<span class="pill" style="background:#faf1de;color:#845a0b">Pending</span>';
-      var actions = (d.is_admin && it.status==="pending")
-        ? '<button class="btn ok" style="padding:5px 12px;font-size:12px" data-ap="'+it.id+'">Approve</button> '+
-          '<button class="btn no" style="padding:5px 12px;font-size:12px" data-rj="'+it.id+'">Reject</button>'
-        : (d.is_admin ? '<button class="btn sec" style="padding:5px 10px;font-size:12px;color:#d64545" data-del="'+it.id+'">Remove</button>' : stat);
-      return '<div class="arow"><div><b>'+esc(it.trainer_name||it.trainer_id)+'</b> trained <b>'+esc(it.learner_name||it.learner_id)+'</b>'+
-        '<br><span style="font-size:12px;color:#62707a">'+esc((it.kind||"").toUpperCase())+' · '+esc(it.module_title||"module")+'</span></div>'+
-        '<div style="text-align:right;white-space:nowrap">'+actions+'</div></div>';
-    }).join("") : '<div class="empty" style="padding:16px">'+(d.is_admin?"Nothing waiting for approval.":"You haven\'t marked any training yet.")+'</div>';
-    // bulk bar — admin only, when there are pending items
-    var pendingIds = items.filter(function(it){ return it.status==="pending"; }).map(function(it){ return it.id; });
-    var bulkBar = "";
-    if(d.is_admin && pendingIds.length){
-      bulkBar = '<div style="display:flex;justify-content:flex-end;gap:8px;margin:0 0 10px">'+
-        '<button class="btn ok" id="tcApproveAll" style="padding:5px 14px;font-size:12.5px">✓ Approve all ('+pendingIds.length+')</button>'+
-        '<button class="btn no" id="tcRejectAll" style="padding:5px 14px;font-size:12.5px">Reject all</button></div>';
+
+    // instructor (My submissions): simple flat list, unchanged
+    if(!d.is_admin){
+      var mine = items.length ? items.map(function(it){
+        var stat = it.status==="approved" ? '<span class="pill" style="background:#eaf7f0;color:#0f6b45">Approved</span>'
+          : '<span class="pill" style="background:#faf1de;color:#845a0b">Pending</span>';
+        return '<div class="arow"><div><b>'+esc(it.trainer_name||it.trainer_id)+'</b> trained <b>'+esc(it.learner_name||it.learner_id)+'</b>'+
+          '<br><span style="font-size:12px;color:#62707a">'+esc((it.kind||"").toUpperCase())+' · '+esc(it.module_title||"module")+'</span></div>'+
+          '<div style="text-align:right">'+stat+'</div></div>';
+      }).join("") : '<div class="empty" style="padding:16px">You haven\'t marked any training yet.</div>';
+      shell(mine);
+      return;
     }
-    shell(bulkBar + rows);
+
+    // ----- admin: pending deliveries, grouped by trainer, with filters + bulk approve -----
+    var pending = items.filter(function(it){ return it.status==="pending"; });
+    if(!pending.length){ shell('<div class="empty" style="padding:16px">Nothing waiting for approval. 👍</div>'); return; }
+
+    // apply trainer + kind filters
+    var tf = window.__tcPendTrainer || "";
+    var kf = window.__tcPendKind || "";
+    var view = pending.filter(function(it){
+      if(tf && String(it.trainer_id)!==tf) return false;
+      if(kf && (it.kind||"")!==kf) return false;
+      return true;
+    });
+
+    // trainer dropdown (counts from the full pending set)
+    var tc = {};
+    pending.forEach(function(it){ var id=it.trainer_id||""; tc[id]=tc[id]||{name:it.trainer_name||id,n:0}; tc[id].n++; });
+    var tOpts = '<option value="">All trainers ('+pending.length+')</option>' +
+      Object.keys(tc).sort(function(a,b){return (tc[a].name||"").localeCompare(tc[b].name||"");}).map(function(id){
+        return '<option value="'+esc(id)+'"'+(tf===id?' selected':'')+'>'+esc(tc[id].name)+' ('+tc[id].n+')</option>';
+      }).join("");
+    var kOpts = ['','induction','training'].map(function(k){
+      var lbl = k===''?'All kinds':(k==='induction'?'Induction':'Training');
+      return '<option value="'+k+'"'+(kf===k?' selected':'')+'>'+lbl+'</option>';
+    }).join("");
+
+    var filterBar = '<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px">'+
+      '<span style="font-size:13px;font-weight:600;color:#12284B">Filter:</span>'+
+      '<select id="tcPendTrainer" style="max-width:260px">'+tOpts+'</select>'+
+      '<select id="tcPendKind">'+kOpts+'</select>'+
+      ((tf||kf)?'<button class="btn sec" id="tcPendClear" style="padding:4px 10px;font-size:12px">Clear</button>':'')+
+      '<span style="margin-left:auto;font-size:12px;color:#62707a">Showing <b>'+view.length+'</b> of '+pending.length+'</span>'+
+      '</div>';
+
+    // fast bulk-approve bar (approve-only; reject stays per-row)
+    var scopeLabel = tf ? (' for '+esc((tc[tf]||{}).name||'')) : '';
+    if(kf) scopeLabel += ' · '+(kf==='induction'?'Induction':'Training');
+    var bulkBar = '<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px">'+
+      '<button class="btn ok" id="tcApproveFiltered" style="padding:6px 16px;font-size:13px;font-weight:600">✓ Approve all '+view.length+(scopeLabel?('<span style="font-weight:400">'+scopeLabel+'</span>'):'')+'</button>'+
+      '<label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="tcSelAll"> Select</label>'+
+      '<button class="btn ok" id="tcApproveSel" style="padding:6px 14px;font-size:12.5px;display:none">✓ Approve selected (<span id="tcSelN">0</span>)</button>'+
+      '<span style="margin-left:auto;font-size:11.5px;color:#9aa6ae">Reject is per-row (no bulk delete)</span>'+
+      '</div>';
+
+    // group the filtered rows by trainer, each group collapsible
+    var groups = {};
+    view.forEach(function(it){ var id=it.trainer_id||""; (groups[id]=groups[id]||{name:it.trainer_name||id, items:[]}).items.push(it); });
+    window.__tcPendOpen = window.__tcPendOpen || {};
+    var groupsHtml = Object.keys(groups).sort(function(a,b){return (groups[a].name||"").localeCompare(groups[b].name||"");}).map(function(gid){
+      var g = groups[gid];
+      var open = (tf ? true : (window.__tcPendOpen[gid] !== false));  // open when a single trainer is filtered
+      var gidSafe = esc(gid);
+      var head = '<div class="arow" style="background:#f7f9fa;cursor:pointer" data-gtoggle="'+gidSafe+'">'+
+        '<div><b>'+esc(g.name)+'</b> <span style="font-size:12px;color:#62707a">· '+g.items.length+' pending</span></div>'+
+        '<div style="display:flex;gap:8px;align-items:center">'+
+          '<button class="btn ok" style="padding:4px 11px;font-size:11.5px" data-gapprove="'+gidSafe+'">✓ Approve these '+g.items.length+'</button>'+
+          '<span style="font-size:14px;color:#8a97a0">'+(open?'▾':'▸')+'</span>'+
+        '</div></div>';
+      var body = open ? g.items.map(function(it){
+        return '<div class="arow" style="padding-left:18px">'+
+          '<div style="display:flex;align-items:center;gap:9px">'+
+            '<input type="checkbox" class="tcPendChk" data-id="'+it.id+'">'+
+            '<div>trained <b>'+esc(it.learner_name||it.learner_id)+'</b>'+
+            '<br><span style="font-size:12px;color:#62707a">'+esc((it.kind||"").toUpperCase())+' · '+esc(it.module_title||"module")+'</span></div>'+
+          '</div>'+
+          '<div style="text-align:right;white-space:nowrap">'+
+            '<button class="btn ok" style="padding:4px 11px;font-size:12px" data-ap="'+it.id+'">Approve</button> '+
+            '<button class="btn no" style="padding:4px 11px;font-size:12px" data-rj="'+it.id+'">Reject</button>'+
+          '</div></div>';
+      }).join("") : "";
+      return '<div class="card" style="padding:0;overflow:hidden;margin:0 0 8px">'+head+body+'</div>';
+    }).join("");
+    if(!view.length) groupsHtml = '<div class="empty" style="padding:16px">Nothing matches this filter.</div>';
+
+    shell(filterBar + bulkBar + groupsHtml);
+
+    // --- wiring ---
+    var tsel=$("tcPendTrainer"); if(tsel) tsel.addEventListener("change", function(){ window.__tcPendTrainer=tsel.value||""; renderPending(); });
+    var ksel=$("tcPendKind");    if(ksel) ksel.addEventListener("change", function(){ window.__tcPendKind=ksel.value||""; renderPending(); });
+    var clr=$("tcPendClear");    if(clr) clr.addEventListener("click", function(){ window.__tcPendTrainer=""; window.__tcPendKind=""; renderPending(); });
+
+    // group collapse/expand
+    $("tcRoot").querySelectorAll("[data-gtoggle]").forEach(function(h){
+      h.addEventListener("click", function(ev){
+        if(ev.target.closest("[data-gapprove]")) return;   // the approve button handles itself
+        var gid=h.getAttribute("data-gtoggle");
+        window.__tcPendOpen[gid] = (window.__tcPendOpen[gid]===false) ? true : false;
+        renderPending();
+      });
+    });
+    // per-group approve (one fast request)
+    $("tcRoot").querySelectorAll("[data-gapprove]").forEach(function(b){
+      b.addEventListener("click", async function(ev){
+        ev.stopPropagation();
+        var gid=b.getAttribute("data-gapprove"); var g=groups[gid];
+        if(!confirm("Approve all "+g.items.length+" deliveries for "+g.name+"?")) return;
+        var r = await postJ("/api/training/resolve-bulk",{ids: g.items.map(function(x){return x.id;})});
+        if(r.ok){ note(r.msg||("Approved "+(r.approved||0)+".")); } else note(r.msg||"Failed.");
+        renderPending();
+      });
+    });
+    // approve all (filtered) — one fast request, by filter
+    var aF=$("tcApproveFiltered");
+    if(aF) aF.addEventListener("click", async function(){
+      if(!confirm("Approve all "+view.length+" shown deliveries"+(scopeLabel.replace(/<[^>]+>/g,''))+"?")) return;
+      var payload = {};
+      if(tf) payload.trainer_id = tf;
+      if(kf) payload.kind = kf;
+      // if no filter, approve exactly the shown ids to be safe
+      if(!tf && !kf) payload = {ids: view.map(function(x){return x.id;})};
+      var r = await postJ("/api/training/resolve-bulk", payload);
+      if(r.ok){ note(r.msg||("Approved "+(r.approved||0)+".")); } else note(r.msg||"Failed.");
+      renderPending();
+    });
+    // select mode + approve selected
+    var selAll=$("tcSelAll"), aSel=$("tcApproveSel");
+    function updSel(){
+      var n=$("tcRoot").querySelectorAll(".tcPendChk:checked").length;
+      if($("tcSelN")) $("tcSelN").textContent=n;
+      if(aSel) aSel.style.display = n>0 ? "inline-block" : "none";
+    }
+    if(selAll) selAll.addEventListener("change", function(){
+      $("tcRoot").querySelectorAll(".tcPendChk").forEach(function(c){ c.checked=selAll.checked; }); updSel();
+    });
+    $("tcRoot").querySelectorAll(".tcPendChk").forEach(function(c){ c.addEventListener("change", updSel); });
+    if(aSel) aSel.addEventListener("click", async function(){
+      var ids=[]; $("tcRoot").querySelectorAll(".tcPendChk:checked").forEach(function(c){ ids.push(c.dataset.id); });
+      if(!ids.length){ note("Nothing selected."); return; }
+      if(!confirm("Approve "+ids.length+" selected delivery(ies)?")) return;
+      var r = await postJ("/api/training/resolve-bulk",{ids:ids});
+      if(r.ok){ note(r.msg||("Approved "+(r.approved||0)+".")); } else note(r.msg||"Failed.");
+      renderPending();
+    });
+    // per-row approve / reject (reject stays single — no bulk delete)
     $("tcRoot").querySelectorAll("[data-ap]").forEach(function(b){ b.addEventListener("click", function(){ resolve(b.dataset.ap,"approve"); }); });
-    $("tcRoot").querySelectorAll("[data-rj]").forEach(function(b){ b.addEventListener("click", function(){ resolve(b.dataset.rj,"reject"); }); });
-    $("tcRoot").querySelectorAll("[data-del]").forEach(function(b){ b.addEventListener("click", function(){ if(confirm("Remove this record?")) delRec(b.dataset.del); }); });
-    var aAll=$("tcApproveAll"); if(aAll) aAll.addEventListener("click", function(){ resolveAllTc(pendingIds,"approve"); });
-    var rAll=$("tcRejectAll"); if(rAll) rAll.addEventListener("click", function(){ resolveAllTc(pendingIds,"reject"); });
-  }
-  async function resolveAllTc(ids, decision){
-    if(!ids || !ids.length){ note("Nothing to "+decision+"."); return; }
-    var verb = decision==="approve" ? "Approve" : "Reject";
-    if(!confirm(verb+" all "+ids.length+" training record(s)?")) return;
-    var ok=0, fail=0;
-    for(var i=0;i<ids.length;i++){
-      var r = await postJ("/api/training/resolve",{id:ids[i],decision:decision});
-      if(r && r.ok) ok++; else fail++;
-    }
-    note(verb+"d "+ok+(fail?(" · "+fail+" failed"):"")+".");
-    renderPending();
+    $("tcRoot").querySelectorAll("[data-rj]").forEach(function(b){ b.addEventListener("click", function(){ if(confirm("Reject (delete) this one delivery?")) resolve(b.dataset.rj,"reject"); }); });
   }
   async function resolve(id,decision){ var r=await postJ("/api/training/resolve",{id:id,decision:decision}); if(r.ok){note(r.msg||"Done.");renderPending();}else note(r.msg||"Failed."); }
   async function delRec(id){ var r=await postJ("/api/training/delete",{id:id}); if(r.ok){note("Removed.");renderPending();}else note(r.msg||"Failed."); }
