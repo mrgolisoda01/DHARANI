@@ -1583,7 +1583,40 @@ def api_my():
     return jsonify(ok=True, enrolled=True, enrollment={
         "role": e["role"], "start_date": e["start_date"], "status": e["status"],
         "trainer": e["trainer_name"] or "—", "day_label": _day_label(tl["day_no"], e["status"]),
-    }, timeline=tl)
+    }, timeline=tl, score=_score_summary(db, e["id"]))
+
+
+def _score_summary(db, enr_id):
+    """The trainee's blended OJT score (same rule as the admin scorecard):
+    Tasks × w_tasks + Activity × w_activity, each 0-100, ignoring a side with no
+    scores. Returns a dict the portal and scorecard can both show."""
+    trow = db.execute("SELECT AVG(score) a FROM ojt_signoffs WHERE enrollment_id=? AND score IS NOT NULL",
+                      (enr_id,)).fetchone()
+    task_avg = round(float(trow["a"])) if trow and trow["a"] is not None else None
+    arow = db.execute("SELECT AVG(score) a, COUNT(DISTINCT log_date) d FROM ojt_activity_log "
+                      "WHERE enrollment_id=? AND score IS NOT NULL", (enr_id,)).fetchone()
+    activity_avg = round(float(arow["a"])) if arow and arow["a"] is not None else None
+    activity_days = (arow["d"] if arow else 0)
+
+    def _wt(k, dflt):
+        r = db.execute("SELECT svalue FROM ojt_settings WHERE skey=?", (k,)).fetchone()
+        try:
+            return int(r["svalue"]) if r else dflt
+        except (TypeError, ValueError):
+            return dflt
+    w_tasks = _wt("w_tasks", 60)
+    w_activity = _wt("w_activity", 40)
+
+    ojt_score = None
+    if task_avg is not None and activity_avg is not None:
+        denom = (w_tasks + w_activity) or 100
+        ojt_score = round((task_avg * w_tasks + activity_avg * w_activity) / denom)
+    elif task_avg is not None:
+        ojt_score = task_avg
+    elif activity_avg is not None:
+        ojt_score = activity_avg
+    return {"task_avg": task_avg, "activity_avg": activity_avg, "activity_days": activity_days,
+            "w_tasks": w_tasks, "w_activity": w_activity, "ojt_score": ojt_score}
 
 
 def _my_active_enrollment():
