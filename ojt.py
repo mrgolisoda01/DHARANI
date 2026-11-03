@@ -1383,8 +1383,42 @@ def api_ojt_scorecard():
     trow = db.execute("SELECT AVG(score) a, COUNT(score) c FROM ojt_signoffs WHERE enrollment_id=? AND score IS NOT NULL",
                       (enr_id,)).fetchone()
     task_avg = round(trow["a"]) if trow and trow["a"] is not None else None
+
+    # ---- Daily Activity average (ignore days/items with no score) ----
+    arow = db.execute("SELECT AVG(score) a, COUNT(score) c, COUNT(DISTINCT log_date) d "
+                      "FROM ojt_activity_log WHERE enrollment_id=? AND score IS NOT NULL",
+                      (enr_id,)).fetchone()
+    activity_avg = round(float(arow["a"])) if arow and arow["a"] is not None else None
+    activity_scored = (arow["c"] if arow else 0)
+    activity_days = (arow["d"] if arow else 0)
+
+    # ---- weights (Tasks / Activity, default 60/40) ----
+    def _wt(k, dflt):
+        r = db.execute("SELECT svalue FROM ojt_settings WHERE skey=?", (k,)).fetchone()
+        try:
+            return int(r["svalue"]) if r else dflt
+        except (TypeError, ValueError):
+            return dflt
+    w_tasks = _wt("w_tasks", 60)
+    w_activity = _wt("w_activity", 40)
+
+    # ---- blended OJT score: Tasks × w_tasks + Activity × w_activity ----
+    # If only one side has data, use that side alone (re-normalised) so a missing
+    # side never drags the score down — matches the "ignore missing" rule.
+    ojt_score = None
+    if task_avg is not None and activity_avg is not None:
+        denom = (w_tasks + w_activity) or 100
+        ojt_score = round((task_avg * w_tasks + activity_avg * w_activity) / denom)
+    elif task_avg is not None:
+        ojt_score = task_avg
+    elif activity_avg is not None:
+        ojt_score = activity_avg
+
     return jsonify(ok=True, topics=out, topic_avg=topic_avg, task_avg=task_avg,
-                   task_scored=(trow["c"] if trow else 0))
+                   task_scored=(trow["c"] if trow else 0),
+                   activity_avg=activity_avg, activity_scored=activity_scored,
+                   activity_days=activity_days,
+                   w_tasks=w_tasks, w_activity=w_activity, ojt_score=ojt_score)
 
 
 @ojt_bp.route("/api/ojt/save-topic-score", methods=["POST"])
