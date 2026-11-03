@@ -501,8 +501,65 @@ function goHome(){
 
 /* ---------------- ASSESSMENTS (engine inside portal) ---------------- */
 let AS_CUR = null, AS_QS = [], AS_ANS = {}, AS_TIMER = null, AS_LEFT = 0, AS_LASTCERT = null;
+let AS_SUBMITTING = false;          // true only during a real submit (so state may clear)
+const AS_LS_KEY = 'safc_exam_in_progress';
 
-async function loadAssessments(){
+// ---- Persist an in-progress exam so a reload / tab-switch NEVER loses it ----
+function asSaveState(){
+  try{
+    if(!AS_CUR){ localStorage.removeItem(AS_LS_KEY); return; }
+    localStorage.setItem(AS_LS_KEY, JSON.stringify({
+      cur: AS_CUR, qs: AS_QS, ans: AS_ANS,
+      left: AS_LEFT, savedAt: Date.now()
+    }));
+  }catch(e){}
+}
+function asClearState(){ try{ localStorage.removeItem(AS_LS_KEY); }catch(e){} }
+function asReadState(){
+  try{ var s = localStorage.getItem(AS_LS_KEY); return s ? JSON.parse(s) : null; }catch(e){ return null; }
+}
+
+// On load, if an exam was in progress (page got reloaded/closed), resume it.
+function asMaybeResume(){
+  var st = asReadState();
+  if(!st || !st.cur || !st.qs || !st.qs.length) return;
+  // for a timed exam, work out the real remaining time from when it was saved
+  var left = st.left;
+  if(st.cur.time_limit > 0 && st.savedAt){
+    var elapsed = Math.floor((Date.now() - st.savedAt)/1000);
+    left = Math.max(0, (st.left||0) - elapsed);
+    if(left <= 0){ asClearState(); return; }   // window already gone — don't resume
+  }
+  // make sure we're on the Assessments tab, then restore the quiz
+  try{
+    document.querySelectorAll('.tabpane').forEach(function(p){p.classList.remove('show');});
+    document.querySelectorAll('.pt-tab').forEach(function(t){t.classList.remove('active');});
+    var pane = document.getElementById('tab-assess'); if(pane) pane.classList.add('show');
+    var btn = document.querySelector('.pt-tab[data-tab="assess"]'); if(btn) btn.classList.add('active');
+  }catch(e){}
+  AS_CUR = st.cur; AS_QS = st.qs; AS_ANS = st.ans || {}; AS_LEFT = left;
+  if($('asQuizTitle')) $('asQuizTitle').textContent = AS_CUR.title;
+  drawAsQuiz();
+  // re-mark the answers they'd already picked
+  Object.keys(AS_ANS).forEach(function(qid){
+    var q = AS_QS.find(function(x){ return String(x.qid)===String(qid); });
+    if(q){ q.options.forEach(function(o){ var el=$('aopt-'+qid+'-'+o._orig); if(el) el.classList.toggle('sel', o._orig===AS_ANS[qid]); }); }
+  });
+  showAsView('quiz');
+  clearInterval(AS_TIMER);
+  if(AS_CUR.time_limit > 0){
+    updateAsTimer();
+    AS_TIMER = setInterval(function(){ AS_LEFT--; updateAsTimer(); asSaveState(); if(AS_LEFT<=0){ clearInterval(AS_TIMER); alert("Time's up! Submitting."); submitAssessment(); } }, 1000);
+  } else { if($('asTimer')) $('asTimer').textContent='No time limit'; }
+}
+
+async function loadAssessments(force){
+  // GUARD: if a trainee is mid-exam, never silently drop them back to the list.
+  // Only an explicit action (Start/Submit/Back button) passes force=true.
+  if(AS_CUR && !AS_SUBMITTING && force !== true){
+    showAsView('quiz');   // keep them in their exam
+    return;
+  }
   clearInterval(AS_TIMER);   // leaving the exam: stop its timer so it can't auto-submit later
   showAsView('list');
   const box = $('asListBox');
@@ -538,14 +595,16 @@ async function startAssessment(id){
   catch(e){ alert('Could not start.'); return; }
   if(!d.ok){ alert(d.msg||'Could not start.'); return; }
   AS_CUR = d.assessment; AS_QS = d.questions; AS_ANS = {};
+  AS_SUBMITTING = false;
   $('asQuizTitle').textContent = AS_CUR.title;
   drawAsQuiz();
   showAsView('quiz');
   clearInterval(AS_TIMER);
   if(AS_CUR.time_limit>0){
     AS_LEFT = AS_CUR.time_limit*60; updateAsTimer();
-    AS_TIMER = setInterval(()=>{ AS_LEFT--; updateAsTimer(); if(AS_LEFT<=0){clearInterval(AS_TIMER);alert("Time's up! Submitting.");submitAssessment();} },1000);
+    AS_TIMER = setInterval(()=>{ AS_LEFT--; updateAsTimer(); asSaveState(); if(AS_LEFT<=0){clearInterval(AS_TIMER);alert("Time's up! Submitting.");submitAssessment();} },1000);
   } else { $('asTimer').textContent='No time limit'; }
+  asSaveState();   // persist so a reload resumes this exam
 }
 
 function updateAsTimer(){
@@ -567,19 +626,22 @@ function pickAs(qid, orig){
   AS_QS.find(q=>q.qid===qid).options.forEach(o=>{
     const el=$('aopt-'+qid+'-'+o._orig); if(el) el.classList.toggle('sel', o._orig===orig);
   });
+  asSaveState();   // remember every answer, so a reload keeps them
 }
 
 async function submitAssessment(){
   clearInterval(AS_TIMER);
   const un = AS_QS.length - Object.keys(AS_ANS).length;
   if(un>0 && !confirm(un+' question(s) not answered. Submit anyway?')){
-    if(AS_CUR.time_limit>0 && AS_LEFT>0){ AS_TIMER=setInterval(()=>{AS_LEFT--;updateAsTimer();if(AS_LEFT<=0){clearInterval(AS_TIMER);submitAssessment();}},1000); }
+    if(AS_CUR.time_limit>0 && AS_LEFT>0){ AS_TIMER=setInterval(()=>{AS_LEFT--;updateAsTimer();asSaveState();if(AS_LEFT<=0){clearInterval(AS_TIMER);submitAssessment();}},1000); }
     return;
   }
+  AS_SUBMITTING = true;   // a real submit is underway — state may now clear
   let d;
   try{ d = await (await fetch('/api/submit-assessment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assessment_id:AS_CUR.id,answers:AS_ANS})})).json(); }
-  catch(e){ alert('Submit failed.'); return; }
-  if(!d.ok){ alert(d.msg||'Submit failed.'); return; }
+  catch(e){ AS_SUBMITTING = false; alert('Submit failed. Your answers are saved — tap Submit again.'); return; }
+  if(!d.ok){ AS_SUBMITTING = false; alert(d.msg||'Submit failed.'); return; }
+  asClearState();          // exam finished — drop the saved-in-progress copy
   AS_LASTCERT = (d.passed && d.cert) ? d.cert : null;
   loadPendingBadges();
   const newCerts = (d.new_certificates) || [];
@@ -591,7 +653,7 @@ async function submitAssessment(){
       <div class="meta" style="margin-top:8px">You answered ${d.score} of ${d.total} correctly. Pass mark is ${d.pass_percent}%.</div>
       ${newCerts.length?`<div style="margin-top:12px;padding:10px;background:#e1f5ee;border-radius:8px;color:#085041;font-weight:600">🎉 You also earned: ${newCerts.map(esc).join(", ")}!</div>`:''}
       <div style="margin-top:18px">
-        <button class="btn btn-sec" onclick="loadAssessments()">Back to assessments</button>
+        <button class="btn btn-sec" onclick="AS_CUR=null;loadAssessments(true)">Back to assessments</button>
         ${AS_LASTCERT?'<button class="btn btn-pri" onclick="viewCertFromResult()">View certificate</button>':''}
       </div>
     </div>`;
@@ -893,4 +955,8 @@ function showNextCatchup(){
 /* start */
 boot();
 loadPendingBadges();
-setTimeout(startRatingCatchup, 1200);
+// If the page was reloaded mid-exam (phone slept, tab discarded, stray refresh),
+// bring the trainee straight back into their assessment where they left off.
+try{ asMaybeResume(); }catch(e){}
+// only run the rating catch-up if we're NOT resuming an exam
+setTimeout(function(){ if(!AS_CUR) startRatingCatchup(); }, 1200);
