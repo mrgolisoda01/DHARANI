@@ -906,6 +906,10 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         finally { setTimeout(function(){ window.__SILENT_REFRESH = false; }, 50); }
       }catch(e){ window.__SILENT_REFRESH = false; }
     }
+    // 30-second auto-refresh — re-enabled 3 Nov 2026. It already skips while a
+    // modal is open, while a search is typed, and when the tab is hidden, and it
+    // refreshes silently (no flash / no jump). The admin side never took
+    // assessments, so the trainee kick-out issue doesn't apply here.
     setInterval(autoRefreshTick, 30000);
 
     // ---- Instructor read-only "My Submissions" view ----
