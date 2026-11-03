@@ -277,6 +277,47 @@ def api_training_resolve():
     return jsonify(ok=True, msg=msg)
 
 
+@tc_bp.route("/api/training/resolve-bulk", methods=["POST"])
+@_admin
+def api_training_resolve_bulk():
+    """Admin APPROVES many pending deliveries in ONE request (fast, atomic).
+    Approve-only by design — no bulk delete. Accepts either an explicit list of
+    `ids`, or a filter {trainer_id?, kind?} which is re-derived server-side so
+    only genuinely-pending rows are touched. Returns how many were approved."""
+    _ensure()
+    u = _current_user()
+    d = request.get_json(force=True)
+    db = _get_db()
+    ids = d.get("ids")
+    if ids:
+        # keep only the ones still pending
+        clean = [int(x) for x in ids if str(x).lstrip("-").isdigit()]
+        if not clean:
+            return jsonify(ok=True, approved=0, msg="Nothing to approve.")
+        ph = ",".join(["?"] * len(clean))
+        rows = db.execute("SELECT id FROM training_delivery WHERE status='pending' AND id IN (" + ph + ")", clean).fetchall()
+        target = [r["id"] for r in rows]
+    else:
+        # filter mode: trainer and/or kind
+        q = "SELECT id FROM training_delivery WHERE status='pending'"
+        params = []
+        tid = (d.get("trainer_id") or "").strip()
+        kind = (d.get("kind") or "").strip().lower()
+        if tid:
+            q += " AND trainer_id=?"; params.append(tid)
+        if kind in ("induction", "training"):
+            q += " AND kind=?"; params.append(kind)
+        target = [r["id"] for r in db.execute(q, tuple(params)).fetchall()]
+
+    if not target:
+        return jsonify(ok=True, approved=0, msg="Nothing to approve.")
+    ph2 = ",".join(["?"] * len(target))
+    db.execute("UPDATE training_delivery SET status='approved', approved_by=?, approved_at=? "
+               "WHERE id IN (" + ph2 + ")", tuple([u["emp_id"], _now()] + target))
+    db.commit()
+    return jsonify(ok=True, approved=len(target), msg="Approved " + str(len(target)) + " delivery(ies).")
+
+
 @tc_bp.route("/api/training/delete", methods=["POST"])
 @_admin
 def api_training_delete():
