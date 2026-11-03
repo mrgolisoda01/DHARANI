@@ -266,11 +266,22 @@
           '<span style="font-size:14px;color:#8a97a0">'+(open?'▾':'▸')+'</span>'+
         '</div></div>';
       var body = open ? g.items.map(function(it){
-        return '<div class="arow" style="padding-left:18px">'+
-          '<div style="display:flex;align-items:center;gap:9px">'+
-            '<input type="checkbox" class="tcPendChk" data-id="'+it.id+'">'+
-            '<div>trained <b>'+esc(it.learner_name||it.learner_id)+'</b>'+
-            '<br><span style="font-size:12px;color:#62707a">'+esc((it.kind||"").toUpperCase())+' · '+esc(it.module_title||"module")+'</span></div>'+
+        var isInd = (it.kind||"")==="induction";
+        // clean, labelled rows: Trained / Trainer / Induction|Training → value
+        function line(label, value, valColor){
+          return '<div style="display:flex;gap:8px;line-height:1.5">'+
+            '<span style="flex:0 0 66px;font-size:11.5px;color:#8a97a0;font-weight:600;text-transform:uppercase;letter-spacing:.3px">'+label+'</span>'+
+            '<span style="font-size:13px;color:'+(valColor||'#2a3741')+';font-weight:600">'+value+'</span></div>';
+        }
+        var modLabel = isInd ? 'Induction' : 'Training';
+        var details =
+          line('Trained', esc(it.learner_name||it.learner_id)) +
+          line('Trainer', esc(it.trainer_name||it.trainer_id)) +
+          line(modLabel, esc(it.module_title||'—'), (isInd?'#0c447c':'#3c6b1f'));
+        return '<div class="arow" style="padding-left:18px;align-items:flex-start">'+
+          '<div style="display:flex;align-items:flex-start;gap:11px">'+
+            '<input type="checkbox" class="tcPendChk" data-id="'+it.id+'" style="margin-top:3px">'+
+            '<div>'+details+'</div>'+
           '</div>'+
           '<div style="text-align:right;white-space:nowrap">'+
             '<button class="btn ok" style="padding:4px 11px;font-size:12px" data-ap="'+it.id+'">Approve</button> '+
