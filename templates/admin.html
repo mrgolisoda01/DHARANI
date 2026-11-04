@@ -185,6 +185,7 @@
     <button class="tabbtn" id="tabTcBtn" onclick="switchTab('tc')">🎓 Trainer Credit</button>
     <button class="tabbtn" id="tabApprBtn" onclick="switchTab('appr')">✅ <span id="apprTabLabel">Approvals</span> <span id="apprBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
     <button class="tabbtn" id="tabSetBtn" onclick="switchTab('set')">⚙️ Settings</button>
+    <button class="tabbtn" id="tabHealthBtn" onclick="switchTab('health')">🩺 System Health <span id="healthBadge" style="display:none;background:#e24b4a;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:2px">0</span></button>
   </div>
 
   <!-- ============ EMPLOYEES TAB ============ -->
@@ -479,6 +480,11 @@ Who sets franchise fixed expenses?,RSM,State Head,NSM,BDM,B,Roles"></textarea>
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ============ SYSTEM HEALTH TAB ============ -->
+  <div class="wrap tabpane" id="tabHealth" style="display:none">
+    <div id="healthRoot"><div class="empty">Loading…</div></div>
   </div>
 
   <!-- ============ CERTIFICATES (TRACKS) TAB ============ -->
@@ -886,6 +892,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       if(which === 'an'){ if(typeof loadAnalytics === 'function') loadAnalytics(); }
       if(which === 'appr'){ if(window.IS_ADMIN) loadApprovals(); else loadMySubmissions(); loadHistory(); }
       if(which === 'set'){ loadSettings(); loadDesignations(); if(typeof fillAddUserManagers==='function') fillAddUserManagers(); }
+      if(which === 'health'){ if(typeof loadSystemHealth === 'function') loadSystemHealth(); }
     }
 
     // ---- Auto-refresh the current tab every 30s ----
