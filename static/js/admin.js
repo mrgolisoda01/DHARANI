@@ -61,6 +61,7 @@ async function loadDashboard(){
   if(!data.ok){ toast("Could not load dashboard."); return; }
 
   loadPendingRequests();
+  loadCommandCenter();
 
   $("cTotal").textContent = data.stats.total;
   $("cPending").textContent = data.stats.pending;
@@ -83,6 +84,166 @@ async function loadDashboard(){
   var _sb = $("searchBox");
   if(_sb && _sb.value){ _sb.value = ""; }
   renderTable();
+}
+
+/* ============ COMMAND CENTER (admin home overview) ============ */
+async function loadCommandCenter(){
+  var root = $("dashRoot");
+  if(!root) return;
+  var r = await api("/api/admin/command-center");
+  if(!r || !r.ok){ root.innerHTML = '<div class="empty" style="padding:16px">Could not load the overview.</div>'; return; }
+  var d = r.data || {};
+  function col(v){ v=Number(v); return (v>=70?'#1d9e75':(v>=40?'#c9a227':'#e24b4a')); }
+  // a big stat tile
+  function tile(icon, val, label, sub, valcol){
+    return '<div style="flex:1;min-width:150px;background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:14px 16px">'+
+      '<div style="font-size:12px;color:#8a97a1;font-weight:600;text-transform:uppercase;letter-spacing:.3px">'+icon+' '+label+'</div>'+
+      '<div style="font-size:30px;font-weight:800;line-height:1.1;margin-top:4px;color:'+(valcol||'#12284B')+'">'+val+'</div>'+
+      (sub?('<div style="font-size:12px;color:#62707a;margin-top:2px">'+sub+'</div>'):'')+'</div>';
+  }
+  function group(title, tiles){
+    return '<div style="margin-bottom:14px"><div style="font-size:13px;font-weight:700;color:#12284B;margin:0 0 8px">'+title+'</div>'+
+      '<div style="display:flex;gap:10px;flex-wrap:wrap">'+tiles+'</div></div>';
+  }
+
+  var html = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">'+
+    '<h2 style="margin:0;font-size:20px;color:#12284B">🧭 Command Center</h2>'+
+    '<span style="font-size:12.5px;color:#8a97a1">· the whole L&amp;D picture at a glance</span>'+
+    '<button onclick="loadCommandCenter()" style="margin-left:auto;background:#fff;border:1px solid var(--mg-line);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer">↻ Refresh</button>'+
+    '</div>';
+
+  html += group('👥 People & Training',
+    tile('👥', d.learners||0, 'Learners', (d.learners_started||0)+' started training') +
+    tile('📚', (d.module_completion_pct||0)+'%', 'Module completion', (d.total_completions||0)+' modules done', col(d.module_completion_pct)) +
+    tile('🎓', d.live_modules||0, 'Live modules', 'in the catalogue') +
+    tile('👤', (d.active_trainers||0)+'/'+(d.trainers_total||0), 'Active trainers', 'delivered training')
+  );
+
+  html += group('📝 Assessments',
+    tile('✅', (d.pass_rate||0)+'%', 'Pass rate', (d.assess_passes||0)+' of '+(d.assess_attempts||0)+' attempts', col(d.pass_rate)) +
+    tile('📊', (d.avg_assessment||0)+'%', 'Average score', 'across all attempts', col(d.avg_assessment)) +
+    tile('🏅', d.passed_learners||0, 'Learners passed', 'at least one assessment') +
+    tile('⭐', (d.avg_trainer_rating!=null?d.avg_trainer_rating:'—'), 'Avg trainer rating', 'from learners')
+  );
+
+  html += group('🧭 OJT (on-the-job)',
+    tile('🏃', d.ojt_active||0, 'In OJT now', 'active trainees') +
+    tile('📈', (d.ojt_avg!=null?d.ojt_avg+'%':'—'), 'Avg OJT score', 'active trainees', col(d.ojt_avg)) +
+    tile('🏁', d.ojt_completed||0, 'OJT completed', 'finished the 30 days')
+  );
+
+  html += group('🎓 Trainer Credit & Certificates',
+    tile('📒', d.confirmed_deliveries||0, 'Confirmed credits', 'all time') +
+    tile('⏳', (d.pending_approvals||0)+(d.provisional?(' + '+d.provisional):''), 'Pending / provisional', (d.open_disputes?(d.open_disputes+' disputes open'):'approvals + auto-confirming'), (d.pending_approvals||d.open_disputes)?'#c9a227':'#1d9e75') +
+    tile('📜', d.cert_total||0, 'Certificates issued', (d.cert_valid||0)+' valid') +
+    tile('⚠', (d.cert_expiring||0)+(d.cert_expired?(' / '+d.cert_expired):''), 'Expiring / expired', 'need re-certification', (d.cert_expiring||d.cert_expired)?'#e24b4a':'#1d9e75')
+  );
+
+  // placeholder for the "needs attention" nudges panel (filled async below)
+  html += '<div id="ccNudges"></div>';
+
+  // quick jump + report buttons
+  html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">'+
+    '<button onclick="window.location.href=\'/api/admin/leadership-summary.xlsx\'" style="background:#1d9e75;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">📥 Leadership summary (Excel)</button>'+
+    '<button onclick="switchTab(\'appr\')" style="background:#12284B;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer">Review approvals →</button>'+
+    '<button onclick="switchTab(\'tc\')" style="background:#fff;border:1px solid var(--mg-line);border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer">Trainer Credit →</button>'+
+    '<button onclick="switchTab(\'ojt\')" style="background:#fff;border:1px solid var(--mg-line);border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer">OJT →</button>'+
+    '<button onclick="switchTab(\'crt\')" style="background:#fff;border:1px solid var(--mg-line);border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer">Certificates →</button>'+
+    '</div>';
+
+  root.innerHTML = html;
+  if(typeof refreshHealthBadge === 'function') refreshHealthBadge();
+  loadCcNudges();
+}
+
+// "Needs attention" nudges panel on the Command Center
+async function loadCcNudges(){
+  var box = document.getElementById("ccNudges");
+  if(!box) return;
+  var r = await api("/api/admin/nudges");
+  if(!r || !r.ok){ box.innerHTML = ""; return; }
+  var unc = r.unconfirmed_learners || [], idle = r.idle_trainers || [];
+  if(!unc.length && !idle.length){
+    box.innerHTML = '<div style="background:#eafaf2;border:1px solid #c4e8d5;border-radius:12px;padding:12px 14px;margin:4px 0 12px;font-size:13px;color:#0f6b45">✅ Nothing needs a nudge right now — trainers active and learners up to date.</div>';
+    return;
+  }
+  var html = '<div style="background:#fff7e6;border:1px solid #e9cf8f;border-radius:12px;padding:14px 16px;margin:4px 0 12px">'+
+    '<div style="font-size:14px;font-weight:700;color:#8a6d1a;margin-bottom:8px">🔔 Needs attention</div>'+
+    '<div style="display:flex;gap:16px;flex-wrap:wrap">';
+  if(unc.length){
+    html += '<div style="flex:1;min-width:240px">'+
+      '<div style="font-size:12.5px;font-weight:600;color:#8a6d1a;margin-bottom:4px">Learners who haven\'t confirmed their trainer ('+ (r.unconfirmed_total||unc.length) +' modules)</div>'+
+      unc.slice(0,8).map(function(x){ return '<div style="font-size:12.5px;padding:3px 0;border-bottom:1px solid #f0e6cf">'+escapeHtml(x.name)+' <span style="color:#9aa6ae">· '+x.count+' module'+(x.count===1?'':'s')+'</span></div>'; }).join("")+
+      (unc.length>8?('<div style="font-size:11.5px;color:#9aa6ae;margin-top:4px">+ '+(unc.length-8)+' more…</div>'):'')+'</div>';
+  }
+  if(idle.length){
+    html += '<div style="flex:1;min-width:220px">'+
+      '<div style="font-size:12.5px;font-weight:600;color:#8a6d1a;margin-bottom:4px">Trainers with no activity this week ('+idle.length+')</div>'+
+      idle.slice(0,8).map(function(x){ return '<div style="font-size:12.5px;padding:3px 0;border-bottom:1px solid #f0e6cf">'+escapeHtml(x.name)+'</div>'; }).join("")+
+      (idle.length>8?('<div style="font-size:11.5px;color:#9aa6ae;margin-top:4px">+ '+(idle.length-8)+' more…</div>'):'')+'</div>';
+  }
+  html += '</div><div style="font-size:11.5px;color:#8a97a1;margin-top:8px">Learners can confirm their trainer from their Home page ("Who trained you?"). Idle trainers may just not have logged yet.</div></div>';
+  box.innerHTML = html;
+}
+
+/* ============ SYSTEM HEALTH (errors + sanity checks) ============ */
+async function loadSystemHealth(){
+  var root = $("healthRoot");
+  if(!root) return;
+  var r = await api("/api/admin/system-health");
+  if(!r || !r.ok){ root.innerHTML = '<div class="empty" style="padding:16px">Could not load system health.</div>'; return; }
+  var errs = r.errors || [], checks = r.checks || [];
+
+  var checkRows = checks.map(function(c){
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f0f2f4">'+
+      '<span style="font-size:18px">'+(c.ok?'✅':'⚠️')+'</span>'+
+      '<div><b style="font-size:13px;color:'+(c.ok?'#0f6b45':'#9e2b2b')+'">'+escapeHtml(c.label)+'</b>'+
+      '<div style="font-size:12px;color:#62707a">'+escapeHtml(c.detail||'')+'</div></div></div>';
+  }).join("");
+  var checksCard = '<div style="background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:14px 16px;margin-bottom:14px">'+
+    '<div style="font-size:14px;font-weight:700;color:#12284B;margin-bottom:4px">🩺 System checks</div>'+
+    (checkRows || '<div class="empty">No checks.</div>')+'</div>';
+
+  var errHead = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">'+
+    '<div style="font-size:14px;font-weight:700;color:#12284B">🐞 Recent backend errors ('+errs.length+')</div>'+
+    '<div style="margin-left:auto;display:flex;gap:8px">'+
+      '<button onclick="clearSystemErrors(\'seen\')" style="background:#fff;border:1px solid var(--mg-line);border-radius:7px;padding:5px 11px;font-size:12px;cursor:pointer">Mark all seen</button>'+
+      '<button onclick="clearSystemErrors(\'clear\')" style="background:#fff;border:1px solid #f0c0c0;color:#9e2b2b;border-radius:7px;padding:5px 11px;font-size:12px;cursor:pointer">Clear all</button>'+
+    '</div></div>';
+  var errBody;
+  if(!errs.length){
+    errBody = '<div class="empty" style="padding:16px;color:#0f6b45">No backend errors recorded. 👍 (Errors are logged here automatically as they happen.)</div>';
+  } else {
+    errBody = errs.map(function(e){
+      var when = e.created_at ? fmtWhen(e.created_at) : '';
+      return '<div style="background:#fff;border:1px solid var(--mg-line);border-left:3px solid #e24b4a;border-radius:10px;padding:10px 12px;margin-bottom:8px'+((e.seen?'':';box-shadow:0 0 0 2px #fdecec'))+'">'+
+        '<div style="font-size:13px;color:#9e2b2b;font-weight:600;word-break:break-word">'+escapeHtml(e.error||'')+'</div>'+
+        '<div style="font-size:12px;color:#62707a;margin-top:3px">'+escapeHtml(e.method||'')+' <b>'+escapeHtml(e.path||'')+'</b>'+(e.where_at?(' · '+escapeHtml(e.where_at)):'')+'</div>'+
+        '<div style="font-size:11px;color:#9aa6ae;margin-top:2px">'+(e.emp_id?('user '+escapeHtml(e.emp_id)+' · '):'')+escapeHtml(when)+(e.seen?'':' · <span style="color:#e24b4a;font-weight:600">NEW</span>')+'</div>'+
+        '</div>';
+    }).join("");
+  }
+
+  root.innerHTML = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">'+
+    '<h2 style="margin:0;font-size:20px;color:#12284B">🩺 System Health</h2>'+
+    '<span style="font-size:12.5px;color:#8a97a1">· backend errors &amp; data sanity checks</span>'+
+    '<button onclick="loadSystemHealth()" style="margin-left:auto;background:#fff;border:1px solid var(--mg-line);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer">↻ Refresh</button>'+
+    '</div>'+checksCard+errHead+errBody;
+  refreshHealthBadge();
+}
+async function clearSystemErrors(action){
+  if(action==='clear' && !confirm('Delete all recorded errors? (They will start logging again from new errors.)')) return;
+  await api("/api/admin/system-errors-clear", {method:"POST", body:JSON.stringify({action:action})});
+  loadSystemHealth();
+}
+async function refreshHealthBadge(){
+  try{
+    var r = await api("/api/admin/system-health");
+    var b = document.getElementById("healthBadge");
+    if(!b) return;
+    var n = (r && r.ok) ? (r.unseen||0) : 0;
+    if(n>0){ b.textContent = n; b.style.display=""; } else { b.style.display="none"; }
+  }catch(e){}
 }
 
 // name lookup for showing a manager's name from their emp_id
