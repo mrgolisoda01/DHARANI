@@ -57,11 +57,13 @@
   function note(m){ var n=document.createElement("div"); n.textContent=m; n.style.cssText="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#12284B;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:9999"; document.body.appendChild(n); setTimeout(function(){n.remove();},2600); }
 
   function shell(inner){
+    var isAdm = S.cfg && S.cfg.is_admin;
     var tabs = [["mark","➕ Mark training"],
-                [S.cfg&&S.cfg.is_admin?"approve":"mine", S.cfg&&S.cfg.is_admin?"✅ Approvals":"📋 My submissions"],
+                [isAdm?"approve":"mine", isAdm?"✅ Approvals":"📋 My submissions"],
                 ["confirm","✔ Confirmations"],
-                ["prod","📊 Productivity"],
-                ["byl","👥 By learner"]];
+                ["prod","📊 Productivity"]];
+    if(isAdm){ tabs.push(["leader","🏆 Leaderboard"]); tabs.push(["week","📅 This week"]); }
+    tabs.push(["byl","👥 By learner"]);
     var bar = '<div class="subtabs">'+tabs.map(function(t){
       return '<button class="subtab'+(S.view===t[0]?" on":"")+'" data-tv="'+t[0]+'">'+t[1]+'</button>';
     }).join("")+'</div>';
@@ -77,6 +79,8 @@
     if(S.view==="approve"||S.view==="mine") return renderPending();
     if(S.view==="confirm") return renderConfirmations();
     if(S.view==="prod") return renderProd();
+    if(S.view==="leader") return renderLeaderboard();
+    if(S.view==="week") return renderWeekly();
     if(S.view==="byl") return renderByLearner();
   }
 
@@ -838,6 +842,65 @@
     }).join("");
     shell('<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto;width:100%"><table style="width:100%">'+
       '<thead><tr><th>Learner</th><th>Induction by</th><th>Training by</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>');
+  }
+
+  // ---- Leaderboard + trend (Stage C) ----
+  function sparkline(trend){
+    var vals = (trend||[]).map(function(t){ return t.count||0; });
+    if(!vals.length) return "";
+    var max = Math.max.apply(null, vals) || 1, W=260, H=54, n=vals.length, pad=4;
+    var step = n>1 ? (W-2*pad)/(n-1) : 0;
+    var pts = vals.map(function(v,i){ var x=pad+i*step; var y=H-pad-(v/max)*(H-2*pad); return x.toFixed(1)+","+y.toFixed(1); });
+    var poly = '<polyline fill="none" stroke="#0c6fb0" stroke-width="2" points="'+pts.join(" ")+'"/>';
+    var dots = vals.map(function(v,i){ var x=pad+i*step; var y=H-pad-(v/max)*(H-2*pad); return '<circle cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="2.5" fill="#0c6fb0"/>'; }).join("");
+    var area = '<polygon fill="#0c6fb022" points="'+pad+','+(H-pad)+' '+pts.join(" ")+' '+(pad+(n-1)*step).toFixed(1)+','+(H-pad)+'"/>';
+    return '<svg viewBox="0 0 '+W+' '+H+'" width="100%" height="54" preserveAspectRatio="none" style="max-width:300px">'+area+poly+dots+'</svg>';
+  }
+  async function renderLeaderboard(){
+    shell('<div class="empty">Loading…</div>');
+    var rng = window.__tcLbRange || "month";
+    var d = await getJ("/api/training/leaderboard?range="+rng);
+    if(!d || !d.ok){ shell('<div class="empty" style="padding:16px">Could not load.</div>'); return; }
+    var board = d.board || [], trend = d.trend || [];
+    var rangeBtns = '<span style="display:inline-flex;border:1px solid var(--mg-line);border-radius:8px;overflow:hidden">'+
+      ['week','month','all'].map(function(r){ var lbl={week:"This week",month:"This month",all:"All time"}[r];
+        return '<button class="tc-lbr" data-r="'+r+'" style="border:none;background:'+(r===rng?"var(--mg-blue);color:#fff":"#fff;color:#55636d")+';font-size:12px;padding:6px 12px;cursor:pointer">'+lbl+'</button>'; }).join("")+'</span>';
+    var medal = ["🥇","🥈","🥉"];
+    var rows = board.length ? board.map(function(b){
+      var badge = b.rank<=3 ? medal[b.rank-1] : ('<span style="display:inline-block;width:22px;text-align:center;color:#8a97a1;font-weight:700">'+b.rank+'</span>');
+      return '<div class="arow"><div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px;width:24px;text-align:center">'+badge+'</span>'+
+        '<div><b>'+esc(b.trainer)+'</b><br><span style="font-size:12px;color:#62707a">'+b.learners+' learner'+(b.learners===1?'':'s')+' · Induction '+b.induction+' · Training '+b.training+'</span></div></div>'+
+        '<div style="text-align:right"><div style="font-size:20px;font-weight:800;color:#12284B">'+b.deliveries+'</div><div style="font-size:10.5px;color:#8a97a1;text-transform:uppercase;letter-spacing:.3px">credits</div></div></div>';
+    }).join("") : '<div class="empty" style="padding:16px">No confirmed credits in this period yet.</div>';
+    var trendCard = trend.length ? ('<div class="card"><div style="font-size:13px;font-weight:700;color:#12284B;margin-bottom:2px">📈 Confirmed credits — last 6 weeks</div>'+
+      '<div style="font-size:11.5px;color:#8a97a1;margin-bottom:6px">'+trend.map(function(t){return esc(t.week);}).join(" · ")+'</div>'+sparkline(trend)+
+      '<div style="display:flex;justify-content:space-between;font-size:11px;color:#8a97a1;margin-top:2px"><span>'+(trend[0]?esc(trend[0].week):'')+'</span><span>'+(trend[trend.length-1]?esc(trend[trend.length-1].week):'')+'</span></div></div>') : '';
+    shell('<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="color:#12284B">🏆 Trainer leaderboard</b><span style="margin-left:auto">'+rangeBtns+'</span></div>'+
+      trendCard + rows);
+    $("tcRoot").querySelectorAll(".tc-lbr").forEach(function(b){ b.addEventListener("click", function(){ window.__tcLbRange=b.dataset.r; renderLeaderboard(); }); });
+  }
+
+  // ---- Weekly summary digest (Stage D) ----
+  async function renderWeekly(){
+    shell('<div class="empty">Loading…</div>');
+    var d = await getJ("/api/training/weekly-summary");
+    if(!d || !d.ok){ shell('<div class="empty" style="padding:16px">Could not load.</div>'); return; }
+    function stat(v,l,col){ return '<div class="pcard"><div class="pv" style="color:'+(col||"#12284B")+'">'+v+'</div><div class="pl">'+l+'</div></div>'; }
+    var cards = '<div class="pcards">'+
+      stat(d.new_credits||0,"✅ New credits this week","#1d9e75")+
+      stat(d.provisional||0,"⏳ Provisional (auto-confirming)",(d.provisional?"#0c6fb0":"#62707a"))+
+      stat(d.conflicts||0,"⚠️ Conflicts open",(d.conflicts?"#d64545":"#1d9e75"))+
+      stat(d.disputes||0,"🚩 Disputes open",(d.disputes?"#d64545":"#1d9e75"))+
+      stat((d.active_trainers||0)+"/"+(d.total_trainers||0),"👤 Trainers active this week","#12284B")+
+      stat(d.learners_unconfirmed||0,"❓ Module-completions not yet confirmed",(d.learners_unconfirmed?"#c9a227":"#1d9e75"))+
+    '</div>';
+    var idle = d.idle_trainers||[];
+    var idleCard = '<div class="card"><h4 style="margin:0 0 4px;font-size:14px;color:#845a0b">😴 Trainers with no confirmed activity this week ('+idle.length+')</h4>';
+    if(!idle.length){ idleCard += '<div class="empty" style="padding:10px">Everyone has activity this week. 👍</div>'; }
+    else { idleCard += idle.map(function(t){ return '<div class="arow"><div><b>'+esc(t.trainer)+'</b></div><div style="font-size:12px;color:#9aa6ae">0 credits this week</div></div>'; }).join(""); }
+    idleCard += '</div>';
+    var tips = '<div class="card" style="font-size:12.5px;color:#55636d"><b>What to do:</b> Conflicts &amp; disputes are in the <b>Confirmations</b> tab; the pending pile is in <b>Approvals</b>; idle trainers may just not have logged yet (learner auto-credit also fills this in).</div>';
+    shell('<div class="card" style="padding:10px 12px"><b style="color:#12284B">📅 This week at a glance</b> <span style="font-size:12px;color:#8a97a1">· since '+esc(d.week_from||"")+'</span></div>'+cards+idleCard+tips);
   }
 
   // self-wire

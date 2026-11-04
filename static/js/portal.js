@@ -329,6 +329,70 @@ async function loadHomeStats(){
 
   // ----- manager Team card (only if viewer manages people) -----
   loadHomeTeamCard();
+
+  // ----- "Who trained you?" confirmation card -----
+  loadTrainerConfirm();
+}
+
+/* ---------------- "WHO TRAINED YOU?" confirmation (Stage B) ---------------- */
+// A deliberate list on Home: for each completed module, confirm the trainer.
+async function loadTrainerConfirm(){
+  const host = $('tab-home');
+  if(!host) return;
+  let card = $('trainerConfirmCard');
+  let d;
+  try{ d = await (await fetch('/api/training/my-trainers', {cache:'no-store'})).json(); }
+  catch(e){ return; }
+  if(!d || !d.ok || !(d.items||[]).length){ if(card) card.remove(); return; }
+
+  const items = d.items, trainers = d.trainers || [];
+  const pending = items.filter(m=>!m.confirmed).length;
+
+  // create the card once (inserted near the top of Home, after the onboarding ring area)
+  if(!card){
+    card = document.createElement('div');
+    card.id = 'trainerConfirmCard';
+    card.className = 'as-card';
+    card.style.cssText = 'margin:10px 0';
+    const anchor = $('continueBox') || $('onbWrap');
+    if(anchor && anchor.parentNode){ anchor.parentNode.insertBefore(card, anchor.nextSibling); }
+    else { host.insertBefore(card, host.firstChild); }
+  }
+
+  const opts = (sel)=> '<option value="">— Select trainer —</option>' +
+    trainers.map(t=>`<option value="${esc(t.emp_id)}"${t.emp_id===sel?' selected':''}>${esc(t.name)}${t.designation?' · '+esc(t.designation):''}</option>`).join('');
+
+  const rows = items.map(m=>{
+    const kindTag = m.kind==='induction'
+      ? '<span style="font-size:10px;padding:1px 7px;border-radius:20px;background:#eef5fc;color:#0c447c;border:1px solid #cddff0">Induction</span>'
+      : (m.kind==='training' ? '<span style="font-size:10px;padding:1px 7px;border-radius:20px;background:#f0f7ee;color:#3c6b1f;border:1px solid #cfe6c0">Training</span>' : '');
+    const status = m.confirmed
+      ? `<span style="font-size:12px;color:#1d9e75;font-weight:600">✔ ${esc(m.trainer_name)}</span> <button class="tc-change" data-mid="${m.module_id}" style="background:none;border:none;color:#0c6fb0;font-size:11.5px;cursor:pointer;text-decoration:underline">change</button>`
+      : '<span style="font-size:11.5px;color:#c98a00;font-weight:600">Needs your confirmation</span>';
+    const picker = `<div class="tc-pick" data-mid="${m.module_id}" style="${m.confirmed?'display:none;':''}margin-top:6px;display:${m.confirmed?'none':'flex'};gap:8px;flex-wrap:wrap;align-items:center">`+
+      `<select class="tc-sel" data-mid="${m.module_id}" style="flex:1;min-width:160px;border:1px solid var(--mg-line,#ccc);border-radius:7px;padding:7px;font-size:13px">${opts(m.trainer_id)}</select>`+
+      `<button class="tc-save btn btn-pri" data-mid="${m.module_id}" style="padding:7px 14px;font-size:13px">✔ Confirm</button></div>`;
+    return `<div style="padding:9px 0;border-bottom:1px solid #f0f2f4">`+
+      `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><div><b style="font-size:13.5px">${esc(m.module)}</b> ${kindTag}</div><div>${status}</div></div>`+
+      picker+`</div>`;
+  }).join('');
+
+  card.innerHTML = `<h4 style="margin:0 0 2px">👤 Who trained you?${pending?` <span style="font-size:12px;color:#c98a00">· ${pending} to confirm</span>`:''}</h4>`+
+    `<div class="meta" style="margin:0 0 8px">Confirm the trainer who trained you on each module. This helps us credit the right trainer.</div>`+rows;
+
+  // wire: change -> show picker; confirm -> save
+  card.querySelectorAll('.tc-change').forEach(b=>b.addEventListener('click', ()=>{
+    const p = card.querySelector('.tc-pick[data-mid="'+b.dataset.mid+'"]'); if(p) p.style.display='flex';
+  }));
+  card.querySelectorAll('.tc-save').forEach(b=>b.addEventListener('click', async ()=>{
+    const mid = b.dataset.mid;
+    const sel = card.querySelector('.tc-sel[data-mid="'+mid+'"]');
+    const tid = sel ? sel.value : '';
+    if(!tid){ note('Please pick the trainer.'); return; }
+    const r = await (await fetch('/api/training/my-confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({module_id:mid,trainer_id:tid})})).json().catch(()=>({ok:false}));
+    if(r && r.ok){ note(r.msg||'Saved.'); loadTrainerConfirm(); }
+    else { note((r&&r.msg)||'Could not save.'); }
+  }));
 }
 
 async function loadHomeTeamCard(){
