@@ -255,6 +255,52 @@ def close_db(exception):
         except Exception: pass
 
 
+import traceback as _traceback
+
+
+def _log_system_error(exc, path=None, method=None):
+    """Record a backend exception to system_errors on a FRESH connection (the
+    request's own db may be mid-rollback). Best-effort — never raises."""
+    try:
+        tb = _traceback.extract_tb(exc.__traceback__)
+        where_at = ""
+        if tb:
+            last = tb[-1]
+            where_at = (str(last.filename).split("/")[-1] + ":" + str(last.lineno) + " in " + str(last.name))
+        err = (type(exc).__name__ + ": " + str(exc))[:800]
+        try:
+            emp = (current_user() or {}).get("emp_id") if callable(globals().get("current_user")) else None
+        except Exception:
+            emp = None
+        conn = psycopg2.connect(connect_timeout=10, **_pg_params())
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO system_errors (path, method, error, where_at, emp_id, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (path or "", method or "", err, where_at, emp, datetime.utcnow().isoformat()))
+        cur.close(); conn.close()
+    except Exception:
+        pass
+
+
+@app.errorhandler(Exception)
+def _handle_any_error(exc):
+    # Let Flask's normal HTTP errors (404, 403, redirects…) pass through unlogged.
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+    # a real unhandled backend error — log it, then return a clean 500
+    try:
+        _log_system_error(exc, path=request.path, method=request.method)
+    except Exception:
+        pass
+    # JSON for API calls, plain text otherwise
+    if request.path.startswith("/api/"):
+        return jsonify(ok=False, msg="Something went wrong on our side. The team has been notified."), 500
+    return ("Something went wrong. Please try again.", 500)
+
+
 _db_ready = False
 @app.before_request
 def _ensure_db():
@@ -469,6 +515,21 @@ def init_db():
             target_label  TEXT,                 -- human name of the thing/person affected
             details       TEXT,                 -- optional extra note
             created_at    TEXT
+        )
+    """)
+    # System errors — backend exceptions are logged here so the admin can see
+    # issues as they happen (from the moment this is live). A ring of recent
+    # errors; old rows can be cleared from the System Health tab.
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS system_errors (
+            id          SERIAL PRIMARY KEY,
+            path        TEXT,
+            method      TEXT,
+            error       TEXT,
+            where_at    TEXT,
+            emp_id      TEXT,
+            seen        INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT
         )
     """)
     # seed the defaults the first time only
@@ -1641,6 +1702,340 @@ def api_admin_dashboard():
         employees=employees,
         me=me,
     )
+
+
+@app.route("/api/admin/command-center")
+@view_admin_required
+def api_admin_command_center():
+    """One overview of the whole L&D picture for the admin home: training
+    completion, OJT, assessments, certificates, and trainer activity."""
+    db = get_db()
+
+    def _scalar(sql, params=()):
+        r = db.execute(sql, params).fetchone()
+        try:
+            return (list(r.values())[0] if r else 0) or 0
+        except Exception:
+            return 0
+
+    # ---- people ----
+    learners = _scalar("SELECT COUNT(*) FROM users WHERE role='staff' AND status='approved'")
+    trainers_total = _scalar("SELECT COUNT(*) FROM users WHERE role IN ('instructor','admin') AND status='approved'")
+
+    # ---- training completion (module completions vs expected) ----
+    live_modules = _scalar("SELECT COUNT(*) FROM content_modules WHERE status='live'")
+    # learners who completed at least one module / learners
+    learners_started = _scalar(
+        "SELECT COUNT(DISTINCT mc.emp_id) FROM module_completions mc "
+        "JOIN users u ON u.emp_id=mc.emp_id WHERE u.role='staff' AND u.status='approved'")
+    # overall module completion rate = completions / (learners × live modules), capped
+    total_completions = _scalar(
+        "SELECT COUNT(*) FROM module_completions mc JOIN users u ON u.emp_id=mc.emp_id "
+        "WHERE u.role='staff' AND u.status='approved'")
+    denom = (learners * live_modules) if (learners and live_modules) else 0
+    module_completion_pct = min(100, round(total_completions * 100 / denom)) if denom else 0
+
+    # ---- OJT ----
+    ojt_active = _scalar("SELECT COUNT(*) FROM ojt_enrollments WHERE status='active'")
+    ojt_completed = _scalar("SELECT COUNT(*) FROM ojt_enrollments WHERE status='completed'")
+    # average OJT task-score across active enrollments (activity blends in once logged)
+    ojt_avg = _scalar(
+        "SELECT ROUND(AVG(s.score)) FROM ojt_signoffs s "
+        "JOIN ojt_enrollments e ON e.id=s.enrollment_id "
+        "WHERE e.status='active' AND s.score IS NOT NULL")
+
+    # ---- assessments ----
+    attempts = _scalar("SELECT COUNT(*) FROM assessment_results")
+    passes = _scalar("SELECT COUNT(*) FROM assessment_results WHERE passed=1")
+    pass_rate = round(passes * 100 / attempts) if attempts else 0
+    avg_assessment = _scalar("SELECT ROUND(AVG(percent)) FROM assessment_results")
+    # learners who passed at least one, over active learners
+    passed_learners = _scalar(
+        "SELECT COUNT(DISTINCT r.emp_id) FROM assessment_results r "
+        "JOIN users u ON u.emp_id=r.emp_id WHERE r.passed=1 AND u.role='staff' AND u.status='approved'")
+
+    # ---- certificates (reuse _expiry_state) ----
+    cert_total = _scalar("SELECT COUNT(*) FROM issued_certificates")
+    cert_expiring = cert_expired = cert_valid = 0
+    try:
+        rows = db.execute(
+            "SELECT ic.issued_at, ct.valid_months FROM issued_certificates ic "
+            "LEFT JOIN certificate_tracks ct ON ct.cert_name=ic.cert_name").fetchall()
+        for r in rows:
+            st, _dt, _dl = _expiry_state(r["issued_at"], r["valid_months"])
+            if st == "expired":
+                cert_expired += 1
+            elif st == "expiring":
+                cert_expiring += 1
+            elif st == "valid":
+                cert_valid += 1
+    except Exception:
+        pass
+
+    # ---- trainer activity ----
+    confirmed_deliveries = _scalar("SELECT COUNT(*) FROM training_delivery WHERE status='approved'")
+    active_trainers = _scalar("SELECT COUNT(DISTINCT trainer_id) FROM training_delivery WHERE status='approved'")
+    pending_approvals = _scalar("SELECT COUNT(*) FROM training_delivery WHERE status='pending'")
+    try:
+        provisional = _scalar("SELECT COUNT(*) FROM training_delivery WHERE status='provisional'")
+        open_disputes = _scalar("SELECT COUNT(*) FROM training_disputes WHERE status='open'")
+    except Exception:
+        provisional = open_disputes = 0
+
+    # ---- feedback (avg trainer rating), if present ----
+    avg_trainer_rating = None
+    try:
+        r = db.execute("SELECT ROUND(AVG(trainer_rating)::numeric,1) a FROM training_ratings WHERE trainer_rating IS NOT NULL").fetchone()
+        avg_trainer_rating = float(r["a"]) if r and r["a"] is not None else None
+    except Exception:
+        avg_trainer_rating = None
+
+    return jsonify(ok=True, data={
+        "learners": learners, "trainers_total": trainers_total,
+        "live_modules": live_modules, "learners_started": learners_started,
+        "module_completion_pct": module_completion_pct, "total_completions": total_completions,
+        "ojt_active": ojt_active, "ojt_completed": ojt_completed, "ojt_avg": ojt_avg,
+        "assess_attempts": attempts, "assess_passes": passes, "pass_rate": pass_rate,
+        "avg_assessment": avg_assessment, "passed_learners": passed_learners,
+        "cert_total": cert_total, "cert_valid": cert_valid,
+        "cert_expiring": cert_expiring, "cert_expired": cert_expired,
+        "confirmed_deliveries": confirmed_deliveries, "active_trainers": active_trainers,
+        "pending_approvals": pending_approvals, "provisional": provisional,
+        "open_disputes": open_disputes, "avg_trainer_rating": avg_trainer_rating,
+    })
+
+
+@app.route("/api/admin/system-health")
+@view_admin_required
+def api_admin_system_health():
+    """Admin System Health tab: recent backend errors + a few live sanity checks."""
+    db = get_db()
+    # recent errors (most recent first)
+    errs = []
+    unseen = 0
+    try:
+        rows = db.execute("SELECT * FROM system_errors ORDER BY id DESC LIMIT 100").fetchall()
+        errs = [dict(r) for r in rows]
+        unseen = db.execute("SELECT COUNT(*) c FROM system_errors WHERE COALESCE(seen,0)=0").fetchone()["c"]
+    except Exception:
+        errs = []
+
+    # ---- live sanity checks ----
+    checks = []
+    def chk(ok, label, detail):
+        checks.append({"ok": bool(ok), "label": label, "detail": detail})
+
+    # DB reachable (we got here, so yes)
+    chk(True, "Database", "Connected")
+
+    # live assessments with no questions (the Field & Tools class of bug)
+    try:
+        empty = db.execute(
+            "SELECT a.id, a.title FROM assessments a WHERE a.active=1 AND (a.status IS NULL OR a.status='live') "
+            "AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.assessment_id=a.id)").fetchall()
+        chk(len(empty) == 0, "Assessments have questions",
+            (("All live assessments have questions") if not empty else
+             (str(len(empty)) + " live assessment(s) have NO questions: " + ", ".join((e["title"] or ("#"+str(e["id"]))) for e in empty))))
+    except Exception:
+        pass
+
+    # approved learners with no manager set
+    try:
+        nomgr = db.execute("SELECT COUNT(*) c FROM users WHERE role='staff' AND status='approved' AND COALESCE(reports_to,'')=''").fetchone()["c"]
+        chk(nomgr == 0, "Learners have a manager",
+            ("All learners have a manager") if not nomgr else (str(nomgr) + " learner(s) have no manager set"))
+    except Exception:
+        pass
+
+    # active OJT enrolments whose trainer is unassigned
+    try:
+        notr = db.execute("SELECT COUNT(*) c FROM ojt_enrollments WHERE status='active' AND COALESCE(trainer_id,'')=''").fetchone()["c"]
+        chk(notr == 0, "Active OJT has a trainer",
+            ("All active OJT trainees have a trainer") if not notr else (str(notr) + " active OJT trainee(s) have no trainer"))
+    except Exception:
+        pass
+
+    return jsonify(ok=True, errors=errs, unseen=unseen, checks=checks)
+
+
+@app.route("/api/admin/leadership-summary.xlsx")
+@view_admin_required
+def api_admin_leadership_summary_xlsx():
+    """A one-page executive L&D summary for leadership — the Command Center KPIs
+    in a clean single sheet (not per-employee; that's the Full report)."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    except Exception:
+        return jsonify(ok=False, msg="Excel export not available."), 500
+    db = get_db()
+
+    def _scalar(sql, params=()):
+        r = db.execute(sql, params).fetchone()
+        try:
+            return (list(r.values())[0] if r else 0) or 0
+        except Exception:
+            return 0
+
+    learners = _scalar("SELECT COUNT(*) FROM users WHERE role='staff' AND status='approved'")
+    live_modules = _scalar("SELECT COUNT(*) FROM content_modules WHERE status='live'")
+    total_completions = _scalar("SELECT COUNT(*) FROM module_completions mc JOIN users u ON u.emp_id=mc.emp_id WHERE u.role='staff' AND u.status='approved'")
+    denom = (learners * live_modules) if (learners and live_modules) else 0
+    module_pct = min(100, round(total_completions * 100 / denom)) if denom else 0
+    attempts = _scalar("SELECT COUNT(*) FROM assessment_results")
+    passes = _scalar("SELECT COUNT(*) FROM assessment_results WHERE passed=1")
+    pass_rate = round(passes * 100 / attempts) if attempts else 0
+    avg_assessment = _scalar("SELECT ROUND(AVG(percent)) FROM assessment_results")
+    ojt_active = _scalar("SELECT COUNT(*) FROM ojt_enrollments WHERE status='active'")
+    ojt_avg = _scalar("SELECT ROUND(AVG(s.score)) FROM ojt_signoffs s JOIN ojt_enrollments e ON e.id=s.enrollment_id WHERE e.status='active' AND s.score IS NOT NULL")
+    cert_total = _scalar("SELECT COUNT(*) FROM issued_certificates")
+    confirmed = _scalar("SELECT COUNT(*) FROM training_delivery WHERE status='approved'")
+
+    # cert expiry split
+    cert_expiring = cert_expired = 0
+    try:
+        for r in db.execute("SELECT ic.issued_at, ct.valid_months FROM issued_certificates ic LEFT JOIN certificate_tracks ct ON ct.cert_name=ic.cert_name").fetchall():
+            st, _d, _l = _expiry_state(r["issued_at"], r["valid_months"])
+            if st == "expired": cert_expired += 1
+            elif st == "expiring": cert_expiring += 1
+    except Exception:
+        pass
+
+    # trainer leaderboard (confirmed deliveries)
+    names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+    tstats = {}
+    for r in db.execute("SELECT trainer_id, learner_id FROM training_delivery WHERE status='approved'").fetchall():
+        s = tstats.setdefault(r["trainer_id"], {"d": 0, "l": set()})
+        s["d"] += 1; s["l"].add(r["learner_id"])
+    board = sorted(([names.get(t, t), s["d"], len(s["l"])] for t, s in tstats.items()), key=lambda x: -x[1])
+
+    wb = Workbook(); ws = wb.active; ws.title = "L&D Summary"
+    navy = PatternFill("solid", fgColor="12284B"); blue = PatternFill("solid", fgColor="EAF3FB")
+    thin = Side(style="thin", color="DDE3EA"); box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ws.column_dimensions["A"].width = 3
+    ws.column_dimensions["B"].width = 34
+    ws.column_dimensions["C"].width = 20
+    ws.column_dimensions["D"].width = 34
+
+    ws["B2"] = "Mr. Golisoda — L&D Leadership Summary"
+    ws["B2"].font = Font(bold=True, size=16, color="12284B")
+    ws["B3"] = "Generated " + datetime.utcnow().strftime("%d %B %Y")
+    ws["B3"].font = Font(italic=True, color="7A8893")
+
+    def section(r, title):
+        ws.cell(row=r, column=2, value=title)
+        c = ws.cell(row=r, column=2); c.font = Font(bold=True, color="FFFFFF"); c.fill = navy
+        ws.cell(row=r, column=3).fill = navy
+        return r + 1
+    def kv(r, label, value):
+        a = ws.cell(row=r, column=2, value=label); a.border = box; a.font = Font(size=11)
+        b = ws.cell(row=r, column=3, value=value); b.border = box; b.font = Font(bold=True, size=11)
+        return r + 1
+
+    r = 5
+    r = section(r, "Training")
+    r = kv(r, "Active learners", learners)
+    r = kv(r, "Live modules in catalogue", live_modules)
+    r = kv(r, "Module completion rate", str(module_pct) + "%")
+    r = kv(r, "Total modules completed", total_completions)
+    r += 1
+    r = section(r, "Assessments")
+    r = kv(r, "Attempts", attempts)
+    r = kv(r, "Pass rate", str(pass_rate) + "%")
+    r = kv(r, "Average score", str(avg_assessment) + "%")
+    r += 1
+    r = section(r, "On-the-Job Training (OJT)")
+    r = kv(r, "Trainees in OJT now", ojt_active)
+    r = kv(r, "Average OJT score", str(ojt_avg) + "%")
+    r += 1
+    r = section(r, "Trainer Credit & Certificates")
+    r = kv(r, "Confirmed training credits", confirmed)
+    r = kv(r, "Certificates issued", cert_total)
+    r = kv(r, "Certificates expiring soon", cert_expiring)
+    r = kv(r, "Certificates expired", cert_expired)
+
+    # trainer leaderboard block on the right
+    lr = 5
+    ws.cell(row=lr, column=4, value="Top trainers (confirmed credits)")
+    tc = ws.cell(row=lr, column=4); tc.font = Font(bold=True, color="FFFFFF"); tc.fill = navy
+    lr += 1
+    for nm, dcount, lcount in board[:8]:
+        cell = ws.cell(row=lr, column=4, value=str(nm) + " — " + str(dcount) + " credits · " + str(lcount) + " learners")
+        cell.border = box; cell.font = Font(size=10.5)
+        lr += 1
+
+    bio = io.BytesIO(); wb.save(bio); bio.seek(0)
+    fname = "MRGOLISODA_LD_Leadership_Summary_" + datetime.utcnow().strftime("%Y%m%d") + ".xlsx"
+    from flask import send_file
+    return send_file(bio, as_attachment=True, download_name=fname,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/api/admin/nudges")
+@view_admin_required
+def api_admin_nudges():
+    """'Who needs a nudge' for the admin: learners who haven't confirmed their
+    trainer on completed modules, and trainers idle this week. In-app only."""
+    db = get_db()
+    names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+
+    # learners who completed modules but haven't confirmed the trainer on some
+    picked = set()
+    for r in db.execute("SELECT emp_id, module_id FROM training_ratings WHERE target_type='module' AND module_id IS NOT NULL AND trainer_id IS NOT NULL AND trainer_id<>''").fetchall():
+        picked.add((r["emp_id"], r["module_id"]))
+    unconfirmed = {}
+    for r in db.execute("SELECT DISTINCT mc.emp_id, mc.module_id FROM module_completions mc JOIN users u ON u.emp_id=mc.emp_id WHERE u.role='staff' AND u.status='approved'").fetchall():
+        if (r["emp_id"], r["module_id"]) not in picked:
+            unconfirmed[r["emp_id"]] = unconfirmed.get(r["emp_id"], 0) + 1
+    unconfirmed_list = sorted(
+        ([{"emp_id": k, "name": names.get(k, k), "count": v} for k, v in unconfirmed.items()]),
+        key=lambda x: -x["count"])[:50]
+
+    # trainers with no confirmed delivery in the last 7 days
+    from datetime import timedelta as _td
+    wk = (datetime.utcnow().date() - _td(days=7)).isoformat()
+    active_ids = {r["trainer_id"] for r in db.execute(
+        "SELECT DISTINCT trainer_id FROM training_delivery WHERE status='approved' "
+        "AND substr(COALESCE(approved_at, created_at),1,10) >= ?", (wk,)).fetchall()}
+    all_trainers = [r["emp_id"] for r in db.execute("SELECT emp_id FROM users WHERE role IN ('instructor','admin') AND status='approved'").fetchall()]
+    idle = [{"emp_id": t, "name": names.get(t, t)} for t in all_trainers if t not in active_ids]
+    idle.sort(key=lambda x: x["name"] or "")
+
+    return jsonify(ok=True,
+                   unconfirmed_learners=unconfirmed_list,
+                   unconfirmed_total=sum(unconfirmed.values()),
+                   idle_trainers=idle)
+
+
+@app.route("/api/my-nudges")
+@login_required
+def api_my_nudges():
+    """For the signed-in learner: what still needs their action (so the portal
+    can show a gentle banner). In-app only."""
+    u = current_user()
+    db = get_db()
+    # completed modules with no trainer confirmed
+    picked = set()
+    for r in db.execute("SELECT module_id FROM training_ratings WHERE emp_id=? AND target_type='module' AND module_id IS NOT NULL AND trainer_id IS NOT NULL AND trainer_id<>''", (u["emp_id"],)).fetchall():
+        picked.add(r["module_id"])
+    done = [r["module_id"] for r in db.execute("SELECT DISTINCT module_id FROM module_completions WHERE emp_id=?", (u["emp_id"],)).fetchall()]
+    unconfirmed = sum(1 for m in done if m not in picked)
+    return jsonify(ok=True, unconfirmed_trainer=unconfirmed)
+
+
+@app.route("/api/admin/system-errors-clear", methods=["POST"])
+@admin_required
+def api_admin_system_errors_clear():
+    """Admin: mark all errors seen, or delete them. {action: 'seen'|'clear'}"""
+    d = request.get_json(force=True)
+    action = (d.get("action") or "seen").strip()
+    db = get_db()
+    if action == "clear":
+        db.execute("DELETE FROM system_errors")
+    else:
+        db.execute("UPDATE system_errors SET seen=1 WHERE COALESCE(seen,0)=0")
+    db.commit()
+    return jsonify(ok=True)
 
 
 @app.route("/api/admin/update-user", methods=["POST"])
