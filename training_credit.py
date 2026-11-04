@@ -1211,6 +1211,238 @@ def api_training_dispute_resolve():
     return jsonify(ok=False, msg="Pick approve or reject."), 400
 
 
+@tc_bp.route("/api/training/my-trainers")
+@_login_only
+def api_training_my_trainers():
+    """For the signed-in LEARNER: their completed modules, each with the trainer
+    they've confirmed (if any). Powers the 'Who trained you?' confirmation screen.
+    Lets the learner make their trainer pick deliberate instead of a rating
+    side-effect."""
+    _ensure()
+    u = _current_user()
+    db = _get_db()
+    # completed modules for this learner
+    comp = [r["module_id"] for r in db.execute(
+        "SELECT DISTINCT module_id FROM module_completions WHERE emp_id=?", (u["emp_id"],)).fetchall()]
+    if not comp:
+        return jsonify(ok=True, items=[], trainers=_trainer_list(db))
+    ph = ",".join(["?"] * len(comp))
+    mods = db.execute(
+        "SELECT id, title, kind FROM content_modules WHERE id IN (" + ph + ") ORDER BY kind, sort_order, id", tuple(comp)
+    ).fetchall()
+    # the learner's current trainer pick per module (from the rating row)
+    picked = {}
+    try:
+        for r in db.execute(
+            "SELECT module_id, trainer_id FROM training_ratings "
+            "WHERE emp_id=? AND target_type='module' AND module_id IS NOT NULL", (u["emp_id"],)).fetchall():
+            if r["trainer_id"]:
+                picked[r["module_id"]] = r["trainer_id"]
+    except Exception:
+        pass
+    names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+    items = []
+    for m in mods:
+        tid = picked.get(m["id"])
+        items.append({
+            "module_id": m["id"], "module": m["title"], "kind": m["kind"] or "",
+            "trainer_id": tid or "", "trainer_name": (names.get(tid, "") if tid else ""),
+            "confirmed": bool(tid),
+        })
+    return jsonify(ok=True, items=items, trainers=_trainer_list(db))
+
+
+def _trainer_list(db):
+    return [{"emp_id": r["emp_id"], "name": r["name"], "designation": r["designation"] or ""}
+            for r in db.execute("SELECT emp_id, name, designation FROM users "
+                                "WHERE role IN ('instructor','admin') AND status='approved' ORDER BY name").fetchall()]
+
+
+@tc_bp.route("/api/training/my-confirm", methods=["POST"])
+@_login_only
+def api_training_my_confirm():
+    """The LEARNER confirms who trained them on a module. Saves the trainer onto
+    their rating row (creating a minimal one if none) and creates a PROVISIONAL
+    delivery (same 48h auto-credit path as the rating popup). Deliberate, explicit
+    version of the trainer pick."""
+    _ensure()
+    u = _current_user()
+    d = request.get_json(force=True)
+    try:
+        mid = int(d.get("module_id"))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, msg="Bad module."), 400
+    tid = (d.get("trainer_id") or "").strip()
+    if not tid:
+        return jsonify(ok=False, msg="Please pick the trainer who trained you."), 400
+    db = _get_db()
+    # must be a real trainer
+    if not db.execute("SELECT 1 FROM users WHERE emp_id=? AND role IN ('instructor','admin')", (tid,)).fetchone():
+        return jsonify(ok=False, msg="Pick a valid trainer."), 400
+    # must be a module the learner actually completed
+    if not db.execute("SELECT 1 FROM module_completions WHERE emp_id=? AND module_id=?", (u["emp_id"], mid)).fetchone():
+        return jsonify(ok=False, msg="You haven't completed this module."), 400
+
+    kr = db.execute("SELECT kind FROM content_modules WHERE id=?", (mid,)).fetchone()
+    mkind = (kr["kind"] if kr else None)
+    now = _now()
+
+    # upsert the trainer onto the learner's rating row (create a minimal one if none)
+    try:
+        ex = db.execute("SELECT id FROM training_ratings WHERE emp_id=? AND module_id=?", (u["emp_id"], mid)).fetchone()
+        if ex:
+            db.execute("UPDATE training_ratings SET trainer_id=? WHERE id=?", (tid, ex["id"]))
+        else:
+            db.execute("INSERT INTO training_ratings (emp_id, target_type, module_id, trainer_id, created_at) "
+                       "VALUES (?,?,?,?,?)", (u["emp_id"], "module", mid, tid, now))
+    except Exception:
+        pass
+
+    # create / refresh the provisional delivery (don't disturb approved/disputed)
+    try:
+        exd = db.execute("SELECT id, status FROM training_delivery WHERE learner_id=? AND module_id=? AND trainer_id=?",
+                         (u["emp_id"], mid, tid)).fetchone()
+        if exd:
+            if exd["status"] == "provisional":
+                db.execute("UPDATE training_delivery SET created_at=?, kind=? WHERE id=?", (now, mkind, exd["id"]))
+        else:
+            # remove any OTHER provisional pick for this learner+module (they changed their mind)
+            db.execute("DELETE FROM training_delivery WHERE learner_id=? AND module_id=? AND status='provisional' AND trainer_id<>?",
+                       (u["emp_id"], mid, tid))
+            db.execute("INSERT INTO training_delivery (trainer_id, learner_id, module_id, kind, status, created_by, created_at) "
+                       "VALUES (?,?,?,?,?,?,?)", (tid, u["emp_id"], mid, mkind, "provisional", u["emp_id"], now))
+    except Exception:
+        pass
+    db.commit()
+    nm = db.execute("SELECT name FROM users WHERE emp_id=?", (tid,)).fetchone()
+    return jsonify(ok=True, msg="Thanks — recorded " + ((nm["name"] if nm else tid)) + " as your trainer.")
+
+
+def _range_from(rng):
+    """Start date (YYYY-MM-DD) for a range keyword, based on UTC today."""
+    today = datetime.utcnow().date()
+    if rng == "today":
+        return today.isoformat()
+    if rng == "month":
+        return today.replace(day=1).isoformat()
+    if rng == "all":
+        return "0001-01-01"
+    return (today - timedelta(days=today.weekday())).isoformat()   # week (Mon)
+
+
+@tc_bp.route("/api/training/leaderboard")
+@_admin
+def api_training_leaderboard():
+    """Ranked trainers by CONFIRMED (approved) deliveries in a period, with the
+    learners reached and an induction/training split, plus a 6-week trend of
+    weekly confirmed counts. range = week | month | all (default month)."""
+    _ensure()
+    _promote_due_provisionals(_get_db())
+    db = _get_db()
+    rng = (request.args.get("range") or "month").strip().lower()
+    if rng not in ("week", "month", "all"):
+        rng = "month"
+    d_from = _range_from(rng)
+    names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+
+    stats = {}
+    for r in db.execute(
+        "SELECT trainer_id, learner_id, kind FROM training_delivery "
+        "WHERE status='approved' AND substr(COALESCE(approved_at, created_at),1,10) >= ?", (d_from,)).fetchall():
+        s = stats.setdefault(r["trainer_id"], {"deliveries": 0, "learners": set(), "induction": 0, "training": 0})
+        s["deliveries"] += 1
+        s["learners"].add(r["learner_id"])
+        if r["kind"] == "induction":
+            s["induction"] += 1
+        elif r["kind"] == "training":
+            s["training"] += 1
+    board = [{
+        "trainer_id": tid, "trainer": names.get(tid, tid),
+        "deliveries": s["deliveries"], "learners": len(s["learners"]),
+        "induction": s["induction"], "training": s["training"],
+    } for tid, s in stats.items()]
+    board.sort(key=lambda x: (-x["deliveries"], -x["learners"], x["trainer"] or ""))
+    for i, b in enumerate(board):
+        b["rank"] = i + 1
+
+    # 6-week trend: weekly confirmed-delivery counts (all trainers), oldest first
+    trend = []
+    today = datetime.utcnow().date()
+    this_mon = today - timedelta(days=today.weekday())
+    for wk in range(5, -1, -1):
+        wstart = this_mon - timedelta(weeks=wk)
+        wend = wstart + timedelta(days=6)
+        row = db.execute(
+            "SELECT COUNT(*) c FROM training_delivery WHERE status='approved' "
+            "AND substr(COALESCE(approved_at, created_at),1,10) >= ? AND substr(COALESCE(approved_at, created_at),1,10) <= ?",
+            (wstart.isoformat(), wend.isoformat())).fetchone()
+        trend.append({"week": wstart.strftime("%d %b"), "count": (row["c"] if row else 0)})
+
+    return jsonify(ok=True, range=rng, date_from=d_from, board=board, trend=trend)
+
+
+@tc_bp.route("/api/training/weekly-summary")
+@_admin
+def api_training_weekly_summary():
+    """A 'this week' digest for the admin: new confirmed credits this week, open
+    conflicts & disputes, trainers with zero confirmed activity this week, and
+    learners who finished modules but haven't confirmed a trainer."""
+    _ensure()
+    db = _get_db()
+    _promote_due_provisionals(db)
+    names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+    wk_from = _range_from("week")
+
+    # new confirmed credits this week
+    new_credits = (db.execute(
+        "SELECT COUNT(*) c FROM training_delivery WHERE status='approved' "
+        "AND substr(COALESCE(approved_at, created_at),1,10) >= ?", (wk_from,)).fetchone() or {"c": 0})["c"]
+
+    # open disputes
+    disputes = (db.execute("SELECT COUNT(*) c FROM training_disputes WHERE status='open'").fetchone() or {"c": 0})["c"]
+
+    # provisional (auto-confirming) count
+    provisional = (db.execute("SELECT COUNT(*) c FROM training_delivery WHERE status='provisional'").fetchone() or {"c": 0})["c"]
+
+    # conflicts: learner pick != any approved delivery (reuse the simple rule)
+    learner_pick = {}
+    for r in db.execute("SELECT emp_id, module_id, trainer_id FROM training_ratings "
+                        "WHERE target_type='module' AND module_id IS NOT NULL AND trainer_id IS NOT NULL AND trainer_id<>''").fetchall():
+        learner_pick[(r["emp_id"], r["module_id"])] = r["trainer_id"]
+    approved_sets = {}
+    for r in db.execute("SELECT learner_id, module_id, trainer_id FROM training_delivery WHERE status='approved' AND module_id IS NOT NULL").fetchall():
+        approved_sets.setdefault((r["learner_id"], r["module_id"]), set()).add(r["trainer_id"])
+    conflicts = 0
+    for k, tid in learner_pick.items():
+        trs = approved_sets.get(k)
+        if trs and tid not in trs:
+            conflicts += 1
+
+    # all trainers, and which had 0 confirmed activity this week
+    all_trainers = [r["emp_id"] for r in db.execute(
+        "SELECT emp_id FROM users WHERE role IN ('instructor','admin') AND status='approved'").fetchall()]
+    active_ids = {r["trainer_id"] for r in db.execute(
+        "SELECT DISTINCT trainer_id FROM training_delivery WHERE status='approved' "
+        "AND substr(COALESCE(approved_at, created_at),1,10) >= ?", (wk_from,)).fetchall()}
+    idle = [{"trainer_id": t, "trainer": names.get(t, t)} for t in all_trainers if t not in active_ids]
+    idle.sort(key=lambda x: x["trainer"] or "")
+
+    # learners who completed a module but haven't confirmed its trainer
+    unconfirmed = 0
+    try:
+        picked_keys = set(learner_pick.keys())
+        for r in db.execute("SELECT DISTINCT emp_id, module_id FROM module_completions").fetchall():
+            if (r["emp_id"], r["module_id"]) not in picked_keys:
+                unconfirmed += 1
+    except Exception:
+        unconfirmed = 0
+
+    return jsonify(ok=True, week_from=wk_from, new_credits=new_credits,
+                   disputes=disputes, conflicts=conflicts, provisional=provisional,
+                   idle_trainers=idle, learners_unconfirmed=unconfirmed,
+                   total_trainers=len(all_trainers), active_trainers=len(active_ids))
+
+
 @tc_bp.route("/api/training/by-learner")
 @_staff
 def api_training_by_learner():
