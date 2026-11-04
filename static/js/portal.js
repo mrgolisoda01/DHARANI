@@ -618,12 +618,14 @@ function asMaybeResume(){
 }
 
 async function loadAssessments(force){
-  // GUARD: if a trainee is mid-exam, never silently drop them back to the list.
-  // Only an explicit action (Start/Submit/Back button) passes force=true.
-  if(AS_CUR && !AS_SUBMITTING && force !== true){
+  // GUARD: if a trainee is genuinely mid-exam (questions loaded), never silently
+  // drop them back to the list. But only when there are real questions — never
+  // trap them on a blank quiz. Only an explicit action passes force=true.
+  if(AS_CUR && AS_QS && AS_QS.length && !AS_SUBMITTING && force !== true){
     showAsView('quiz');   // keep them in their exam
     return;
   }
+  AS_CUR = null;   // clear any broken/empty exam state so the list shows cleanly
   clearInterval(AS_TIMER);   // leaving the exam: stop its timer so it can't auto-submit later
   showAsView('list');
   const box = $('asListBox');
@@ -632,16 +634,22 @@ async function loadAssessments(force){
     const list = (d && d.assessments) || [];
     if(list.length===0){ box.innerHTML = '<div class="empty">No assessments are assigned to you yet.</div>'; return; }
     box.innerHTML = list.map(a=>{
+      const ready = (a.ready !== false);   // backend sends ready:false when the question pool is empty
       const done = a.passed
         ? '<span class="badge b-pass">Passed '+(a.best!=null?a.best+'%':'')+'</span>'
         : (a.best!=null ? '<span class="badge b-todo">Best '+a.best+'% — retry</span>' : '<span class="badge b-todo">Not attempted</span>');
       const timer = a.time_limit>0 ? a.time_limit+' min' : 'No time limit';
+      const notReady = !ready
+        ? '<div class="meta" style="margin-top:4px;color:#c98a00;font-weight:600">⚠ Not ready yet — no questions added</div>' : '';
+      const btn = ready
+        ? `<button class="btn btn-pri" onclick="startAssessment(${a.id})">${a.passed?'Retake':'Start'}</button>`
+        : `<button class="btn btn-sec" disabled style="opacity:.55;cursor:not-allowed">Not ready</button>`;
       return `<div class="as-card">
         <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
           <div><h4>${esc(a.title)} ${done}</h4>
             <div class="meta">${esc(a.description||'')}</div>
-            <div class="meta" style="margin-top:6px">${a.num_questions} questions · Pass ${a.pass_percent}% · ${timer}</div></div>
-          <button class="btn btn-pri" onclick="startAssessment(${a.id})">${a.passed?'Retake':'Start'}</button>
+            <div class="meta" style="margin-top:6px">${a.num_questions} questions · Pass ${a.pass_percent}% · ${timer}</div>${notReady}</div>
+          ${btn}
         </div></div>`;
     }).join('');
   }catch(e){ box.innerHTML = '<div class="empty">Could not load assessments.</div>'; }
