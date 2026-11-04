@@ -3859,10 +3859,11 @@ def api_my_assessments():
             "SELECT MAX(percent) p, MAX(passed) passed FROM assessment_results "
             "WHERE assessment_id=? AND emp_id=?", (a["id"], u["emp_id"])
         ).fetchone()
+        pool = db.execute("SELECT COUNT(*) c FROM questions WHERE assessment_id=?", (a["id"],)).fetchone()["c"]
         out.append({
             "id": a["id"], "title": a["title"], "description": a["description"],
             "num_questions": a["num_questions"], "pass_percent": a["pass_percent"],
-            "time_limit": a["time_limit"],
+            "time_limit": a["time_limit"], "pool": pool, "ready": (pool > 0),
             "best": best["p"] if best and best["p"] is not None else None,
             "passed": bool(best["passed"]) if best and best["passed"] else False
         })
@@ -3885,6 +3886,11 @@ def api_start_assessment():
 
     qs = db.execute("SELECT * FROM questions WHERE assessment_id=?", (aid,)).fetchall()
     qs = list(qs)
+    # Guard: an assessment with NO questions must not open as a blank exam with a
+    # running timer. Tell the learner it's not ready instead.
+    if not qs:
+        return jsonify(ok=False,
+                       msg="This assessment has no questions yet. Please contact your admin / trainer — it isn't ready to take."), 400
     _random.shuffle(qs)
     take = qs[: a["num_questions"]]
 
