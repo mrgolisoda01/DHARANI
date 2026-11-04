@@ -1492,8 +1492,17 @@ def api_admin_resolve_action():
         parsed2 = []
         if mode in ("add", "replace"):
             reader2 = csv.DictReader(io.StringIO(pay.get("csv") or ""))
+
+            def _cell2(v):
+                # a surplus CSV column comes back as a list, a missing one as None
+                if v is None:
+                    return ""
+                if isinstance(v, (list, tuple)):
+                    v = " ".join(str(x) for x in v if x is not None)
+                return str(v).strip()
+
             for raw in reader2:
-                row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+                row = {(_cell2(k)).lower(): _cell2(v) for k, v in raw.items() if k is not None}
                 q = row.get("question", "")
                 aa = row.get("option_a") or row.get("opt_a") or row.get("a", "")
                 bb = row.get("option_b") or row.get("opt_b") or row.get("b", "")
@@ -2618,8 +2627,15 @@ def api_admin_bulk_add():
     reader = csv.DictReader(io.StringIO(csv_text))
     added, skipped, errors = 0, 0, []
 
+    def _cellu(v):
+        if v is None:
+            return ""
+        if isinstance(v, (list, tuple)):
+            v = " ".join(str(x) for x in v if x is not None)
+        return str(v).strip()
+
     for i, raw in enumerate(reader, start=2):
-        row = { (k or "").strip().lower(): (v or "").strip() for k, v in raw.items() }
+        row = { (_cellu(k)).lower(): _cellu(v) for k, v in raw.items() if k is not None }
         name = row.get("name", "")
         emp_id = row.get("emp_id") or row.get("employee_id") or row.get("emp id", "")
         phone = row.get("phone", "")
@@ -3809,10 +3825,18 @@ def api_admin_pending_questions_preview():
 
     mode = pay.get("mode", "add")
     items = []
+
+    def _cellq(v):
+        if v is None:
+            return ""
+        if isinstance(v, (list, tuple)):
+            v = " ".join(str(x) for x in v if x is not None)
+        return str(v).strip()
+
     if mode in ("add", "replace"):
         reader = csv.DictReader(io.StringIO(pay.get("csv") or ""))
         for raw in reader:
-            row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+            row = {(_cellq(k)).lower(): _cellq(v) for k, v in raw.items() if k is not None}
             q = row.get("question", "")
             aa = row.get("option_a") or row.get("opt_a") or row.get("a", "")
             bb = row.get("option_b") or row.get("opt_b") or row.get("b", "")
