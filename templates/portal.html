@@ -68,6 +68,8 @@
   .placeholder{background:#fff;border:1px dashed var(--mg-line);border-radius:12px;padding:40px 20px;text-align:center;color:var(--muted)}
   .placeholder .ic{font-size:40px;margin-bottom:10px}
   /* quiz (assessment engine) */
+  .as-close{flex:none;background:#fff;border:1.5px solid var(--mg-line);color:#444;border-radius:9px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .as-close:hover{background:#fbe9e7;border-color:var(--mg-red,#d64531);color:var(--mg-red,#d64531)}
   .qcard{background:#fff;border:1px solid var(--mg-line);border-radius:12px;padding:18px;margin-bottom:12px}
   .qtext{font-size:15px;font-weight:600;margin:4px 0 12px}
   .opt2{display:block;border:1.5px solid var(--mg-line);border-radius:10px;padding:11px 13px;margin-bottom:8px;cursor:pointer;font-size:14px}
@@ -224,8 +226,9 @@
       </div>
       <!-- quiz -->
       <div id="as-quiz" class="hide">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div><b id="asQuizTitle">—</b></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
+          <button type="button" class="as-close" onclick="closeAssessment()" title="Close assessment" aria-label="Close assessment">✕ Close</button>
+          <div style="flex:1;min-width:0;text-align:center"><b id="asQuizTitle" style="font-size:14px">—</b></div>
           <div class="timer" id="asTimer">—</div>
         </div>
         <div id="asQuizBody"></div>
