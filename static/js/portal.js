@@ -633,22 +633,31 @@ async function loadAssessments(force){
     const d = await (await fetch('/api/my-assessments')).json();
     const list = (d && d.assessments) || [];
     if(list.length===0){ box.innerHTML = '<div class="empty">No assessments are assigned to you yet.</div>'; return; }
+    // Is there a saved, still-valid in-progress exam? If so, its assessment gets
+    // a "Resume" button instead of "Start", so closing never loses their work.
+    const prog = asReadState();
+    const progId = (prog && prog.cur && prog.qs && prog.qs.length) ? prog.cur.id : null;
     box.innerHTML = list.map(a=>{
       const ready = (a.ready !== false);   // backend sends ready:false when the question pool is empty
+      const resumable = (progId!=null && String(progId)===String(a.id));
       const done = a.passed
         ? '<span class="badge b-pass">Passed '+(a.best!=null?a.best+'%':'')+'</span>'
         : (a.best!=null ? '<span class="badge b-todo">Best '+a.best+'% — retry</span>' : '<span class="badge b-todo">Not attempted</span>');
       const timer = a.time_limit>0 ? a.time_limit+' min' : 'No time limit';
       const notReady = !ready
         ? '<div class="meta" style="margin-top:4px;color:#c98a00;font-weight:600">⚠ Not ready yet — no questions added</div>' : '';
-      const btn = ready
-        ? `<button class="btn btn-pri" onclick="startAssessment(${a.id})">${a.passed?'Retake':'Start'}</button>`
-        : `<button class="btn btn-sec" disabled style="opacity:.55;cursor:not-allowed">Not ready</button>`;
+      const inProg = resumable
+        ? '<div class="meta" style="margin-top:4px;color:#0a7d53;font-weight:600">⏳ In progress — resume to continue</div>' : '';
+      const btn = !ready
+        ? `<button class="btn btn-sec" disabled style="opacity:.55;cursor:not-allowed">Not ready</button>`
+        : (resumable
+            ? `<button class="btn btn-pri" onclick="asMaybeResume()">Resume</button>`
+            : `<button class="btn btn-pri" onclick="startAssessment(${a.id})">${a.passed?'Retake':'Start'}</button>`);
       return `<div class="as-card">
         <div style="display:flex;justify-content:space-between;align-items:start;gap:12px;flex-wrap:wrap">
           <div><h4>${esc(a.title)} ${done}</h4>
             <div class="meta">${esc(a.description||'')}</div>
-            <div class="meta" style="margin-top:6px">${a.num_questions} questions · Pass ${a.pass_percent}% · ${timer}</div>${notReady}</div>
+            <div class="meta" style="margin-top:6px">${a.num_questions} questions · Pass ${a.pass_percent}% · ${timer}</div>${notReady}${inProg}</div>
           ${btn}
         </div></div>`;
     }).join('');
@@ -659,6 +668,27 @@ function showAsView(which){
   $('as-list').classList.toggle('hide', which!=='list');
   $('as-quiz').classList.toggle('hide', which!=='quiz');
   $('as-result').classList.toggle('hide', which!=='result');
+}
+
+// Exit a running assessment back to the list.
+//  - Nothing answered yet  -> close straight away (an accidental tap, no nag),
+//    and drop the empty in-progress copy.
+//  - At least one answered  -> confirm first. Their answers are saved to
+//    localStorage, so the exam can be resumed exactly where they left off.
+// For a timed exam the saved copy records WHEN it was saved; on resume the real
+// elapsed time is subtracted (see asMaybeResume), so Close can't be used to
+// pause the clock or dodge a hard question.
+function closeAssessment(){
+  var answered = AS_ANS ? Object.keys(AS_ANS).length : 0;
+  if(answered > 0){
+    if(!confirm("Close this assessment? Your answers so far are saved — you can resume where you left off.")) return;
+    asSaveState();                 // persist progress (incl. savedAt) so a re-open resumes
+  } else {
+    asClearState();                // nothing answered — drop the empty in-progress copy
+  }
+  // loadAssessments(true) clears AS_CUR and stops the running timer for us, then
+  // shows the list so they can open the correct assessment.
+  loadAssessments(true);
 }
 
 async function startAssessment(id){
