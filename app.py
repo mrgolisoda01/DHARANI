@@ -3904,6 +3904,72 @@ def api_admin_assessment_results():
     return jsonify(ok=True, results=[dict(r) for r in rows])
 
 
+@app.route("/api/admin/delete-result", methods=["POST"])
+@login_required
+def api_admin_delete_result():
+    """Admin-only: delete ONE assessment attempt by its id. Used to clear a bad
+    result (e.g. a bogus 1-question 100% pass) straight from the portal, so the
+    learner shows fresh / not-attempted for that assessment again. Also removes
+    that attempt's per-question answer_details rows if present."""
+    u = current_user()
+    if u is None or u["role"] != "admin":
+        return jsonify(ok=False, msg="Only an admin can delete results."), 403
+    data = request.get_json(silent=True) or {}
+    rid = data.get("result_id")
+    if rid in (None, "", "undefined"):
+        return jsonify(ok=False, msg="No result id."), 400
+    db = get_db()
+    row = db.execute(
+        "SELECT r.*, u.name FROM assessment_results r "
+        "LEFT JOIN users u ON u.emp_id=r.emp_id WHERE r.id=?", (rid,)
+    ).fetchone()
+    if not row:
+        return jsonify(ok=False, msg="Result not found."), 404
+    # drop the per-question detail rows for this attempt (table may not exist on
+    # older DBs — ignore if so), then the result itself.
+    try:
+        db.execute("DELETE FROM answer_details WHERE result_id=?", (rid,))
+    except Exception:
+        pass
+    db.execute("DELETE FROM assessment_results WHERE id=?", (rid,))
+    db.commit()
+    log_activity("deleted assessment result", "assessment",
+                 str(row["assessment_id"]),
+                 details=f"{row['name'] or row['emp_id']} · {row['percent']}% ({row['score']}/{row['total']})")
+    return jsonify(ok=True, msg="Result deleted.")
+
+
+@app.route("/api/admin/reset-learner-assessment", methods=["POST"])
+@login_required
+def api_admin_reset_learner_assessment():
+    """Admin-only: delete ALL of one learner's attempts for ONE assessment, so
+    they start completely fresh. Certificates are left untouched."""
+    u = current_user()
+    if u is None or u["role"] != "admin":
+        return jsonify(ok=False, msg="Only an admin can reset a learner."), 403
+    data = request.get_json(silent=True) or {}
+    aid = data.get("assessment_id")
+    emp = (data.get("emp_id") or "").strip()
+    if aid in (None, "", "undefined") or not emp:
+        return jsonify(ok=False, msg="Missing assessment or employee."), 400
+    db = get_db()
+    ids = [r["id"] for r in db.execute(
+        "SELECT id FROM assessment_results WHERE assessment_id=? AND emp_id=?",
+        (aid, emp)).fetchall()]
+    if not ids:
+        return jsonify(ok=False, msg="No attempts to reset."), 404
+    for rid in ids:
+        try:
+            db.execute("DELETE FROM answer_details WHERE result_id=?", (rid,))
+        except Exception:
+            pass
+    db.execute("DELETE FROM assessment_results WHERE assessment_id=? AND emp_id=?", (aid, emp))
+    db.commit()
+    log_activity("reset learner assessment", "assessment", str(aid),
+                 details=f"{emp} · cleared {len(ids)} attempt(s)")
+    return jsonify(ok=True, msg=f"Cleared {len(ids)} attempt(s). Learner is fresh.")
+
+
 def _fmt_dt(iso):
     """Human-friendly date+time from an ISO string."""
     try:
