@@ -204,7 +204,7 @@ async function viewResults(id, title){
            <button class="btn" onclick="downloadReport(${id},'csv')">⬇ Detailed CSV</button>
          </div>
        </div>
-       <div style="font-size:12px;color:var(--mg-muted);margin-top:4px">Click "View" on any row to see that person's question-by-question answers.</div>
+       <div style="font-size:12px;color:var(--mg-muted);margin-top:4px">Click "View" to see the answers, or 🗑 to delete a wrong/bogus result (admin only — the learner then shows fresh).</div>
        <div class="tbl-wrap" style="margin-top:10px">
         <table><thead><tr><th>Name</th><th>Emp ID</th><th>Designation</th><th>Score</th><th>Time</th><th>Result</th><th>Date</th><th></th></tr></thead>
         <tbody>` +
@@ -214,11 +214,35 @@ async function viewResults(id, title){
           <td style="font-size:12px;color:var(--mg-muted)">${fmtMins(x.time_taken)}</td>
           <td>${x.passed?'<span class="pill p-approved">Pass</span>':'<span class="pill p-pending">Fail</span>'}</td>
           <td style="font-size:12px;color:var(--mg-muted)">${fmtA(x.taken_at)}</td>
-          <td><button class="btn" style="padding:3px 10px" onclick="viewAttempt(${x.id})">View</button></td>
+          <td style="white-space:nowrap">
+            <button class="btn" style="padding:3px 10px" onclick="viewAttempt(${x.id})">View</button>
+            <button class="btn" style="padding:3px 9px;color:var(--mg-red,#d64531);border-color:var(--mg-red,#d64531)" title="Delete this result" onclick="deleteResult(${x.id}, ${JSON.stringify(x.name||x.emp_id)}, ${JSON.stringify(String(x.emp_id))})">🗑</button>
+          </td>
         </tr>`).join("") +
         `</tbody></table></div>`;
   }
   $a("resultsOv").classList.add("show");
+}
+
+// Admin-only: delete ONE bad/bogus result straight from the portal.
+async function deleteResult(resultId, who, empId){
+  const ctx = window._lastResults || {};
+  if(!confirm('Delete this result for '+who+'?\n\nThis removes just this one attempt and cannot be undone.')) return;
+  const d = await apiA("/api/admin/delete-result", {result_id: resultId});
+  if(!d.ok){ toastA(d.msg || "Could not delete."); return; }
+  toastA(d.msg || "Result deleted.");
+  // refresh the results table for the same assessment
+  if(ctx.id){ viewResults(ctx.id, ctx.title); }
+  // offer to clear this learner's OTHER attempts for this assessment too, so
+  // they're completely fresh (handy when a stub left several junk rows).
+  if(ctx.id && empId){
+    setTimeout(function(){
+      if(confirm('Also clear ALL of '+who+'’s other attempts for this assessment, so they start completely fresh?')){
+        apiA("/api/admin/reset-learner-assessment", {assessment_id: ctx.id, emp_id: empId})
+          .then(function(r){ toastA((r && r.msg) || "Done."); if(ctx.id) viewResults(ctx.id, ctx.title); });
+      }
+    }, 150);
+  }
 }
 
 function fmtMins(sec){
