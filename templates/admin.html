@@ -83,8 +83,13 @@
 
     /* ===== Employees tab: full width, no wrapping, pro action buttons ===== */
     #tabEmp{max-width:none;width:auto;padding-left:28px;padding-right:28px}
-    #tabEmp .tbl-wrap{overflow-x:auto}
+    /* Scroll box capped to the screen height, so the sideways (left/right)
+       scrollbar sits at the bottom of the VISIBLE window — reachable from
+       anywhere in the list, no need to scroll to the last row first. */
+    #tabEmp .tbl-wrap{overflow:auto;max-height:calc(100vh - 230px)}
     #tabEmp table{min-width:0;width:100%;table-layout:auto}
+    /* keep the column headers pinned while scrolling the list down */
+    #tabEmp thead th{position:sticky;top:0;z-index:5;background:#f3f6f9}
     /* keep key columns on one line */
     #tabEmp th,#tabEmp td{white-space:nowrap;vertical-align:middle}
     /* let Name/Designation breathe but not wrap awkwardly */
@@ -113,6 +118,8 @@
       #tabEmp{padding-left:14px;padding-right:14px}
       #tabEmp .abtn span.lbl{display:none} /* icons only on small screens */
       #tabEmp .abtn{padding:5px 7px}
+      /* a touch more height on phones so the list window is comfortable */
+      #tabEmp .tbl-wrap{max-height:calc(100vh - 200px)}
     }
     /* modal */
     .ov{position:fixed;inset:0;background:rgba(8,30,40,.45);display:none;align-items:flex-start;justify-content:center;padding:18px;z-index:50;overflow-y:auto}
