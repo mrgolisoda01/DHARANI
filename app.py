@@ -633,6 +633,65 @@ def _reopen_ojt_for_reactivated(db, emp_id):
         pass
 
 
+def _reassign_reports_on_exit(db, emp_id):
+    """When a manager leaves (resigns or is removed), re-point everyone who
+    reported to them UP the real reporting chain to the next ACTIVE manager.
+
+    Walk-up rule (confirmed with the user):
+      - go to the leaving manager's own manager (reports_to);
+      - skip anyone who is resigned, removed/deleted, or has no manager set,
+        and keep climbing until an 'approved' (active) manager is found;
+      - if the chain runs out with no active manager, set reports_to = NULL so
+        the System Health 'no manager' check flags them for manual assignment.
+    A loop guard (seen-set) stops a self-referential chain (A->B->A) from
+    looping forever — it lands on NULL + flag in that case.
+    Best-effort: never let this break the resignation/removal itself.
+    """
+    try:
+        def _row(eid):
+            if not eid:
+                return None
+            return db.execute(
+                "SELECT emp_id, COALESCE(status,'') AS status, "
+                "COALESCE(reports_to,'') AS reports_to FROM users WHERE emp_id=?",
+                (eid,)
+            ).fetchone()
+
+        leaving = _row(emp_id)
+        # climb from the leaving manager's OWN manager upward
+        seen = {emp_id}
+        new_mgr = None
+        cur = (leaving["reports_to"] if leaving else "") or ""
+        while cur and cur not in seen:
+            seen.add(cur)
+            m = _row(cur)
+            if m is None:
+                break
+            if m["status"] == "approved":      # found an active manager
+                new_mgr = m["emp_id"]
+                break
+            cur = m["reports_to"] or ""        # resigned/removed/blank -> keep climbing
+
+        # everyone who currently reports to the leaving person
+        reports = db.execute(
+            "SELECT emp_id FROM users WHERE reports_to=?", (emp_id,)
+        ).fetchall()
+        if not reports:
+            return
+        for r in reports:
+            db.execute("UPDATE users SET reports_to=? WHERE emp_id=?",
+                       (new_mgr, r["emp_id"]))
+        try:
+            where = ("moved to " + new_mgr) if new_mgr else "left unassigned (flagged)"
+            log_activity("auto-reassigned reports", "user", emp_id,
+                         details=f"{len(reports)} report(s) {where} after exit")
+        except Exception:
+            pass
+    except Exception:
+        # hierarchy fix is best-effort; a failure here must not block the exit
+        pass
+
+
 def login_required(view):
     from functools import wraps
     @wraps(view)
@@ -1402,6 +1461,7 @@ def api_admin_resolve_action():
         if tgt and tgt["role"] != "admin":
             db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (act["target_id"],))
             _close_ojt_for_resigned(db, act["target_id"])
+            _reassign_reports_on_exit(db, act["target_id"])
         db.execute("UPDATE pending_actions SET status='approved' WHERE id=?", (aid,))
         db.commit()
         log_activity("approved resignation", "user", act["target_label"] or act["target_id"],
@@ -1612,6 +1672,7 @@ def api_admin_resolve_action():
                 _close_ojt_for_resigned(db, tid)
             except Exception:
                 pass
+            _reassign_reports_on_exit(db, tid)
     elif tt == "assessment":
         db.execute("DELETE FROM questions WHERE assessment_id=?", (tid,))
         db.execute("DELETE FROM assessment_results WHERE assessment_id=?", (tid,))
@@ -2207,6 +2268,7 @@ def api_admin_set_employment_status():
                 return jsonify(ok=False, msg="This is the last active admin — reassign admin rights first."), 400
         db.execute("UPDATE users SET status='resigned' WHERE emp_id=?", (emp_id,))
         _close_ojt_for_resigned(db, emp_id)
+        _reassign_reports_on_exit(db, emp_id)
         db.commit()
         log_activity("marked resigned", "user", target["name"])
         return jsonify(ok=True, msg=f"{target['name']} marked as resigned. Their history and certificates are kept.")
@@ -2273,6 +2335,7 @@ def api_admin_delete_user():
         _close_ojt_for_resigned(db, emp_id)
     except Exception:
         pass
+    _reassign_reports_on_exit(db, emp_id)
     db.commit()
     log_activity("removed employee", "user", target["name"])
     return jsonify(ok=True, msg="Employee removed. You can restore them from the Removed list.")
@@ -2366,6 +2429,7 @@ def api_admin_resign_user():
         _close_ojt_for_resigned(db, emp_id)
     except Exception:
         pass
+    _reassign_reports_on_exit(db, emp_id)
     db.commit()
     log_activity("marked resigned", "user", target["name"])
     return jsonify(ok=True, msg="Employee marked as resigned.")
