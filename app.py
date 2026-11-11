@@ -5354,6 +5354,12 @@ init_hierarchy(app, get_db, current_user)
 from analytics import init_analytics
 init_analytics(app, get_db, current_user)
 
+# ---------------------------------------------------------------
+#  Daily EOD report for the HR managers WhatsApp group (eod_report.py)
+# ---------------------------------------------------------------
+from eod_report import init_eod_report
+init_eod_report(app, get_db, current_user)
+
 
 # ---------------------------------------------------------------
 #  Start
