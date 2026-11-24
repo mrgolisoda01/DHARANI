@@ -1432,7 +1432,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         iBox.innerHTML = d.instructors.length ? d.instructors.map(i=>`
           <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--mg-line);font-size:13px">
             <span><b>${esc(i.name)}</b> · ${esc(i.emp_id)} <span style="color:var(--mg-muted)">(${esc(i.designation||'')})</span></span>
-            ${window.IS_ADMIN ? `<button class="btn" style="padding:4px 10px;color:var(--mg-green)" onclick="makeAdmin('${esc(i.emp_id)}')">Make admin</button>` : '<span style="font-size:11px;color:#9aa6ae">view only</span>'}
+            ${window.IS_ADMIN ? `<button class="btn" style="padding:4px 10px;color:var(--mg-blue)" onclick="makeAdmin('${esc(i.emp_id)}')">Make admin</button>` : '<span style="font-size:11px;color:#9aa6ae">view only</span>'}
           </div>`).join('') : '<div class="empty">No instructors yet.</div>';
       }catch(e){}
     }
