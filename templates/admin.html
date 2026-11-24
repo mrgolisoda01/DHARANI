@@ -92,6 +92,10 @@
     #tabEmp thead th{position:sticky;top:0;z-index:5;background:#f3f6f9}
     /* keep key columns on one line */
     #tabEmp th,#tabEmp td{white-space:nowrap;vertical-align:middle}
+    /* OJT trainee table: same side-scroll-from-anywhere + pinned header fix */
+    #tabOjt .tbl-wrap{overflow:auto;max-height:calc(100vh - 250px)}
+    #tabOjt .tbl-wrap thead th{position:sticky;top:0;z-index:5;background:#f3f6f9}
+    @media(max-width:760px){ #tabOjt .tbl-wrap{max-height:calc(100vh - 210px)} }
     /* let Name/Designation breathe but not wrap awkwardly */
     #tabEmp td:nth-child(1){white-space:nowrap;font-weight:600}
     #tabEmp td:nth-child(3),#tabEmp td:nth-child(4){white-space:nowrap}
