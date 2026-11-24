@@ -40,7 +40,7 @@ function moduleRow(m){
     ? '<span class="pill p-approved">Live</span>'
     : '<span class="pill p-pending">Pending approval</span>';
   const approveBtn = (m.status !== "live" && C_ISADMIN)
-    ? `<button class="btn" onclick="approveModule(${m.id})" style="color:var(--mg-green)">Approve</button>` : "";
+    ? `<button class="btn" onclick="approveModule(${m.id})" style="color:var(--mg-blue)">Approve</button>` : "";
   return `<div style="border:1px solid var(--mg-line);border-radius:10px;padding:13px;margin-bottom:10px;background:#fff">
     <div style="display:flex;justify-content:space-between;align-items:start;gap:10px;flex-wrap:wrap">
       <div>
@@ -130,7 +130,7 @@ function renderVideos(){
   const box = $c("vidList"); if(!box) return;
   box.innerHTML = C_VIDEOS.length ? C_VIDEOS.map(v=>{
     const statusPill = v.status === "live" ? '<span class="pill p-approved">Live</span>' : '<span class="pill p-pending">Pending</span>';
-    const approveBtn = (v.status !== "live" && C_ISADMIN) ? `<button class="btn" onclick="approveVideo(${v.id})" style="color:var(--mg-green)">Approve</button>` : "";
+    const approveBtn = (v.status !== "live" && C_ISADMIN) ? `<button class="btn" onclick="approveVideo(${v.id})" style="color:var(--mg-blue)">Approve</button>` : "";
     return `<div style="border:1px solid var(--mg-line);border-radius:10px;padding:13px;margin-bottom:10px;background:#fff">
       <div style="display:flex;justify-content:space-between;align-items:start;gap:10px;flex-wrap:wrap">
         <div><div style="font-weight:700">🎥 ${escC(v.title)} ${statusPill}</div>
@@ -255,7 +255,7 @@ function renderTracks(){
   if(TRACKS.length===0){ box.innerHTML = '<div class="empty">No certificate tracks yet.</div>'; return; }
   box.innerHTML = TRACKS.map(t=>{
     const statusPill = t.status==="live" ? '<span class="pill p-approved">Live</span>' : '<span class="pill p-pending">Pending approval</span>';
-    const approveBtn = (t.status!=="live" && C_ISADMIN) ? `<button class="btn" onclick="approveTrack(${t.id})" style="color:var(--mg-green)">Approve</button>` : "";
+    const approveBtn = (t.status!=="live" && C_ISADMIN) ? `<button class="btn" onclick="approveTrack(${t.id})" style="color:var(--mg-blue)">Approve</button>` : "";
     let req = [];
     if(t.require_modules) req.push("complete all "+t.kind+" modules");
     if(t.assessment_title) req.push("pass: "+escC(t.assessment_title));

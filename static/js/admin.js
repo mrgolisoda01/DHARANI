@@ -144,7 +144,7 @@ async function loadCommandCenter(){
 
   // quick jump + report buttons
   html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">'+
-    '<button onclick="window.location.href=\'/api/admin/leadership-summary.xlsx\'" style="background:#1d9e75;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">📥 Leadership summary (Excel)</button>'+
+    '<button onclick="window.location.href=\'/api/admin/leadership-summary.xlsx\'" style="background:#1f5fa9;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer">📥 Leadership summary (Excel)</button>'+
     '<button onclick="switchTab(\'appr\')" style="background:#12284B;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer">Review approvals →</button>'+
     '<button onclick="switchTab(\'tc\')" style="background:#fff;border:1px solid var(--mg-line);border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer">Trainer Credit →</button>'+
     '<button onclick="switchTab(\'ojt\')" style="background:#fff;border:1px solid var(--mg-line);border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer">OJT →</button>'+
@@ -584,7 +584,7 @@ async function loadPendingRequests(){
       </div>
       <div style="display:flex;gap:6px">
         ${previewBtn}
-        <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="resolveAction(${a.id},'approve')">${approveLabel}</button>
+        <button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="resolveAction(${a.id},'approve')">${approveLabel}</button>
         <button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="resolveAction(${a.id},'reject')">Reject</button>
       </div>
     </div>`;

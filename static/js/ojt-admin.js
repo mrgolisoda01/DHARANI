@@ -460,7 +460,7 @@
               '<textarea class="ojt-remark" placeholder="Trainer remark for this task" style="width:100%;box-sizing:border-box;font-size:12.5px;padding:6px;border:1px solid var(--mg-line);border-radius:6px;min-height:38px;font-family:inherit">' + esc(t.remark) + '</textarea>' +
               '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><label style="font-size:12px;color:#62707a">Score (0-100):</label>'+
                 '<input type="number" min="0" max="100" class="ojt-tscore" data-task="'+t.id+'" value="'+(t.score!==null&&t.score!==undefined?t.score:"")+'" placeholder="0-100" style="width:90px;font-size:13px;padding:5px;border:1px solid var(--mg-line);border-radius:6px">'+
-                '<button class="ojt-savescore" data-task="'+t.id+'" style="background:#1d9e75;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer">Save score</button></div>'+
+                '<button class="ojt-savescore" data-task="'+t.id+'" style="background:#1f5fa9;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer">Save score</button></div>'+
               '<div style="text-align:right;margin-top:5px"><button class="ojt-savetr" data-task="' + t.id + '" style="background:var(--mg-blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save remark</button></div>' +
             '</div>') : '';
           var editLink = active ? ' <button class="ojt-link ojt-editrow" data-task="' + t.id + '" style="font-size:11px">✎ remark / score</button>' : '';
@@ -510,7 +510,7 @@
               input + scoreBadge + overBtn +
               '</div>';
           }).join("") + '</div>' +
-          (active ? '<div style="text-align:right;margin-top:8px"><button class="ojt-saveact" data-day="' + day.day + '" data-date="' + day.date + '" style="background:#1d9e75;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save activity</button></div>' : '');
+          (active ? '<div style="text-align:right;margin-top:8px"><button class="ojt-saveact" data-day="' + day.day + '" data-date="' + day.date + '" style="background:#1f5fa9;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:12px;cursor:pointer">Save activity</button></div>' : '');
         }
         var af = acts.filter(function(a){ return (a.value!==null&&a.value!==undefined)||(a.done!==null&&a.done!==undefined)||(a.score!==null&&a.score!==undefined); }).length;
         var actStatus = acts.length ? '<span style="font-size:11px;font-weight:600;color:' + (af===acts.length?'#0f6b45':'#9aa6ae') + '">' + af + '/' + acts.length + ' filled</span>' : '';
@@ -540,7 +540,7 @@
               '<button class="ojt-submitday" data-day="' + day.day + '" data-resubmit="1" style="background:var(--mg-blue);color:#fff;border:none;border-radius:7px;padding:6px 15px;font-size:12.5px;cursor:pointer">Re-submit (update time)</button>' +
               '<button class="ojt-unsubmitday ojt-link" data-day="' + day.day + '" style="font-size:12px;color:#9e2b2b">Undo submit</button>'
             : '<span style="font-size:12.5px;color:#55636d">When the day\'s work is done, submit it for the trainee.</span>' +
-              '<button class="ojt-submitday" data-day="' + day.day + '" style="background:#1d9e75;color:#fff;border:none;border-radius:7px;padding:7px 18px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">✅ Submit this day</button>'
+              '<button class="ojt-submitday" data-day="' + day.day + '" style="background:#1f5fa9;color:#fff;border:none;border-radius:7px;padding:7px 18px;font-size:13px;font-weight:600;cursor:pointer;margin-left:auto">✅ Submit this day</button>'
           ) + '</div>' +
           '<div class="muted" style="font-size:11px;margin-top:6px">Submitting just marks the day finalised (with a time) — everything above stays editable.</div>';
         submitSec = sec(5, "Submit", subBody, "");

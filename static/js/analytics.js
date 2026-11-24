@@ -1090,7 +1090,7 @@
         '<div style="font-size:22px;margin-bottom:4px">' + r.icon + '</div>' +
         '<div style="font-weight:700;color:var(--mg-ink);font-size:14px">' + escAn(r.title) + '</div>' +
         '<div class="an-muted" style="margin:6px 0 12px;font-size:12px;line-height:1.5">' + escAn(r.desc) + '</div>' +
-        '<button class="an-pill" style="background:var(--mg-green,#1d9e75);color:#fff;border-color:var(--mg-green,#1d9e75)" ' +
+        '<button class="an-pill" style="background:var(--mg-blue,#1f5fa9);color:#fff;border-color:var(--mg-blue,#1f5fa9)" ' +
         'onclick="window.__anExport(\'' + r.kind + '\')">⬇ Download Excel</button>' +
         (r.dated ? '' : '<div class="an-muted" style="margin-top:6px;font-size:11px">Date range not applied (cumulative report)</div>') +
         '</div>';
