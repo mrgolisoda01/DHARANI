@@ -1343,7 +1343,11 @@ def api_training_leaderboard():
     if rng not in ("week", "month", "all"):
         rng = "month"
     d_from = _range_from(rng)
-    names = {r["emp_id"]: r["name"] for r in db.execute("SELECT emp_id, name FROM users").fetchall()}
+    # name + status for every user, so we can both label trainers and skip
+    # anyone who has left (deleted/resigned should never appear in the ranking).
+    _urows = db.execute("SELECT emp_id, name, COALESCE(status,'') AS status FROM users").fetchall()
+    names = {r["emp_id"]: r["name"] for r in _urows}
+    gone = {r["emp_id"] for r in _urows if r["status"] in ("deleted", "resigned")}
 
     stats = {}
     for r in db.execute(
@@ -1356,11 +1360,15 @@ def api_training_leaderboard():
             s["induction"] += 1
         elif r["kind"] == "training":
             s["training"] += 1
+    # Accounts kept OUT of the trainer ranking (admins who oversee, not compete).
+    # Dharani Kumar S (SAFB206) handles Solar and is not one of the ranked trainers.
+    LEADERBOARD_EXCLUDE = {"SAFB206"}
     board = [{
         "trainer_id": tid, "trainer": names.get(tid, tid),
         "deliveries": s["deliveries"], "learners": len(s["learners"]),
         "induction": s["induction"], "training": s["training"],
-    } for tid, s in stats.items()]
+    } for tid, s in stats.items()
+      if tid not in LEADERBOARD_EXCLUDE and tid not in gone]  # hide excluded + left trainers
     board.sort(key=lambda x: (-x["deliveries"], -x["learners"], x["trainer"] or ""))
     for i, b in enumerate(board):
         b["rank"] = i + 1
