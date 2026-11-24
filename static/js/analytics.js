@@ -870,7 +870,7 @@
       '</span></div>';
     h += '</div>'; // close selector card
 
-    // their feedback, grouped into course / module SECTIONS (comments first inside)
+    // their feedback, grouped into course / module SECTIONS (collapsible; comments first inside)
     var sections = {};
     g.rows.forEach(function (f) {
       var key = (f.type || "") + ":" + (f.about || "");
@@ -880,16 +880,34 @@
     var skeys = Object.keys(sections).sort(function (a, b) {
       return sections[b].rows.length - sections[a].rows.length;
     });
+    // prefix the key with the trainer id so each trainer's open/closed state is independent
     skeys.forEach(function (k) {
-      var s = sections[k];
-      var sp = _ratingParts(s.rows);
-      h += '<div class="an-sect"><h4>' + escAn(s.label) +
-        ' <span class="an-muted" style="font-weight:600">· ' + s.rows.length + ' feedback' +
-        (sp.length ? " · " + sp.join(" · ") : "") + '</span></h4>' +
-        _commentsFirst(s.rows).map(function (f) { return fbCardHTML(f, isAdmin, false); }).join("") +
-        '</div>';
+      h += fbCollapsibleSection("t:" + sel + ":" + k, sections[k], isAdmin);
     });
     return h;
+  }
+
+  // one collapsible course/module section: a single-row header with the ▸/▾
+  // arrow on the RIGHT; click the row to drop down its feedback (collapsed by default).
+  function fbCollapsibleSection(stateKey, s, isAdmin) {
+    AN._fbOpenCourse = AN._fbOpenCourse || {};
+    var open = !!AN._fbOpenCourse[stateKey];
+    var sp = _ratingParts(s.rows);
+    var safeKey = stateKey.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    var hh = '<div class="an-sect">' +
+      '<h4 style="cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;margin:0" ' +
+        'onclick="window.__anFbToggleCourse(\'' + safeKey + '\')">' +
+      '<span style="flex:1;min-width:0">' + escAn(s.label) +
+        ' <span class="an-muted" style="font-weight:600">· ' + s.rows.length + ' feedback' +
+        (sp.length ? " · " + sp.join(" · ") : "") + '</span></span>' +
+      '<span style="flex:none;font-size:15px;color:#64707a">' + (open ? "▾" : "▸") + '</span>' +
+      '</h4>';
+    if (open) {
+      hh += '<div style="margin-top:10px">' +
+        _commentsFirst(s.rows).map(function (f) { return fbCardHTML(f, isAdmin, false); }).join("") +
+        '</div>';
+    }
+    return hh + '</div>';
   }
 
   window.__anFbExportTrainer = function () {
@@ -923,20 +941,8 @@
     });
     var h = '';
     keys.forEach(function (k) {
-      var g = groups[k];
-      var parts = _ratingParts(g.rows);
-      var open = !!AN._fbOpenCourse[k];
-      h += '<div class="an-sect">' +
-        '<h4 style="cursor:pointer;user-select:none" onclick="window.__anFbToggleCourse(\'' +
-          k.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + '\')">' +
-        '<span style="display:inline-block;width:16px">' + (open ? "▾" : "▸") + '</span>' +
-        escAn(g.label) +
-        ' <span class="an-muted" style="font-weight:600">· ' + g.rows.length + ' feedback' +
-        (parts.length ? " · " + parts.join(" · ") : "") + '</span></h4>';
-      if (open) {
-        h += _commentsFirst(g.rows).map(function (f) { return fbCardHTML(f, isAdmin, false); }).join("");
-      }
-      h += '</div>';
+      // "c:" prefix keeps this tab's open/closed state separate from the trainer view
+      h += fbCollapsibleSection("c:" + k, groups[k], isAdmin);
     });
     return h;
   }
