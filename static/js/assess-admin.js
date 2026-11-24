@@ -339,12 +339,11 @@ async function fillLinkedModuleDropdown(){
 // Build the HTML for a list of question rows. Each row keeps its ORIGINAL
 // number (its position in the full EDIT_A_QS list) so "Q3" stays "Q3" even
 // when the list is filtered by the search box.
-function questionRowsHtml(list){
-  if(!list || !list.length) return '<div class="empty" style="font-size:12.5px">No questions match your search.</div>';
-  return list.map(q=>{
-    const i = EDIT_A_QS.indexOf(q);           // original index -> stable Q number
-    const n = (i >= 0 ? i : 0) + 1;
-    return `
+// one question card
+function oneQCardHtml(q){
+  const i = EDIT_A_QS.indexOf(q);           // original index -> stable Q number
+  const n = (i >= 0 ? i : 0) + 1;
+  return `
     <div style="border:1px solid var(--mg-line);border-radius:8px;padding:10px;margin-bottom:8px;background:#fafdff">
       <div style="display:flex;justify-content:space-between;gap:8px">
         <div style="font-size:13px"><b>Q${n}.</b> ${escA(q.question)}</div>
@@ -358,6 +357,44 @@ function questionRowsHtml(list){
         &nbsp; · <b style="color:var(--mg-green)">Ans: ${q.correct}</b>
       </div>
     </div>`;
+}
+
+// flat list (used while searching — a filtered view doesn't need folders)
+function questionRowsHtml(list){
+  if(!list || !list.length) return '<div class="empty" style="font-size:12.5px">No questions match your search.</div>';
+  return list.map(oneQCardHtml).join("");
+}
+
+// grouped-by-category collapsible view (used when NOT searching), so a 60–90
+// question bank is a short list of category rows (arrow on the RIGHT) you tap
+// open — on top of the search box above.
+window.QBANK_OPEN = window.QBANK_OPEN || {};
+window.__qbankToggle = function(key){
+  window.QBANK_OPEN[key] = !window.QBANK_OPEN[key];
+  const box = document.getElementById("eaQList");
+  if(box) box.innerHTML = questionGroupedHtml(EDIT_A_QS);
+};
+function questionGroupedHtml(list){
+  if(!list || !list.length) return '<div class="empty">No questions yet.</div>';
+  const groups = {};
+  list.forEach(q=>{
+    const cat = (q.category && String(q.category).trim()) ? String(q.category).trim() : "Uncategorised";
+    (groups[cat] = groups[cat] || []).push(q);
+  });
+  const cats = Object.keys(groups).sort((a,b)=>groups[b].length - groups[a].length);
+  // if everything is in one bucket, folders add no value — show the flat list
+  if(cats.length <= 1) return questionRowsHtml(list);
+  return cats.map(cat=>{
+    const open = !!window.QBANK_OPEN[cat];
+    const safe = cat.replace(/\\/g,"\\\\").replace(/'/g,"\\'");
+    return `<div style="border:1px solid var(--mg-line);border-radius:8px;margin-bottom:8px;overflow:hidden">
+      <div onclick="window.__qbankToggle('${safe}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:10px 12px;background:#eaf7fe">
+        <b style="font-size:13px;color:var(--mg-blue);flex:1;min-width:0">${escA(cat)}</b>
+        <span style="font-size:12px;color:var(--mg-muted)">${groups[cat].length} Qs</span>
+        <span style="font-size:14px;color:var(--mg-blue)">${open ? "▾" : "▸"}</span>
+      </div>
+      ${open ? '<div style="padding:10px 12px 2px">' + groups[cat].map(oneQCardHtml).join("") + '</div>' : ''}
+    </div>`;
   }).join("");
 }
 
@@ -369,16 +406,20 @@ function filterQuestions(){
   const countEl = $a("eaQCount");
   if(!inp || !listBox) return;
   const q = inp.value.toLowerCase().trim();
-  let list = EDIT_A_QS;
   if(q){
-    list = EDIT_A_QS.filter(x=>{
+    // searching -> flat filtered list
+    const list = EDIT_A_QS.filter(x=>{
       const hay = [(x.question||""), (x.opt_a||""), (x.opt_b||""), (x.opt_c||""),
                    (x.opt_d||""), (x.correct||""), (x.category||"")].join(" ").toLowerCase();
       return hay.indexOf(q) >= 0;
     });
+    listBox.innerHTML = questionRowsHtml(list);
+    if(countEl) countEl.textContent = list.length + " of " + EDIT_A_QS.length;
+  } else {
+    // empty search -> back to the collapsible category groups
+    listBox.innerHTML = questionGroupedHtml(EDIT_A_QS);
+    if(countEl) countEl.textContent = String(EDIT_A_QS.length);
   }
-  listBox.innerHTML = questionRowsHtml(list);
-  if(countEl) countEl.textContent = q ? (list.length + " of " + EDIT_A_QS.length) : String(EDIT_A_QS.length);
 }
 
 function renderEditScreen(){
@@ -390,7 +431,8 @@ function renderEditScreen(){
 
   // question rows are built by a reusable function so the search box can
   // re-render just the filtered list without rebuilding the whole screen.
-  const qrows = questionRowsHtml(EDIT_A_QS);
+  // Default view groups by category (collapsible); searching shows a flat list.
+  const qrows = questionGroupedHtml(EDIT_A_QS);
 
   $a("editAssessBody").innerHTML = `
     <h3 style="margin:0 0 12px">Edit assessment</h3>
