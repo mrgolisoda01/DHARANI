@@ -1708,6 +1708,13 @@ def api_export_feedback():
         w.append("r.created_at >= ?"); a.append(from_iso)
     if to_excl:
         w.append("r.created_at < ?"); a.append(to_excl)
+    # optional ?trainer_id= to export just one trainer's feedback.
+    # "_none" exports the rows that have no trainer attached.
+    want_trainer = (request.args.get("trainer_id") or "").strip()
+    if want_trainer == "_none":
+        w.append("COALESCE(r.trainer_id,'')=''")
+    elif want_trainer:
+        w.append("r.trainer_id=?"); a.append(want_trainer)
     where = (" WHERE " + " AND ".join(w)) if w else ""
     rows = db.execute(
         "SELECT r.created_at, r.emp_id, r.target_type, r.trainer_id, "
