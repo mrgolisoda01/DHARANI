@@ -756,41 +756,11 @@
       '<button class="an-pill' + (AN._fbGroup === "module" ? " on" : "") + '" onclick="window.__anFbGroup(\'module\')">By Module / Course</button>' +
       '</div>';
 
-    var groups = {};
-    rows.forEach(function (f) {
-      var key, label;
-      if (AN._fbGroup === "trainer") {
-        key = f.trainer_id || "_none";
-        label = f.trainer || "— No trainer —";
-      } else {
-        key = (f.type || "") + ":" + (f.about || "");
-        label = (f.about || "Untitled") + (f.type === "course" ? " (course)" : "");
-      }
-      (groups[key] = groups[key] || { label: label, rows: [] }).rows.push(f);
-    });
-
-    var keys = Object.keys(groups).sort(function (a, b) {
-      return groups[b].rows.length - groups[a].rows.length;
-    });
-    keys.forEach(function (k) {
-      var g = groups[k];
-      // group mini-summary
-      var gtr = [], gct = [], gco = [];
-      g.rows.forEach(function (f) {
-        if (f.trainer_rating != null) gtr.push(f.trainer_rating);
-        if (f.content_rating != null) gct.push(f.content_rating);
-        if (f.course_rating != null) gco.push(f.course_rating);
-      });
-      var parts = [];
-      if (gtr.length) parts.push("Trainer " + _avg(gtr) + "★");
-      if (gct.length) parts.push("Content " + _avg(gct) + "★");
-      if (gco.length) parts.push("Course " + _avg(gco) + "★");
-      html += '<div class="an-sect"><h4>' + escAn(g.label) +
-        ' <span class="an-muted" style="font-weight:600">· ' + g.rows.length + ' feedback' +
-        (parts.length ? " · " + parts.join(" · ") : "") + '</span></h4>' +
-        g.rows.map(function (f) { return fbCardHTML(f, isAdmin, false); }).join("") +
-        '</div>';
-    });
+    if (AN._fbGroup === "trainer") {
+      html += fbByTrainerHTML(rows, isAdmin);
+    } else {
+      html += fbByCourseHTML(rows, isAdmin);
+    }
 
     body.innerHTML = html;
 
@@ -817,6 +787,158 @@
         });
       } catch (e) {}
     }
+  }
+
+  // ---- helpers shared by the two grouped views ----
+  function _ratingParts(list) {
+    var gtr = [], gct = [], gco = [];
+    list.forEach(function (f) {
+      if (f.trainer_rating != null) gtr.push(f.trainer_rating);
+      if (f.content_rating != null) gct.push(f.content_rating);
+      if (f.course_rating != null) gco.push(f.course_rating);
+    });
+    var parts = [];
+    if (gtr.length) parts.push("Trainer " + _avg(gtr) + "★");
+    if (gct.length) parts.push("Content " + _avg(gct) + "★");
+    if (gco.length) parts.push("Course " + _avg(gco) + "★");
+    return parts;
+  }
+  // comments-first: rows with written text come before rows that are stars only
+  function _commentsFirst(list) {
+    return list.slice().sort(function (a, b) {
+      var ac = (a.comment && a.comment.trim()) ? 1 : 0;
+      var bc = (b.comment && b.comment.trim()) ? 1 : 0;
+      return bc - ac;
+    });
+  }
+
+  // ===== BY TRAINER: pick a trainer -> their feedback, split into course sections =====
+  window.__anFbTrainer = function (tid) { AN._fbTrainerSel = tid; drawFeedback(); };
+
+  function fbByTrainerHTML(rows, isAdmin) {
+    // build the list of trainers who actually have feedback
+    var tmap = {};
+    rows.forEach(function (f) {
+      var id = f.trainer_id || "_none";
+      var nm = f.trainer || "— No trainer —";
+      (tmap[id] = tmap[id] || { id: id, name: nm, rows: [] }).rows.push(f);
+    });
+    var tids = Object.keys(tmap).sort(function (a, b) {
+      // real trainers first (by count), "no trainer" bucket last
+      if (a === "_none") return 1;
+      if (b === "_none") return -1;
+      return tmap[b].rows.length - tmap[a].rows.length;
+    });
+
+    // default selection = the trainer with the most feedback
+    if (!AN._fbTrainerSel || !tmap[AN._fbTrainerSel]) {
+      AN._fbTrainerSel = tids[0] || "";
+    }
+    var sel = AN._fbTrainerSel;
+
+    // the dropdown
+    var opts = tids.map(function (id) {
+      var g = tmap[id];
+      return '<option value="' + escAn(id) + '"' + (id === sel ? " selected" : "") + '>' +
+        escAn(g.name) + ' (' + g.rows.length + ')</option>';
+    }).join("");
+    var h = '<div class="an-sect" style="padding-bottom:10px">' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+      '<label style="font-weight:700;font-size:14px">Trainer:</label>' +
+      '<select onchange="window.__anFbTrainer(this.value)" ' +
+        'style="padding:7px 10px;border:1.5px solid var(--mg-line,#d9e2ec);border-radius:8px;font-size:14px;min-width:220px">' +
+      opts + '</select>';
+    if (isAdmin) {
+      h += '<button class="an-pill" style="margin-left:auto" onclick="window.__anFbExportTrainer()">⬇ Export this trainer (Excel)</button>';
+    }
+    h += '</div>';
+
+    var g = tmap[sel];
+    if (!g) { return h + '<div class="an-empty">No trainer feedback yet.</div></div>'; }
+
+    // summary line for the chosen trainer
+    var parts = _ratingParts(g.rows);
+    var lowN = g.rows.filter(function (f) {
+      return [f.trainer_rating, f.content_rating, f.course_rating].some(function (v) {
+        return v != null && v <= LOW_STAR;
+      });
+    }).length;
+    h += '<div style="margin-top:8px;font-size:14px">' +
+      '<b>' + escAn(g.name) + '</b> <span class="an-muted">· ' + g.rows.length + ' feedback' +
+      (parts.length ? " · " + parts.join(" · ") : "") +
+      (lowN ? ' · <span style="color:#b4231d;font-weight:700">' + lowN + ' low</span>' : ' · 0 low') +
+      '</span></div>';
+    h += '</div>'; // close selector card
+
+    // their feedback, grouped into course / module SECTIONS (comments first inside)
+    var sections = {};
+    g.rows.forEach(function (f) {
+      var key = (f.type || "") + ":" + (f.about || "");
+      var label = (f.about || "Untitled") + (f.type === "course" ? " (course)" : "");
+      (sections[key] = sections[key] || { label: label, rows: [] }).rows.push(f);
+    });
+    var skeys = Object.keys(sections).sort(function (a, b) {
+      return sections[b].rows.length - sections[a].rows.length;
+    });
+    skeys.forEach(function (k) {
+      var s = sections[k];
+      var sp = _ratingParts(s.rows);
+      h += '<div class="an-sect"><h4>' + escAn(s.label) +
+        ' <span class="an-muted" style="font-weight:600">· ' + s.rows.length + ' feedback' +
+        (sp.length ? " · " + sp.join(" · ") : "") + '</span></h4>' +
+        _commentsFirst(s.rows).map(function (f) { return fbCardHTML(f, isAdmin, false); }).join("") +
+        '</div>';
+    });
+    return h;
+  }
+
+  window.__anFbExportTrainer = function () {
+    var tid = AN._fbTrainerSel || "";
+    if (!tid) { alert("Pick a trainer first."); return; }
+    // Feedback screen has no date picker, so export all-time for this trainer.
+    var url = "/api/analytics/export/feedback?trainer_id=" + encodeURIComponent(tid);
+    var a = document.createElement("a");
+    a.href = url; a.rel = "noopener";
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { a.remove(); }, 1500);
+  };
+
+  // ===== BY MODULE / COURSE: collapsible sections (no wall of cards) =====
+  window.__anFbToggleCourse = function (k) {
+    AN._fbOpenCourse = AN._fbOpenCourse || {};
+    AN._fbOpenCourse[k] = !AN._fbOpenCourse[k];
+    drawFeedback();
+  };
+
+  function fbByCourseHTML(rows, isAdmin) {
+    AN._fbOpenCourse = AN._fbOpenCourse || {};
+    var groups = {};
+    rows.forEach(function (f) {
+      var key = (f.type || "") + ":" + (f.about || "");
+      var label = (f.about || "Untitled") + (f.type === "course" ? " (course)" : "");
+      (groups[key] = groups[key] || { label: label, rows: [] }).rows.push(f);
+    });
+    var keys = Object.keys(groups).sort(function (a, b) {
+      return groups[b].rows.length - groups[a].rows.length;
+    });
+    var h = '';
+    keys.forEach(function (k) {
+      var g = groups[k];
+      var parts = _ratingParts(g.rows);
+      var open = !!AN._fbOpenCourse[k];
+      h += '<div class="an-sect">' +
+        '<h4 style="cursor:pointer;user-select:none" onclick="window.__anFbToggleCourse(\'' +
+          k.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + '\')">' +
+        '<span style="display:inline-block;width:16px">' + (open ? "▾" : "▸") + '</span>' +
+        escAn(g.label) +
+        ' <span class="an-muted" style="font-weight:600">· ' + g.rows.length + ' feedback' +
+        (parts.length ? " · " + parts.join(" · ") : "") + '</span></h4>';
+      if (open) {
+        h += _commentsFirst(g.rows).map(function (f) { return fbCardHTML(f, isAdmin, false); }).join("");
+      }
+      h += '</div>';
+    });
+    return h;
   }
 
   // one feedback card (used in flags + grouped lists)
