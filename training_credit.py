@@ -503,22 +503,72 @@ def api_training_productivity():
     # rank
     for i, r in enumerate(out, 1):
         r["rank"] = i
-    # overall summary
-    all_learners = set()
-    for info in trainers.values():
-        all_learners |= info["learners"]
-    tot_scores = [s for e in all_learners for s in learner_scores.get(e, [])]
-    tot_ft = sum(1 for e in all_learners for pa in learner_passattempt.get(e, []) if pa == 1)
-    tot_pe = sum(len(learner_passattempt.get(e, [])) for e in all_learners)
+    # overall COMPETITION summary — count only the competing trainers' learners
+    # (L&D Executives). The L&D Manager / admins are shown in their own section,
+    # so their learners must NOT inflate "people trained (all)", avg or 1st-try.
+    comp_ids = {r["trainer_id"] for r in out if r.get("is_trainer")}
+    comp_learners = set()
+    for tid, info in trainers.items():
+        if tid in comp_ids:
+            comp_learners |= info["learners"]
+    tot_scores = [s for e in comp_learners for s in learner_scores.get(e, [])]
+    tot_ft = sum(1 for e in comp_learners for pa in learner_passattempt.get(e, []) if pa == 1)
+    tot_pe = sum(len(learner_passattempt.get(e, [])) for e in comp_learners)
     summary = {
-        "trainers": len(out),
-        "trained": len(all_learners),
+        "trainers": len(comp_ids),
+        "trained": len(comp_learners),
         "avg_score": round(sum(tot_scores) / len(tot_scores)) if tot_scores else None,
         "first_rate": round(tot_ft * 100 / tot_pe) if tot_pe else None,
     }
     u = _current_user()
     return jsonify(ok=True, trainers=out, summary=summary,
                    me_id=u["emp_id"], is_admin=(u["role"] == "admin"))
+
+
+@tc_bp.route("/api/training/trainer-learners")
+@_staff
+def api_training_trainer_learners():
+    """The actual learners behind a trainer's numbers, for the click-to-see-names
+    popup on the Productivity screen. ?trainer_id= required."""
+    _ensure()
+    db = _get_db()
+    tid = (request.args.get("trainer_id") or "").strip()
+    if not tid:
+        return jsonify(ok=False, msg="No trainer."), 400
+    # approved deliveries by this trainer -> learner -> which kinds
+    rows = []
+    try:
+        rows = db.execute(
+            "SELECT d.learner_id, d.kind, u.name "
+            "FROM training_delivery d LEFT JOIN users u ON u.emp_id=d.learner_id "
+            "WHERE d.status='approved' AND d.trainer_id=? "
+            "AND COALESCE(u.status,'') <> 'resigned'", (tid,)).fetchall()
+    except Exception:
+        rows = []
+    learners = {}
+    for r in rows:
+        e = learners.setdefault(r["learner_id"],
+                                {"emp_id": r["learner_id"], "name": r["name"] or r["learner_id"],
+                                 "induction": False, "training": False})
+        if r["kind"] == "induction":
+            e["induction"] = True
+        elif r["kind"] == "training":
+            e["training"] = True
+    # best assessment score per learner (across all assessments)
+    best = {}
+    try:
+        for r in db.execute("SELECT emp_id, MAX(percent) AS p FROM assessment_results GROUP BY emp_id").fetchall():
+            best[r["emp_id"]] = r["p"]
+    except Exception:
+        pass
+    out = []
+    for e in learners.values():
+        e["best_score"] = best.get(e["emp_id"])
+        out.append(e)
+    out.sort(key=lambda x: (x["name"] or "").lower())
+    tname = (db.execute("SELECT name FROM users WHERE emp_id=?", (tid,)).fetchone() or {})
+    return jsonify(ok=True, trainer=tname["name"] if tname else tid,
+                   count=len(out), learners=out)
 
 
 def _is_trainer_desg(desg):
