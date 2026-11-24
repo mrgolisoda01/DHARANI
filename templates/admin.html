@@ -1053,18 +1053,29 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         return;
       }
 
-      function card(title, colour, bodyHtml, bulkKey){
+      // Collapsible category card: header row (title + bulk buttons + ▸/▾ arrow on
+      // the RIGHT) that toggles the body. Collapsed by default when it holds many
+      // items, so the whole Approvals screen is a short list of headers to scan.
+      window.APPR_OPEN = window.APPR_OPEN || {};
+      function card(title, colour, bodyHtml, bulkKey, count){
+        const ckey = (bulkKey || title);
+        // first render: open when small (≤5), collapsed when large
+        if(window.APPR_OPEN[ckey] === undefined){ window.APPR_OPEN[ckey] = ((count||0) <= 5); }
+        const open = !!window.APPR_OPEN[ckey];
         let bulk = '';
         if(bulkKey){
-          bulk = `<div style="display:flex;gap:6px">
+          bulk = `<div style="display:flex;gap:6px" onclick="event.stopPropagation()">
             <button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75;border-color:#bfe6d3" onclick="apprBulk('${bulkKey}','approve')">✓ Approve all</button>
             <button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprBulk('${bulkKey}','reject')">Reject all</button>
           </div>`;
         }
+        const safe = String(ckey).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
         return `<div style="background:#fff;border:1px solid var(--mg-line);border-left:4px solid ${colour};border-radius:12px;padding:16px;margin-bottom:14px">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px">
-            <h3 style="font-size:14.5px;margin:0;color:${colour}">${title}</h3>${bulk}
-          </div>${bodyHtml}</div>`;
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:0;cursor:pointer;user-select:none" onclick="window.APPR_OPEN['${safe}']=!window.APPR_OPEN['${safe}'];loadApprovals()">
+            <h3 style="font-size:14.5px;margin:0;color:${colour};flex:1;min-width:0">${title}</h3>${bulk}
+            <span style="flex:none;font-size:16px;color:#64707a">${open ? '▾' : '▸'}</span>
+          </div>
+          <div style="margin-top:${open?'10px':'0'}">${open ? bodyHtml : ''}</div></div>`;
       }
       function rowWrap(left, buttons){
         return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--mg-line);flex-wrap:wrap">
@@ -1077,11 +1088,11 @@ Priya S,MG087,9876500000,State Head,"></textarea>
         const rows = d.employees.map(e=>{
           const src = e.added_by ? ('added by ' + esc(e.added_by_name || 'instructor')) : 'self sign-up';
           const left = `<b>${esc(e.name)}</b> · ${esc(e.emp_id)} <span style="color:var(--mg-muted)">${e.designation?'· '+esc(e.designation):''} · ${src}</span>`;
-          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveEmployee('${esc(e.emp_id)}')">Approve</button>`
+          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprApproveEmployee('${esc(e.emp_id)}')">Approve</button>`
                      + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprRejectEmployee('${esc(e.emp_id)}')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('👥 New employees ('+d.employees.length+')', '#1f5fa9', rows, 'employees');
+        html += card('👥 New employees ('+d.employees.length+')', '#1f5fa9', rows, 'employees', d.employees.length);
       }
 
       // Content: modules, videos, certs
@@ -1091,25 +1102,25 @@ Priya S,MG087,9876500000,State Head,"></textarea>
       (d.assessments||[]).forEach(a=> contentRows.push(rowWrap(
         `<b>${esc(a.title)}</b> <span style="color:var(--mg-muted)">· assessment${byTxt(a)}</span>`,
         viewBtn('assessment',a.id,a.title)
-        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveAssessment(${a.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprApproveAssessment(${a.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineAssessment(${a.id})">Decline</button>`)));
       d.modules.forEach(m=> contentRows.push(rowWrap(
         `<b>${esc(m.title)}</b> <span style="color:var(--mg-muted)">· ${esc(m.kind)} module · ${esc(m.roles||'all')}${byTxt(m)}</span>`,
         viewBtn('module',m.id,m.title)
-        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('module',${m.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprApproveContent('module',${m.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('module',${m.id})">Decline</button>`)));
       d.videos.forEach(v=> contentRows.push(rowWrap(
         `<b>${esc(v.title)}</b> <span style="color:var(--mg-muted)">· video · ${esc(v.roles||'all')}${byTxt(v)}</span>`,
         viewBtn('video',v.id,v.title)
-        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('video',${v.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprApproveContent('video',${v.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('video',${v.id})">Decline</button>`)));
       d.certs.forEach(c=> contentRows.push(rowWrap(
         `<b>${esc(c.title)}</b> <span style="color:var(--mg-muted)">· certificate · ${esc(c.roles||'all')}${byTxt(c)}</span>`,
         viewBtn('cert',c.id,c.title)
-        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprApproveContent('cert',${c.id})">Approve</button>`
+        + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprApproveContent('cert',${c.id})">Approve</button>`
         + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprDeclineContent('cert',${c.id})">Decline</button>`)));
       if(contentRows.length){
-        html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''), 'content');
+        html += card('📦 New content ('+contentRows.length+')', '#c9a227', contentRows.join(''), 'content', contentRows.length);
       }
 
       // Edit requests (old stays live until approved)
@@ -1120,7 +1131,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
           const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprViewEdit(${e.id})">View changes</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('✏️ Edit requests ('+d.edits.length+')', '#1f5fa9', rows);
+        html += card('✏️ Edit requests ('+d.edits.length+')', '#1f5fa9', rows, null, d.edits.length);
       }
 
       // Delete + resign requests (both come through d.deletes)
@@ -1136,7 +1147,7 @@ Priya S,MG087,9876500000,State Head,"></textarea>
                      + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('🗑 Delete / resign requests ('+d.deletes.length+')', '#e24b4a', rows, 'deletes');
+        html += card('🗑 Delete / resign requests ('+d.deletes.length+')', '#e24b4a', rows, 'deletes', d.deletes.length);
       }
 
       // Question add / replace / clear requests + single edits (instructor -> admin)
@@ -1155,22 +1166,22 @@ Priya S,MG087,9876500000,State Head,"></textarea>
           if(a.mode!=='clear' && typeof previewQuestions==='function'){
             btns += `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="previewQuestions(${a.id})">Preview</button>`;
           }
-          btns += `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprResolveDelete(${a.id},'approve')">Approve</button>`
+          btns += `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprResolveDelete(${a.id},'approve')">Approve</button>`
                 + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('📝 Question change requests ('+d.question_changes.length+')', '#c9a227', rows, 'questions');
+        html += card('📝 Question change requests ('+d.question_changes.length+')', '#c9a227', rows, 'questions', d.question_changes.length);
       }
 
       // Other requests: designation changes, employee edits, reporting changes, activation
       if(d.other_actions && d.other_actions.length){
         const rows = d.other_actions.map(a=>{
           const left = `<b>${esc(a.kind_label||'Request')}:</b> ${esc(a.target_label||a.target_id)} <span style="color:var(--mg-muted)">· by ${esc(a.requested_by_name||a.requested_by||'')}</span>`;
-          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1d9e75" onclick="apprResolveDelete(${a.id},'approve')">Approve</button>`
+          const btns = `<button class="btn" style="padding:4px 12px;font-size:12px;color:#1f5fa9" onclick="apprResolveDelete(${a.id},'approve')">Approve</button>`
                      + `<button class="btn" style="padding:4px 12px;font-size:12px;color:#8a97a1" onclick="apprResolveDelete(${a.id},'reject')">Reject</button>`;
           return rowWrap(left, btns);
         }).join('');
-        html += card('🏷 Other requests ('+d.other_actions.length+')', '#1f5fa9', rows);
+        html += card('🏷 Other requests ('+d.other_actions.length+')', '#1f5fa9', rows, null, d.other_actions.length);
       }
 
       box.innerHTML = html;
