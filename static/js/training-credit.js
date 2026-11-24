@@ -756,9 +756,18 @@
         }).join("")+'</tbody></table></div>';
     }
 
+    var colLegend = '<div style="font-size:11.5px;color:#62707a;background:#f6f9fc;border:1px solid #e4ecf3;border-radius:8px;padding:8px 11px;margin:10px 0 0;line-height:1.7">'+
+      '<b>What each column means:</b> '+
+      '<b>Delivered</b> = training/induction modules this trainer delivered to learners · '+
+      '<b>Completed</b> = of those, how many the learner actually finished · '+
+      '<b>Assess (pass/taken)</b> = assessments their learners passed out of attempted · '+
+      '<b>OJT calls</b> = on-the-job tracking calls logged · '+
+      '<b>Learners</b> = distinct people this trainer trained.'+
+      '</div>';
+
     var periodSection = '<div class="card"><h4 style="margin:0 0 6px;font-size:14px;color:#12284B">🕒 Trainer activity — '+esc(rngLabel)+'</h4>'+
       '<p style="font-size:12px;color:#62707a;margin:0 0 10px">Who did what in this period — modules delivered & completed, assessments taken/passed, OJT calls. (Attributed to the trainer who delivered each learner\'s module.)</p>'+
-      pills + periodCards + periodTable + '</div>';
+      pills + periodCards + periodTable + colLegend + '</div>';
 
     // ---------- CUMULATIVE COMPETITION (L&D Executives, all-time) ----------
     var sm=(d&&d.summary)||{};
@@ -786,8 +795,9 @@
       function seg(n,col){ return tot&&n? '<span class="eff" style="flex:'+n+';background:'+col+'" title="'+n+'"></span>':''; }
       var bar = tot? '<div style="display:flex;gap:1px;align-items:center;width:140px;height:12px;border-radius:6px;overflow:hidden;background:#eef2f5">'+seg(x.first_try,"#1d9e75")+seg(x.second,"#c9a227")+seg(x.third_plus,"#d64545")+'</div>' : '<span style="color:#aaa">—</span>';
       var medal = idx===0?"🥇 ":idx===1?"🥈 ":idx===2?"🥉 ":"";
+      var trainedLink = '<a href="#" onclick="window.__tcShowLearners(\''+esc(x.trainer_id)+'\');return false" style="color:#1F5FA9;font-weight:700;text-decoration:underline;cursor:pointer" title="See the names">'+x.learners+'</a>';
       return '<tr><td style="white-space:nowrap">'+(idx!=null?medal:'')+'<b>'+esc(x.trainer)+'</b></td>'+
-        '<td style="text-align:center;font-weight:700">'+x.learners+'</td>'+
+        '<td style="text-align:center;font-weight:700">'+trainedLink+'</td>'+
         '<td style="text-align:center">'+x.ind+' / '+x.trn+'</td>'+
         '<td style="text-align:center;font-weight:700">'+avg+'</td>'+
         '<td style="text-align:center;font-weight:800;color:'+frCol+'">'+fr+'</td>'+
@@ -817,8 +827,9 @@
           function seg(n,col){ return tot&&n? '<span class="eff" style="flex:'+n+';background:'+col+'"></span>':''; }
           var bar = tot? '<div style="display:flex;gap:1px;align-items:center;width:120px;height:10px;border-radius:5px;overflow:hidden;background:#eef2f5">'+seg(x.first_try,"#1d9e75")+seg(x.second,"#c9a227")+seg(x.third_plus,"#d64545")+'</div>' : '—';
           var you = (x.trainer_id===meId) ? ' <span style="font-size:10px;color:#1F5FA9">(you)</span>' : '';
+          var mLink = '<a href="#" onclick="window.__tcShowLearners(\''+esc(x.trainer_id)+'\');return false" style="color:#1F5FA9;font-weight:700;text-decoration:underline;cursor:pointer" title="See the names">'+x.learners+'</a>';
           return '<tr><td><b>'+esc(x.trainer)+'</b>'+you+'</td>'+
-            '<td style="text-align:center;font-weight:700">'+x.learners+'</td>'+
+            '<td style="text-align:center;font-weight:700">'+mLink+'</td>'+
             '<td style="text-align:center">'+x.ind+' / '+x.trn+'</td>'+
             '<td style="text-align:center;font-weight:700">'+avg+'</td>'+
             '<td style="text-align:center;font-weight:800">'+fr+'</td>'+
@@ -828,6 +839,37 @@
 
     shell(periodSection + compSection + mgrSection);
   }
+
+  // click-to-see-names popup: the actual learners behind a trainer's count
+  window.__tcShowLearners = async function(tid){
+    var ov = document.getElementById("tcLearnersOv");
+    if(!ov){
+      ov = document.createElement("div");
+      ov.id = "tcLearnersOv";
+      ov.style.cssText = "position:fixed;inset:0;background:rgba(18,40,75,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px";
+      ov.onclick = function(e){ if(e.target===ov) ov.remove(); };
+      document.body.appendChild(ov);
+    }
+    ov.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:520px;width:100%;max-height:80vh;overflow:auto;padding:18px"><div class="empty">Loading…</div></div>';
+    var d;
+    try{ d = await getJ("/api/training/trainer-learners?trainer_id="+encodeURIComponent(tid)); }
+    catch(e){ d = null; }
+    if(!d || !d.ok){ ov.querySelector("div").innerHTML = '<div style="padding:10px">Could not load.</div>'; return; }
+    var rows = (d.learners||[]).map(function(l){
+      var tags = (l.induction?'<span class="pill" style="background:#eef4ff;color:#1F5FA9;font-size:10px">Induction</span> ':'')+
+                 (l.training?'<span class="pill" style="background:#eaf7f0;color:#0f6b45;font-size:10px">Training</span>':'');
+      var sc = l.best_score!=null ? '<span style="font-weight:700;color:'+(l.best_score>=90?'#1d9e75':'#62707a')+'">'+l.best_score+'%</span>' : '<span style="color:#aaa">—</span>';
+      return '<tr><td style="padding:6px 8px"><b>'+esc(l.name)+'</b><br><span style="font-size:11px;color:#8a97a1">'+esc(l.emp_id)+'</span></td>'+
+        '<td style="padding:6px 8px">'+tags+'</td>'+
+        '<td style="padding:6px 8px;text-align:right">'+sc+'</td></tr>';
+    }).join("");
+    ov.querySelector("div").innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
+        '<h3 style="margin:0;font-size:15px;color:#12284B">'+esc(d.trainer)+' — '+d.count+' learner'+(d.count===1?"":"s")+'</h3>'+
+        '<button onclick="document.getElementById(\'tcLearnersOv\').remove()" style="background:#f0f3f6;border:none;border-radius:7px;padding:5px 11px;font-size:13px;font-weight:700;cursor:pointer">✕</button>'+
+      '</div>'+
+      (rows ? '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="color:#62707a;font-size:11px"><th style="text-align:left;padding:4px 8px">Learner</th><th style="text-align:left;padding:4px 8px">Got</th><th style="text-align:right;padding:4px 8px">Best score</th></tr></thead><tbody>'+rows+'</tbody></table>' : '<div class="empty" style="padding:10px">No learners.</div>');
+  };
 
   // ---- By learner ----
   async function renderByLearner(){
