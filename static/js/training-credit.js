@@ -872,18 +872,65 @@
   };
 
   // ---- By learner ----
+  window.BYL_OPEN = window.BYL_OPEN || {};
+  window.__bylToggle = function(k){ window.BYL_OPEN[k] = !window.BYL_OPEN[k]; renderByLearner(); };
+
   async function renderByLearner(){
     shell('<div class="empty">Loading…</div>');
     var d=await getJ("/api/training/by-learner");
-    var l=(d&&d.ok)?d.learners:[];
-    if(!l.length){ shell('<div class="empty" style="padding:16px">No approved training records yet.</div>'); return; }
-    var rows=l.map(function(x){
-      return '<tr><td><b>'+esc(x.name)+'</b><br><span style="font-size:11px;color:#8a97a1">'+esc(x.learner_id)+'</span></td>'+
-        '<td>'+(x.induction_by.length?x.induction_by.map(esc).join(", "):'<span style="color:#aaa">—</span>')+'</td>'+
-        '<td>'+(x.training_by.length?x.training_by.map(esc).join(", "):'<span style="color:#aaa">—</span>')+'</td></tr>';
+    var groups=(d&&d.ok)?(d.groups||[]):[];
+    if(!groups.length){ shell('<div class="empty" style="padding:16px">No learners yet.</div>'); return; }
+
+    // open the biggest group by default on first view
+    if(Object.keys(window.BYL_OPEN).length===0 && groups[0]){ window.BYL_OPEN[groups[0].designation]=true; }
+
+    function fmtDate(s){
+      if(!s) return '<span style="color:#bbb">never</span>';
+      try{ return (''+s).slice(0,10); }catch(e){ return '—'; }
+    }
+    function scoreCol(v){
+      if(v==null) return '<span style="color:#bbb">—</span>';
+      var c = v>=90?"#1d9e75":(v>=70?"#c9a227":"#d64545");
+      return '<b style="color:'+c+'">'+v+'%</b>';
+    }
+
+    var legend = '<div style="font-size:11.5px;color:#62707a;background:#f6f9fc;border:1px solid #e4ecf3;border-radius:8px;padding:8px 11px;margin:0 0 12px;line-height:1.7">'+
+      '<b>Top performers by designation.</b> Ranked by <b>Avg assessment %</b>. '+
+      '<b>Modules</b> = modules completed · <b>Last active</b> = last LMS login · <b>Trained by</b> = who delivered their induction / training.'+
+      '</div>';
+
+    var html = legend + groups.map(function(g){
+      var open = !!window.BYL_OPEN[g.designation];
+      var safe = (g.designation||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'");
+      var head = '<div onclick="window.__bylToggle(\''+safe+'\')" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:11px 14px;background:#12284B;color:#fff;border-radius:'+(open?'10px 10px 0 0':'10px')+'">'+
+        '<b style="flex:1;min-width:0;font-size:13.5px">'+esc(g.designation)+'</b>'+
+        '<span style="font-size:12px;opacity:.85">'+g.count+'</span>'+
+        '<span style="font-size:15px">'+(open?"▾":"▸")+'</span></div>';
+      if(!open) return '<div style="margin-bottom:10px">'+head+'</div>';
+      var body = '<div style="overflow-x:auto;width:100%;max-height:70vh;border:1px solid var(--mg-line,#d9e2ec);border-top:none;border-radius:0 0 10px 10px"><table style="width:100%;font-size:13px">'+
+        '<thead><tr style="position:sticky;top:0;background:#f3f6f9;z-index:2">'+
+        '<th style="text-align:left">#</th><th style="text-align:left">Employee</th>'+
+        '<th style="text-align:center">Avg score</th><th style="text-align:center">Assess</th>'+
+        '<th style="text-align:center">Modules</th><th style="text-align:center">Last active</th>'+
+        '<th style="text-align:left">Trained by</th></tr></thead><tbody>'+
+        g.learners.map(function(x){
+          var medal = x.rank===1?"🥇":x.rank===2?"🥈":x.rank===3?"🥉":("#"+x.rank);
+          var trainedBy = [];
+          if(x.induction_by.length) trainedBy.push('<span style="color:#1F5FA9">Ind:</span> '+x.induction_by.map(esc).join(", "));
+          if(x.training_by.length) trainedBy.push('<span style="color:#0f6b45">Trn:</span> '+x.training_by.map(esc).join(", "));
+          var tb = trainedBy.length ? trainedBy.join('<br>') : '<span style="color:#bbb">—</span>';
+          return '<tr><td style="font-weight:700">'+medal+'</td>'+
+            '<td style="white-space:nowrap"><b>'+esc(x.name)+'</b><br><span style="font-size:11px;color:#8a97a1">'+esc(x.emp_id)+'</span></td>'+
+            '<td style="text-align:center">'+scoreCol(x.avg_score)+'</td>'+
+            '<td style="text-align:center">'+x.assessments+'</td>'+
+            '<td style="text-align:center">'+x.modules_done+'</td>'+
+            '<td style="text-align:center;font-size:12px;color:#62707a">'+fmtDate(x.last_active)+'</td>'+
+            '<td style="font-size:11.5px">'+tb+'</td></tr>';
+        }).join("")+'</tbody></table></div>';
+      return '<div style="margin-bottom:12px">'+head+body+'</div>';
     }).join("");
-    shell('<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto;width:100%"><table style="width:100%">'+
-      '<thead><tr><th>Learner</th><th>Induction by</th><th>Training by</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>');
+
+    shell(html);
   }
 
   // ---- Leaderboard + trend (Stage C) ----
