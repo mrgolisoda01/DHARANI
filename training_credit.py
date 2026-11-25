@@ -1504,27 +1504,72 @@ def api_training_weekly_summary():
 @tc_bp.route("/api/training/by-learner")
 @_staff
 def api_training_by_learner():
-    """Per-learner: who delivered their induction and training (approved)."""
+    """Learner ranking, grouped by designation and ranked by assessment score.
+    Per employee: avg assessment %, assessments taken, modules completed, last
+    active (LMS), and who trained them (induction/training). Groups are returned
+    biggest-first; each group's learners are ranked by avg score (desc)."""
     _ensure()
     db = _get_db()
-    rows = db.execute(
-        "SELECT d.learner_id, lr.name AS learner_name, d.kind, tr.name AS trainer_name "
-        "FROM training_delivery d "
-        "LEFT JOIN users lr ON lr.emp_id=d.learner_id "
-        "LEFT JOIN users tr ON tr.emp_id=d.trainer_id "
-        "WHERE d.status='approved' ORDER BY lr.name").fetchall()
-    by = {}
-    for r in rows:
-        e = by.setdefault(r["learner_id"], {"name": r["learner_name"], "induction": set(), "training": set()})
+
+    # 1) who trained each learner (approved deliveries)
+    who = {}
+    for r in db.execute(
+        "SELECT d.learner_id, d.kind, tr.name AS trainer_name "
+        "FROM training_delivery d LEFT JOIN users tr ON tr.emp_id=d.trainer_id "
+        "WHERE d.status='approved'").fetchall():
+        e = who.setdefault(r["learner_id"], {"induction": set(), "training": set()})
         if r["kind"] == "induction" and r["trainer_name"]:
             e["induction"].add(r["trainer_name"])
         elif r["kind"] == "training" and r["trainer_name"]:
             e["training"].add(r["trainer_name"])
-    out = [{"learner_id": k, "name": v["name"],
-            "induction_by": sorted(v["induction"]), "training_by": sorted(v["training"])}
-           for k, v in by.items()]
-    out.sort(key=lambda x: x["name"] or "")
-    return jsonify(ok=True, learners=out)
+
+    # 2) assessment score per learner = avg of best-per-assessment %
+    best = {}  # (emp, aid) -> best %
+    for r in db.execute("SELECT emp_id, assessment_id, percent FROM assessment_results").fetchall():
+        k = (r["emp_id"], r["assessment_id"])
+        if r["percent"] is not None and (k not in best or r["percent"] > best[k]):
+            best[k] = r["percent"]
+    ass = {}  # emp -> {sum, n}
+    for (emp, _aid), p in best.items():
+        a = ass.setdefault(emp, {"sum": 0, "n": 0})
+        a["sum"] += p; a["n"] += 1
+
+    # 3) modules completed per learner
+    mods = {}
+    try:
+        for r in db.execute("SELECT emp_id, COUNT(*) c FROM module_completions GROUP BY emp_id").fetchall():
+            mods[r["emp_id"]] = r["c"]
+    except Exception:
+        pass
+
+    # 4) active staff with their designation + last login
+    groups = {}
+    for r in db.execute(
+        "SELECT emp_id, name, COALESCE(designation,'') AS desg, last_login "
+        "FROM users WHERE role='staff' AND COALESCE(status,'')='approved'").fetchall():
+        emp = r["emp_id"]
+        a = ass.get(emp)
+        avg = round(a["sum"] / a["n"]) if a and a["n"] else None
+        w = who.get(emp, {"induction": set(), "training": set()})
+        desg = r["desg"] or "Other"
+        groups.setdefault(desg, []).append({
+            "emp_id": emp, "name": r["name"] or emp,
+            "avg_score": avg, "assessments": (a["n"] if a else 0),
+            "modules_done": mods.get(emp, 0),
+            "last_active": r["last_login"] or None,
+            "induction_by": sorted(w["induction"]), "training_by": sorted(w["training"]),
+        })
+
+    # rank each group by avg score desc (unscored sink to the bottom), then modules
+    out = []
+    for desg, rows in groups.items():
+        rows.sort(key=lambda x: (-(x["avg_score"] if x["avg_score"] is not None else -1),
+                                 -(x["modules_done"] or 0), (x["name"] or "").lower()))
+        for i, r in enumerate(rows, 1):
+            r["rank"] = i
+        out.append({"designation": desg, "count": len(rows), "learners": rows})
+    out.sort(key=lambda g: -g["count"])   # biggest designation first
+    return jsonify(ok=True, groups=out)
 
 
 def init_training_credit(app, get_db, current_user):
