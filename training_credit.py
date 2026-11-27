@@ -1539,8 +1539,15 @@ def api_training_leaderboard():
             s["induction"] += 1
         elif r["kind"] == "training":
             s["training"] += 1
-    # Outcome-based KPI per trainer (assessment/modules/OJT of their learners).
-    kpi = _compute_kpi(db)
+    # ONE KPI everywhere: reuse analytics.py's merged scorecard so the Leaderboard
+    # and the Productivity screen always show the exact same KPI number.
+    kpi = {}
+    try:
+        from analytics import _build_trainer_kpis
+        for row in _build_trainer_kpis(db, only_trainers=False):
+            kpi[row["trainer_id"]] = row
+    except Exception:
+        kpi = {}
     # Accounts kept OUT of the trainer ranking (admins who oversee, not compete).
     # Dharani Kumar S (SAFB206) handles Solar and is not one of the ranked trainers.
     LEADERBOARD_EXCLUDE = {"SAFB206"}
@@ -1548,10 +1555,10 @@ def api_training_leaderboard():
         "trainer_id": tid, "trainer": names.get(tid, tid),
         "deliveries": s["deliveries"], "learners": len(s["learners"]),
         "induction": s["induction"], "training": s["training"],
-        "kpi": (kpi.get(tid) or {}).get("kpi"),
-        "k_assess": (kpi.get(tid) or {}).get("assess"),
-        "k_modules": (kpi.get(tid) or {}).get("modules"),
-        "k_ojt": (kpi.get(tid) or {}).get("ojt"),
+        "kpi": (kpi.get(tid) or {}).get("kpi_score"),
+        "k_assess": (kpi.get(tid) or {}).get("avg_score"),
+        "k_modules": (kpi.get(tid) or {}).get("module_pct"),
+        "k_ojt": (kpi.get(tid) or {}).get("ojt_pct"),
     } for tid, s in stats.items()
       if tid not in LEADERBOARD_EXCLUDE and tid not in gone]  # hide excluded + left trainers
     # rank by KPI (outcome) first, then deliveries as a tiebreaker; trainers with

@@ -444,12 +444,27 @@ def _build_trainer_kpis(db, only_trainers=True, keep_ids=None):
     names = _name_map(db)
     desgs = _desg_map(db)
 
-    # trainer -> set(learner), count(deliveries), set(module)
+    # resigned learners (user OR their OJT enrollment resigned) -> excluded from KPI
+    _resigned = set()
+    try:
+        for r in db.execute("SELECT emp_id FROM users WHERE COALESCE(status,'')='resigned'").fetchall():
+            _resigned.add(r["emp_id"])
+    except Exception:
+        pass
+    try:
+        for r in db.execute("SELECT emp_id FROM ojt_enrollments WHERE COALESCE(status,'')='resigned'").fetchall():
+            _resigned.add(r["emp_id"])
+    except Exception:
+        pass
+
+    # trainer -> set(learner), count(deliveries), set(module)   [resigned excluded]
     stats = {}
     for r in db.execute(
         "SELECT trainer_id, learner_id, module_id FROM training_delivery "
         "WHERE status='approved'"
     ).fetchall():
+        if r["learner_id"] in _resigned:
+            continue
         t = r["trainer_id"]
         s = stats.setdefault(t, {"learners": set(), "deliveries": 0, "modules": set()})
         s["learners"].add(r["learner_id"])
@@ -489,6 +504,60 @@ def _build_trainer_kpis(db, only_trainers=True, keep_ids=None):
     # normalize engagement only against the people being ranked (in `stats`)
     max_calls = max((calls_map.get(t, 0) for t in stats.keys()), default=0)
     max_deliveries = max((s["deliveries"] for s in stats.values()), default=0)
+
+    # ---- per-learner MODULE completion % (completed / delivered) ----
+    _delivered = {}
+    try:
+        for r in db.execute(
+            "SELECT learner_id, COUNT(DISTINCT module_id) c FROM training_delivery "
+            "WHERE status='approved' AND module_id IS NOT NULL GROUP BY learner_id").fetchall():
+            _delivered[r["learner_id"]] = r["c"]
+    except Exception:
+        pass
+    _completed = {}
+    if _table_exists(db, "module_completions"):
+        try:
+            for r in db.execute("SELECT emp_id, COUNT(DISTINCT module_id) c FROM module_completions GROUP BY emp_id").fetchall():
+                _completed[r["emp_id"]] = r["c"]
+        except Exception:
+            pass
+    def _mod_pct(emp):
+        dv = _delivered.get(emp, 0)
+        if not dv:
+            return None
+        return min(100.0, _completed.get(emp, 0) * 100.0 / dv)
+
+    # ---- per-learner OJT completion % (sign-offs / role tasks); enrolled only ----
+    _enr = {}
+    _rtasks = {}
+    _signoffs = {}
+    if _table_exists(db, "ojt_enrollments"):
+        try:
+            for r in db.execute("SELECT id, emp_id, role, COALESCE(status,'') st FROM ojt_enrollments").fetchall():
+                if r["st"] != "resigned":
+                    _enr[r["emp_id"]] = {"id": r["id"], "role": r["role"]}
+        except Exception:
+            pass
+    if _table_exists(db, "ojt_tasks"):
+        try:
+            for r in db.execute("SELECT role, COUNT(*) c FROM ojt_tasks GROUP BY role").fetchall():
+                _rtasks[r["role"]] = r["c"]
+        except Exception:
+            pass
+    if _table_exists(db, "ojt_signoffs"):
+        try:
+            for r in db.execute("SELECT enrollment_id, COUNT(*) c FROM ojt_signoffs GROUP BY enrollment_id").fetchall():
+                _signoffs[r["enrollment_id"]] = r["c"]
+        except Exception:
+            pass
+    def _ojt_pct(emp):
+        e = _enr.get(emp)
+        if not e:
+            return None   # not enrolled -> OJT doesn't apply (adaptive)
+        tot = _rtasks.get(e["role"], 0)
+        if not tot:
+            return None
+        return min(100.0, _signoffs.get(e["id"], 0) * 100.0 / tot)
 
     # ---- per-learner assessment aggregates, computed ONCE for everyone ----
     # (was 2 queries per trainer; now 2 queries total, rolled up in Python).
@@ -541,20 +610,33 @@ def _build_trainer_kpis(db, only_trainers=True, keep_ids=None):
         n_learners = len(s["learners"])
         low_data = n_learners < 3
 
-        # ---- KPI score (0-100): weights 30/20/20/20/10 ----
-        # pass 30, avg score 20, first-attempt 20, rating 20 (stars*20), engagement 10
-        w_pass, w_score, w_first, w_rate, w_eng = 30, 20, 20, 20, 10
-        pass_c = (pass_rate if pass_rate is not None else 0)
-        score_c = (avg_score if avg_score is not None else 0)
-        first_c = (first_attempt_rate if first_attempt_rate is not None else 0)
-        rate_c = ((trainer_rating or 0) * 20)  # 5★ -> 100
-        # engagement = blend of delivery volume + OJT calls, relative to top trainer
+        # ---- per-learner module & OJT completion, averaged over this trainer's learners ----
+        mod_vals = [v for v in (_mod_pct(e) for e in lset) if v is not None]
+        ojt_vals = [v for v in (_ojt_pct(e) for e in lset) if v is not None]
+        module_pct = round(sum(mod_vals) / len(mod_vals)) if mod_vals else None
+        ojt_pct = round(sum(ojt_vals) / len(ojt_vals)) if ojt_vals else None
+
+        # ---- MERGED KPI (0-100): pass20 score15 first15 rating15 modules15 ojt10 eng10 ----
+        # engagement = delivery volume + OJT calls, relative to the top trainer.
         eng_deliv = (s["deliveries"] / max_deliveries * 100) if max_deliveries else 0
         eng_calls = (ojt_calls / max_calls * 100) if max_calls else 0
         eng_c = (eng_deliv * 0.5 + eng_calls * 0.5)
-        kpi = (pass_c * w_pass + score_c * w_score + first_c * w_first
-               + rate_c * w_rate + eng_c * w_eng) / 100.0
-        kpi_score = round(kpi)
+        rate_c = ((trainer_rating or 0) * 20)  # 5★ -> 100
+        # build only the components we have data for, then renormalise their
+        # weights to 100 — this makes OJT (and any missing part) ADAPTIVE: a
+        # trainer whose learners aren't in OJT isn't zeroed on that slice.
+        comps = [
+            (pass_rate,          20),
+            (avg_score,          15),
+            (first_attempt_rate, 15),
+            (rate_c,             15),
+            (module_pct,         15),
+            (ojt_pct,            10),
+            (eng_c,              10),
+        ]
+        have = [(v, w) for v, w in comps if v is not None]
+        wsum = sum(w for _, w in have)
+        kpi_score = round(sum(v * w for v, w in have) / wsum) if wsum else None
 
         out.append({
             "trainer_id": t, "trainer": names.get(t, t),
@@ -569,13 +651,17 @@ def _build_trainer_kpis(db, only_trainers=True, keep_ids=None):
             "trainer_rating_n": (rr["n_tr"] if rr else 0),
             "content_rating": (round(float(rr["avg_ct"]), 1) if rr and rr["avg_ct"] is not None else None),
             "kpi_score": kpi_score,
+            "module_pct": module_pct,
+            "ojt_pct": ojt_pct,
             "low_data": low_data,
         })
-    out.sort(key=lambda x: (-(x["kpi_score"]), -(x["learners"]), x["trainer"]))
+    out.sort(key=lambda x: (-((x["kpi_score"] if x["kpi_score"] is not None else -1)),
+                            -(x["learners"]), x["trainer"]))
     return out
 
 
-_KPI_WEIGHTS = {"pass": 30, "score": 20, "first_attempt": 20, "rating": 20, "engagement": 10}
+_KPI_WEIGHTS = {"pass": 20, "score": 15, "first_attempt": 15, "rating": 15,
+                "modules": 15, "ojt": 10, "engagement": 10}
 
 
 @analytics_bp.route("/api/analytics/trainers")
