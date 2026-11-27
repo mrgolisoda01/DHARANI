@@ -124,6 +124,135 @@ def _promote_due_provisionals(db):
         return 0
 
 
+def _compute_kpi(db):
+    """Outcome-based Trainer KPI (0-100) per trainer, averaged across their
+    ACTIVE (non-resigned) learners. Per learner, a blended score of:
+      - Assessment 50% : avg best-% per assessment, scaled by a first-try
+        multiplier (1st try 1.0, 2nd 0.85, 3rd+ 0.7 of the earned mark).
+      - Module completion 25% : modules completed / modules delivered to them.
+      - OJT completion 25% : task sign-offs / role's total OJT tasks.
+    ADAPTIVE: OJT counts only for learners who are enrolled in OJT. A learner
+    with no OJT enrollment is scored on assessment+modules only, re-weighted to
+    67/33, so trainers are not zeroed for OJT that hasn't been set up yet.
+    Returns {trainer_id: {kpi, assess, modules, ojt, n_learners, n_ojt}}.
+    """
+    # 1) resigned users (learner OR their OJT enrollment resigned) -> excluded
+    resigned = set()
+    try:
+        for r in db.execute("SELECT emp_id FROM users WHERE COALESCE(status,'')='resigned'").fetchall():
+            resigned.add(r["emp_id"])
+    except Exception:
+        pass
+    try:
+        for r in db.execute("SELECT emp_id FROM ojt_enrollments WHERE COALESCE(status,'')='resigned'").fetchall():
+            resigned.add(r["emp_id"])
+    except Exception:
+        pass
+
+    # 2) trainer -> set(active learners), and learner -> set(trainers)
+    tl = {}
+    for r in db.execute(
+        "SELECT DISTINCT trainer_id, learner_id FROM training_delivery WHERE status='approved'").fetchall():
+        if r["learner_id"] in resigned:
+            continue
+        tl.setdefault(r["trainer_id"], set()).add(r["learner_id"])
+
+    # 3) per-learner ASSESSMENT score (avg best% x first-try multiplier)
+    attempts = {}   # (emp,aid) -> list of (passed, percent) in order
+    for r in db.execute("SELECT emp_id, assessment_id, passed, percent FROM assessment_results ORDER BY taken_at, id").fetchall():
+        attempts.setdefault((r["emp_id"], r["assessment_id"]), []).append((r["passed"], r["percent"]))
+    l_assess = {}
+    for (emp, _aid), lst in attempts.items():
+        best = max((p for _, p in lst if p is not None), default=0)
+        pa = next((i for i, (pv, _) in enumerate(lst, 1) if pv), None)
+        mult = 1.0 if pa == 1 else (0.85 if pa == 2 else (0.7 if pa else 1.0))
+        a = l_assess.setdefault(emp, {"sum": 0.0, "n": 0})
+        a["sum"] += best * mult; a["n"] += 1
+    def assess_score(emp):
+        a = l_assess.get(emp)
+        return (a["sum"] / a["n"]) if a and a["n"] else None
+
+    # 4) per-learner MODULE completion % = completed / delivered
+    delivered = {}
+    for r in db.execute(
+        "SELECT learner_id, COUNT(DISTINCT module_id) c FROM training_delivery "
+        "WHERE status='approved' AND module_id IS NOT NULL GROUP BY learner_id").fetchall():
+        delivered[r["learner_id"]] = r["c"]
+    completed = {}
+    try:
+        for r in db.execute("SELECT emp_id, COUNT(DISTINCT module_id) c FROM module_completions GROUP BY emp_id").fetchall():
+            completed[r["emp_id"]] = r["c"]
+    except Exception:
+        pass
+    def module_score(emp):
+        dv = delivered.get(emp, 0)
+        if not dv:
+            return None
+        return min(100.0, completed.get(emp, 0) * 100.0 / dv)
+
+    # 5) per-learner OJT completion % = signoffs / role's total tasks (enrolled only)
+    enr = {}   # emp -> {enr_id, role}
+    try:
+        for r in db.execute("SELECT id, emp_id, role, COALESCE(status,'') st FROM ojt_enrollments").fetchall():
+            if r["st"] == "resigned":
+                continue
+            enr[r["emp_id"]] = {"id": r["id"], "role": r["role"]}
+    except Exception:
+        pass
+    role_tasks = {}
+    try:
+        for r in db.execute("SELECT role, COUNT(*) c FROM ojt_tasks GROUP BY role").fetchall():
+            role_tasks[r["role"]] = r["c"]
+    except Exception:
+        pass
+    signoffs = {}
+    try:
+        for r in db.execute("SELECT enrollment_id, COUNT(*) c FROM ojt_signoffs GROUP BY enrollment_id").fetchall():
+            signoffs[r["enrollment_id"]] = r["c"]
+    except Exception:
+        pass
+    def ojt_score(emp):
+        e = enr.get(emp)
+        if not e:
+            return None   # not enrolled -> OJT doesn't apply (adaptive)
+        tot = role_tasks.get(e["role"], 0)
+        if not tot:
+            return None
+        return min(100.0, signoffs.get(e["id"], 0) * 100.0 / tot)
+
+    # 6) blend per learner, then average per trainer
+    out = {}
+    for tid, learners in tl.items():
+        accK = accA = accM = accO = 0.0
+        nK = nA = nM = nO = 0
+        for emp in learners:
+            a, m, o = assess_score(emp), module_score(emp), ojt_score(emp)
+            if a is not None: accA += a; nA += 1
+            if m is not None: accM += m; nM += 1
+            if o is not None: accO += o; nO += 1
+            # weights: OJT only if enrolled; else re-weight assess/modules 67/33
+            parts = []
+            if o is not None:
+                if a is not None: parts.append((a, 0.50))
+                if m is not None: parts.append((m, 0.25))
+                parts.append((o, 0.25))
+            else:
+                if a is not None: parts.append((a, 0.67))
+                if m is not None: parts.append((m, 0.33))
+            if parts:
+                wsum = sum(w for _, w in parts)
+                accK += sum(v * w for v, w in parts) / wsum
+                nK += 1
+        out[tid] = {
+            "kpi": round(accK / nK) if nK else None,
+            "assess": round(accA / nA) if nA else None,
+            "modules": round(accM / nM) if nM else None,
+            "ojt": round(accO / nO) if nO else None,
+            "n_learners": len(learners), "n_ojt": nO,
+        }
+    return out
+
+
 def _modules(db, kind):
     try:
         return [dict(r) for r in db.execute(
@@ -1410,6 +1539,8 @@ def api_training_leaderboard():
             s["induction"] += 1
         elif r["kind"] == "training":
             s["training"] += 1
+    # Outcome-based KPI per trainer (assessment/modules/OJT of their learners).
+    kpi = _compute_kpi(db)
     # Accounts kept OUT of the trainer ranking (admins who oversee, not compete).
     # Dharani Kumar S (SAFB206) handles Solar and is not one of the ranked trainers.
     LEADERBOARD_EXCLUDE = {"SAFB206"}
@@ -1417,9 +1548,16 @@ def api_training_leaderboard():
         "trainer_id": tid, "trainer": names.get(tid, tid),
         "deliveries": s["deliveries"], "learners": len(s["learners"]),
         "induction": s["induction"], "training": s["training"],
+        "kpi": (kpi.get(tid) or {}).get("kpi"),
+        "k_assess": (kpi.get(tid) or {}).get("assess"),
+        "k_modules": (kpi.get(tid) or {}).get("modules"),
+        "k_ojt": (kpi.get(tid) or {}).get("ojt"),
     } for tid, s in stats.items()
       if tid not in LEADERBOARD_EXCLUDE and tid not in gone]  # hide excluded + left trainers
-    board.sort(key=lambda x: (-x["deliveries"], -x["learners"], x["trainer"] or ""))
+    # rank by KPI (outcome) first, then deliveries as a tiebreaker; trainers with
+    # no KPI yet (no scorable learners) sink below those who have one.
+    board.sort(key=lambda x: (-(x["kpi"] if x["kpi"] is not None else -1),
+                              -x["deliveries"], -x["learners"], x["trainer"] or ""))
     for i, b in enumerate(board):
         b["rank"] = i + 1
 
