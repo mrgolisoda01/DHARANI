@@ -269,7 +269,8 @@
           : esc(t.trainer)) + "</td>" +
         '<td><div class="bar"><i style="width:' + pct + '%"></i></div><div class="muted">' + t.done + " / " + t.total + " tasks</div></td>" +
         "<td>" + (t.overdue ? '<span class="pill p-pending">' + t.overdue + " pending</span>" : '<span class="pill p-approved">On track</span>') + "</td>" +
-        '<td><button class="btn" data-act="open" data-id="' + t.id + '">Open</button></td>' +
+        '<td style="white-space:nowrap"><button class="btn" data-act="open" data-id="' + t.id + '">Open</button> ' +
+          '<button class="btn" data-act="resign" data-id="' + t.id + '" data-emp="' + esc(t.emp_id) + '" data-name="' + esc(t.name) + '" style="color:var(--mg-red,#d64531);border-color:var(--mg-red,#d64531)" title="Mark this employee resigned">Resign</button></td>' +
       "</tr>";
     }).join("");
     body.innerHTML = head +
@@ -311,6 +312,17 @@
     busy(btn, false);
     note(r.msg || (r.ok ? "Done." : "Could not start."));
     if(r.ok){ closeOjtModal(); load(); }
+  }
+
+  // Mark an OJT trainee as resigned, straight from the OJT view. Resigns the
+  // whole employee (status=resigned) via the shared endpoint, which closes their
+  // OJT, reassigns their reports, and drops them from the trainer KPI.
+  async function resignTrainee(empId, name){
+    if(!empId) return;
+    if(!confirm('Mark ' + (name || empId) + ' as resigned?\n\nThis closes their OJT and removes them from the KPI. It can be undone from the Employees tab.')) return;
+    var r = await postJ("/api/admin/resign-user", { emp_id: empId });
+    note((r && r.msg) || (r && r.ok ? "Marked resigned." : "Could not resign."));
+    if(r && r.ok) load();   // refresh the OJT list so they drop off
   }
 
   async function openTrainee(id){
@@ -864,6 +876,7 @@
       else if(act === "start-open") openStart();
       else if(act === "start-save") saveStart(el);
       else if(act === "open") openTrainee(el.dataset.id);
+      else if(act === "resign") resignTrainee(el.dataset.emp, el.dataset.name);
       else if(act === "toggle-day") toggleDay(parseInt(el.dataset.day, 10));
       else if(act === "addrow"){
         var day = currentDay(); day._edit = readRows(); day._edit.push({ title:"", description:"" }); renderDays();

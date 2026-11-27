@@ -955,17 +955,26 @@
       ['week','month','all'].map(function(r){ var lbl={week:"This week",month:"This month",all:"All time"}[r];
         return '<button class="tc-lbr" data-r="'+r+'" style="border:none;background:'+(r===rng?"var(--mg-blue);color:#fff":"#fff;color:#55636d")+';font-size:12px;padding:6px 12px;cursor:pointer">'+lbl+'</button>'; }).join("")+'</span>';
     var medal = ["🥇","🥈","🥉"];
+    function kpiCol(v){ if(v==null) return "#8a97a1"; return v>=80?"#1d9e75":(v>=60?"#c9a227":"#d64545"); }
+    function sub(label,v){ return '<span style="white-space:nowrap">'+label+' <b style="color:'+(v==null?'#aaa':'#12284B')+'">'+(v==null?'—':v+'%')+'</b></span>'; }
     var rows = board.length ? board.map(function(b){
       var badge = b.rank<=3 ? medal[b.rank-1] : ('<span style="display:inline-block;width:22px;text-align:center;color:#8a97a1;font-weight:700">'+b.rank+'</span>');
       return '<div class="arow"><div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px;width:24px;text-align:center">'+badge+'</span>'+
-        '<div><b>'+esc(b.trainer)+'</b><br><span style="font-size:12px;color:#62707a">'+b.learners+' learner'+(b.learners===1?'':'s')+' · Induction '+b.induction+' · Training '+b.training+'</span></div></div>'+
-        '<div style="text-align:right"><div style="font-size:20px;font-weight:800;color:#12284B">'+b.deliveries+'</div><div style="font-size:10.5px;color:#8a97a1;text-transform:uppercase;letter-spacing:.3px">credits</div></div></div>';
+        '<div><b>'+esc(b.trainer)+'</b><br>'+
+          '<span style="font-size:11.5px;color:#62707a">'+b.learners+' learner'+(b.learners===1?'':'s')+' · '+b.deliveries+' credits</span><br>'+
+          '<span style="font-size:11px;color:#62707a;display:inline-flex;gap:10px;flex-wrap:wrap;margin-top:2px">'+
+            sub('Assess',b.k_assess)+sub('Modules',b.k_modules)+sub('OJT',b.k_ojt)+'</span>'+
+        '</div></div>'+
+        '<div style="text-align:right"><div style="font-size:22px;font-weight:800;color:'+kpiCol(b.kpi)+'">'+(b.kpi==null?'—':b.kpi)+'</div><div style="font-size:10.5px;color:#8a97a1;text-transform:uppercase;letter-spacing:.3px">KPI score</div></div></div>';
     }).join("") : '<div class="empty" style="padding:16px">No confirmed credits in this period yet.</div>';
+    var kpiNote = '<div style="font-size:11.5px;color:#62707a;background:#f6f9fc;border:1px solid #e4ecf3;border-radius:8px;padding:8px 11px;margin:0 0 10px;line-height:1.6">'+
+      '<b>KPI score</b> = how well each trainer’s active learners perform: <b>Assessment 50%</b> (scores, with retries penalised) · <b>Modules 25%</b> (completed) · <b>OJT 25%</b> (sign-offs). OJT counts only for learners enrolled in OJT; others are scored on assessment + modules. Resigned learners are excluded.'+
+      '</div>';
     var trendCard = trend.length ? ('<div class="card"><div style="font-size:13px;font-weight:700;color:#12284B;margin-bottom:2px">📈 Confirmed credits — last 6 weeks</div>'+
       '<div style="font-size:11.5px;color:#8a97a1;margin-bottom:6px">'+trend.map(function(t){return esc(t.week);}).join(" · ")+'</div>'+sparkline(trend)+
       '<div style="display:flex;justify-content:space-between;font-size:11px;color:#8a97a1;margin-top:2px"><span>'+(trend[0]?esc(trend[0].week):'')+'</span><span>'+(trend[trend.length-1]?esc(trend[trend.length-1].week):'')+'</span></div></div>') : '';
     shell('<div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="color:#12284B">🏆 Trainer leaderboard</b><span style="margin-left:auto">'+rangeBtns+'</span></div>'+
-      trendCard + rows);
+      kpiNote + trendCard + rows);
     $("tcRoot").querySelectorAll(".tc-lbr").forEach(function(b){ b.addEventListener("click", function(){ window.__tcLbRange=b.dataset.r; renderLeaderboard(); }); });
   }
 
