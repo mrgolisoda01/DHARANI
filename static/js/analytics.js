@@ -450,10 +450,10 @@
 
       // full scorecard table
       var h = '<div class="an-sect"><h4>🏆 Trainers — competition (L&D Executives)</h4>' +
-        '<div class="an-muted" style="margin-bottom:10px">KPI score (0–100) = Pass ' + (w.pass||30) + '% · Avg score ' + (w.score||20) +
-        '% · First-attempt ' + (w.first_attempt||20) + '% · Rating ' + (w.rating||20) + '% · Engagement ' + (w.engagement||10) + '%. Click a trainer for details. (The L&D Manager is shown separately below, not in this ranking.)</div>' +
+        '<div class="an-muted" style="margin-bottom:10px">KPI score (0–100) = Pass ' + (w.pass||20) + '% · Avg score ' + (w.score||15) +
+        '% · First-attempt ' + (w.first_attempt||15) + '% · Rating ' + (w.rating||15) + '% · Modules ' + (w.modules||15) + '% · OJT ' + (w.ojt||10) + '% · Engagement ' + (w.engagement||10) + '%. OJT counts only for learners enrolled in OJT; resigned learners excluded. Click a trainer for details. (The L&D Manager is shown separately below, not in this ranking.)</div>' +
         '<table><thead><tr><th>Rank</th><th>Trainer</th><th>KPI</th><th>Learners</th><th>Pass rate</th>' +
-        '<th>Avg score</th><th>1st-attempt</th><th>Rating</th><th>OJT calls</th></tr></thead><tbody>';
+        '<th>Avg score</th><th>1st-attempt</th><th>Rating</th><th>Modules</th><th>OJT</th></tr></thead><tbody>';
       d.trainers.forEach(function (t, i) {
         h += '<tr style="cursor:pointer" onclick="window.__anTrainer(\'' + escAn(t.trainer_id) + '\')">' +
           '<td style="font-weight:700;color:var(--mg-muted)">' + (i+1) + '</td>' +
@@ -465,7 +465,8 @@
           '<td>' + (t.avg_score == null ? '<span class="an-muted">—</span>' : t.avg_score + '%') + '</td>' +
           '<td>' + (t.first_attempt_rate == null ? '<span class="an-muted">—</span>' : t.first_attempt_rate + '%') + '</td>' +
           '<td>' + starTxt(t.trainer_rating, t.trainer_rating_n) + '</td>' +
-          '<td>' + (t.ojt_calls || 0) + '</td></tr>';
+          '<td>' + (t.module_pct == null ? '<span class="an-muted">—</span>' : t.module_pct + '%') + '</td>' +
+          '<td>' + (t.ojt_pct == null ? '<span class="an-muted">—</span>' : t.ojt_pct + '%') + '</td></tr>';
       });
       // render competition first, then the manager panel below it
       body.innerHTML = lead + h + '</tbody></table></div>' +

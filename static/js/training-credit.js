@@ -963,12 +963,12 @@
         '<div><b>'+esc(b.trainer)+'</b><br>'+
           '<span style="font-size:11.5px;color:#62707a">'+b.learners+' learner'+(b.learners===1?'':'s')+' · '+b.deliveries+' credits</span><br>'+
           '<span style="font-size:11px;color:#62707a;display:inline-flex;gap:10px;flex-wrap:wrap;margin-top:2px">'+
-            sub('Assess',b.k_assess)+sub('Modules',b.k_modules)+sub('OJT',b.k_ojt)+'</span>'+
+            sub('Score',b.k_assess)+sub('Modules',b.k_modules)+sub('OJT',b.k_ojt)+'</span>'+
         '</div></div>'+
         '<div style="text-align:right"><div style="font-size:22px;font-weight:800;color:'+kpiCol(b.kpi)+'">'+(b.kpi==null?'—':b.kpi)+'</div><div style="font-size:10.5px;color:#8a97a1;text-transform:uppercase;letter-spacing:.3px">KPI score</div></div></div>';
     }).join("") : '<div class="empty" style="padding:16px">No confirmed credits in this period yet.</div>';
     var kpiNote = '<div style="font-size:11.5px;color:#62707a;background:#f6f9fc;border:1px solid #e4ecf3;border-radius:8px;padding:8px 11px;margin:0 0 10px;line-height:1.6">'+
-      '<b>KPI score</b> = how well each trainer’s active learners perform: <b>Assessment 50%</b> (scores, with retries penalised) · <b>Modules 25%</b> (completed) · <b>OJT 25%</b> (sign-offs). OJT counts only for learners enrolled in OJT; others are scored on assessment + modules. Resigned learners are excluded.'+
+      '<b>KPI score</b> = how well each trainer’s active learners perform: <b>Pass 20%</b> · <b>Avg score 15%</b> · <b>First-attempt 15%</b> · <b>Rating 15%</b> · <b>Modules 15%</b> (completed) · <b>OJT 10%</b> (sign-offs) · <b>Engagement 10%</b>. OJT counts only for learners enrolled in OJT; resigned learners excluded. (Same KPI as the Productivity screen.)'+
       '</div>';
     var trendCard = trend.length ? ('<div class="card"><div style="font-size:13px;font-weight:700;color:#12284B;margin-bottom:2px">📈 Confirmed credits — last 6 weeks</div>'+
       '<div style="font-size:11.5px;color:#8a97a1;margin-bottom:6px">'+trend.map(function(t){return esc(t.week);}).join(" · ")+'</div>'+sparkline(trend)+
